@@ -1,0 +1,47 @@
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+const { ROLES } = require('../constants/enums');
+const { softDeletePlugin } = require('../plugins/softDelete');
+
+const userSchema = new mongoose.Schema(
+  {
+    companyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', required: true },
+    /** For SUPER_ADMIN: operating tenant when using business APIs (server-side source of truth). */
+    activeCompanyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', default: null },
+    name: { type: String, required: true, trim: true },
+    email: { type: String, required: true, trim: true, lowercase: true },
+    password: { type: String, required: true, select: false },
+    role: { type: String, enum: Object.values(ROLES), required: true },
+    phone: { type: String, trim: true },
+    permissions: [{ type: String }],
+    isActive: { type: Boolean, default: true },
+    refreshToken: { type: String, select: false },
+    lastLoginAt: { type: Date },
+    lastLoginIP: { type: String }
+  },
+  { timestamps: true }
+);
+
+userSchema.index({ companyId: 1, email: 1 }, { unique: true });
+userSchema.index({ companyId: 1, role: 1, isActive: 1 });
+
+userSchema.pre('save', async function (next) {
+  if (!this.isModified('password')) return next();
+  this.password = await bcrypt.hash(this.password, 12);
+  next();
+});
+
+userSchema.methods.comparePassword = async function (candidatePassword) {
+  return bcrypt.compare(candidatePassword, this.password);
+};
+
+userSchema.methods.toJSON = function () {
+  const obj = this.toObject();
+  delete obj.password;
+  delete obj.refreshToken;
+  return obj;
+};
+
+userSchema.plugin(softDeletePlugin);
+
+module.exports = mongoose.model('User', userSchema);
