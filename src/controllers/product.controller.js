@@ -9,7 +9,7 @@ const lookup = asyncHandler(async (req, res) => {
 });
 
 const list = asyncHandler(async (req, res) => {
-  const result = await productService.list(req.companyId, req.query);
+  const result = await productService.list(req.companyId, req.query, req.user);
   ApiResponse.paginated(res, result);
 });
 
@@ -19,7 +19,7 @@ const create = asyncHandler(async (req, res) => {
 });
 
 const getById = asyncHandler(async (req, res) => {
-  const product = await productService.getById(req.companyId, req.params.id);
+  const product = await productService.getById(req.companyId, req.params.id, req.user);
   ApiResponse.success(res, product);
 });
 

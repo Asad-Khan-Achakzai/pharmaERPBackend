@@ -3,7 +3,16 @@ const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const auditService = require('./audit.service');
 
-const list = async (companyId, query) => {
+/** Cost-related fields; omitted from GET /products & GET /products/:id when user lacks products.viewCostPrice. */
+const PRODUCT_COST_PROJECTION_OMIT = '-casting -castingPercent';
+
+function canViewProductCostOnProductApi(reqUser) {
+  if (!reqUser) return false;
+  if (reqUser.role === 'ADMIN' || reqUser.role === 'SUPER_ADMIN') return true;
+  return (reqUser.permissions || []).includes('products.viewCostPrice');
+}
+
+const list = async (companyId, query, reqUser) => {
   const { page, limit, skip, sort, search } = parsePagination(query);
   const filter = { companyId };
   if (query.isActive !== undefined) filter.isActive = query.isActive === 'true';
@@ -13,10 +22,11 @@ const list = async (companyId, query) => {
       { composition: { $regex: search, $options: 'i' } }
     ];
   }
-  const [docs, total] = await Promise.all([
-    Product.find(filter).sort(sort).skip(skip).limit(limit),
-    Product.countDocuments(filter)
-  ]);
+  let q = Product.find(filter).sort(sort).skip(skip).limit(limit);
+  if (!canViewProductCostOnProductApi(reqUser)) {
+    q = q.select(PRODUCT_COST_PROJECTION_OMIT);
+  }
+  const [docs, total] = await Promise.all([q, Product.countDocuments(filter)]);
   return { docs, total, page, limit };
 };
 
@@ -26,8 +36,12 @@ const create = async (companyId, data, reqUser) => {
   return product;
 };
 
-const getById = async (companyId, id) => {
-  const product = await Product.findOne({ _id: id, companyId });
+const getById = async (companyId, id, reqUser) => {
+  let q = Product.findOne({ _id: id, companyId });
+  if (!canViewProductCostOnProductApi(reqUser)) {
+    q = q.select(PRODUCT_COST_PROJECTION_OMIT);
+  }
+  const product = await q;
   if (!product) throw new ApiError(404, 'Product not found');
   return product;
 };

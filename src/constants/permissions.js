@@ -1,6 +1,6 @@
 const PERMISSIONS = {
   dashboard:    ['view'],
-  products:     ['view', 'create', 'edit', 'delete'],
+  products:     ['view', 'create', 'edit', 'delete', 'viewCostPrice'],
   distributors: ['view', 'create', 'edit', 'delete'],
   inventory:    ['view', 'transfer'],
   pharmacies:   ['view', 'create', 'edit', 'delete'],
