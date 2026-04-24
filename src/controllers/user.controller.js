@@ -1,6 +1,12 @@
 const userService = require('../services/user.service');
+const lookupService = require('../services/lookup.service');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../middleware/asyncHandler');
+
+const assignable = asyncHandler(async (req, res) => {
+  const data = await lookupService.assignableUsers(req.companyId);
+  ApiResponse.success(res, data, 'OK');
+});
 
 const list = asyncHandler(async (req, res) => {
   const result = await userService.list(req.companyId, req.query);
@@ -27,4 +33,4 @@ const remove = asyncHandler(async (req, res) => {
   ApiResponse.success(res, null, 'User deactivated');
 });
 
-module.exports = { list, create, getById, update, remove };
+module.exports = { assignable, list, create, getById, update, remove };

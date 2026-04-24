@@ -1,6 +1,12 @@
 const doctorService = require('../services/doctor.service');
+const lookupService = require('../services/lookup.service');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../middleware/asyncHandler');
+
+const lookup = asyncHandler(async (req, res) => {
+  const data = await lookupService.doctors(req.companyId, req.query);
+  ApiResponse.success(res, data, 'OK');
+});
 
 const list = asyncHandler(async (req, res) => {
   const result = await doctorService.list(req.companyId, req.query);
@@ -27,4 +33,4 @@ const remove = asyncHandler(async (req, res) => {
   ApiResponse.success(res, null, 'Doctor deactivated');
 });
 
-module.exports = { list, create, getById, update, remove };
+module.exports = { lookup, list, create, getById, update, remove };

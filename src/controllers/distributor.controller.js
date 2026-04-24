@@ -1,6 +1,12 @@
 const distributorService = require('../services/distributor.service');
+const lookupService = require('../services/lookup.service');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../middleware/asyncHandler');
+
+const lookup = asyncHandler(async (req, res) => {
+  const data = await lookupService.distributors(req.companyId, req.query);
+  ApiResponse.success(res, data, 'OK');
+});
 
 const list = asyncHandler(async (req, res) => {
   const result = await distributorService.list(req.companyId, req.query);
@@ -27,4 +33,4 @@ const remove = asyncHandler(async (req, res) => {
   ApiResponse.success(res, null, 'Distributor deactivated');
 });
 
-module.exports = { list, create, getById, update, remove };
+module.exports = { lookup, list, create, getById, update, remove };

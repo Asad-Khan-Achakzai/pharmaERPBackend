@@ -1,9 +1,15 @@
 const supplierService = require('../services/supplier.service');
+const lookupService = require('../services/lookup.service');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../middleware/asyncHandler');
 
 const balancesSummary = asyncHandler(async (req, res) => {
   ApiResponse.success(res, await supplierService.supplierBalances(req.companyId));
+});
+
+const lookup = asyncHandler(async (req, res) => {
+  const data = await lookupService.suppliers(req.companyId, req.query);
+  ApiResponse.success(res, data, 'OK');
 });
 
 const list = asyncHandler(async (req, res) => {
@@ -82,6 +88,7 @@ const reversePayment = asyncHandler(async (req, res) => {
 module.exports = {
   balancesSummary,
   list,
+  lookup,
   getById,
   create,
   update,

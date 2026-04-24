@@ -1,0 +1,139 @@
+/**
+ * Tenant-scoped lookup rows for form dropdowns (auth + companyScope only; no resource.view).
+ * Returns data required for UIs (e.g. order create needs TP/discount fields), not full admin records.
+ */
+const Distributor = require('../models/Distributor');
+const Product = require('../models/Product');
+const Pharmacy = require('../models/Pharmacy');
+const Doctor = require('../models/Doctor');
+const User = require('../models/User');
+const Supplier = require('../models/Supplier');
+
+const LOOKUP_MAX = Math.min(100, Number(process.env.LOOKUP_MAX) || 100);
+
+const clampLimit = (q) => {
+  const n = parseInt(String(q?.limit || '100'), 10);
+  if (Number.isNaN(n) || n < 1) return LOOKUP_MAX;
+  return Math.min(n, LOOKUP_MAX);
+};
+
+/** @param {import('mongoose').FilterQuery} base */
+const applyActive = (base, q) => {
+  if (q && (q.isActive === 'true' || q.isActive === 'false')) {
+    return { ...base, isActive: q.isActive === 'true' };
+  }
+  return { ...base, isActive: true };
+};
+
+const distributors = async (companyId, query = {}) => {
+  const limit = clampLimit(query);
+  const filter = applyActive({ companyId }, query);
+  const rows = await Distributor.find(filter)
+    .select('name discountOnTP commissionPercentOnTP')
+    .sort({ name: 1 })
+    .limit(limit)
+    .lean();
+  return rows.map((d) => ({
+    _id: d._id,
+    name: d.name,
+    discountOnTP: d.discountOnTP,
+    commissionPercentOnTP: d.commissionPercentOnTP
+  }));
+};
+
+const products = async (companyId, query = {}) => {
+  const limit = clampLimit(query);
+  const filter = applyActive({ companyId }, query);
+  const rows = await Product.find(filter)
+    .select('name composition mrp tp casting')
+    .sort({ name: 1 })
+    .limit(limit)
+    .lean();
+  return rows.map((p) => ({
+    _id: p._id,
+    name: p.name,
+    composition: p.composition,
+    mrp: p.mrp,
+    tp: p.tp,
+    casting: p.casting
+  }));
+};
+
+const pharmacies = async (companyId, query = {}) => {
+  const limit = clampLimit(query);
+  const filter = applyActive({ companyId }, query);
+  const rows = await Pharmacy.find(filter)
+    .select('name discountOnTP bonusScheme')
+    .sort({ name: 1 })
+    .limit(limit)
+    .lean();
+  return rows.map((p) => ({
+    _id: p._id,
+    name: p.name,
+    discountOnTP: p.discountOnTP,
+    bonusScheme: p.bonusScheme
+  }));
+};
+
+const doctors = async (companyId, query = {}) => {
+  const limit = clampLimit(query);
+  const base = { companyId };
+  const f = applyActive(base, query);
+  if (query.pharmacyId) f.pharmacyId = query.pharmacyId;
+  const rows = await Doctor.find(f)
+    .select('name pharmacyId')
+    .sort({ name: 1 })
+    .limit(limit)
+    .lean();
+  return rows.map((d) => ({
+    _id: d._id,
+    name: d.name,
+    pharmacyId: d.pharmacyId
+  }));
+};
+
+/** Same semantics as order assignable reps: active company users (minimal fields for dropdowns). */
+const assignableUsers = async (companyId) => {
+  const rows = await User.find({ companyId, isActive: true })
+    .select('name email role')
+    .sort({ name: 1 })
+    .limit(LOOKUP_MAX)
+    .lean();
+  return rows.map((u) => ({
+    _id: u._id,
+    name: u.name,
+    email: u.email,
+    role: u.role
+  }));
+};
+
+const suppliers = async (companyId, query = {}) => {
+  const limit = clampLimit(query);
+  const filter = { companyId, isDeleted: { $ne: true } };
+  if (query && (query.isActive === 'true' || query.isActive === 'false')) {
+    filter.isActive = query.isActive === 'true';
+  } else {
+    filter.isActive = true;
+  }
+  const rows = await Supplier.find(filter)
+    .select('name phone email')
+    .sort({ name: 1 })
+    .limit(limit)
+    .lean();
+  return rows.map((s) => ({
+    _id: s._id,
+    name: s.name,
+    phone: s.phone,
+    email: s.email
+  }));
+};
+
+module.exports = {
+  LOOKUP_MAX,
+  distributors,
+  products,
+  pharmacies,
+  doctors,
+  assignableUsers,
+  suppliers
+};

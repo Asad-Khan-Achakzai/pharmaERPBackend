@@ -7,11 +7,6 @@ const list = asyncHandler(async (req, res) => {
   ApiResponse.paginated(res, result);
 });
 
-const listAssignableReps = asyncHandler(async (req, res) => {
-  const docs = await orderService.listAssignableReps(req.companyId);
-  ApiResponse.success(res, docs);
-});
-
 const create = asyncHandler(async (req, res) => {
   const order = await orderService.create(req.companyId, req.body, req.user);
   ApiResponse.created(res, order);
@@ -42,4 +37,4 @@ const cancel = asyncHandler(async (req, res) => {
   ApiResponse.success(res, null, 'Order cancelled');
 });
 
-module.exports = { list, listAssignableReps, create, getById, update, deliver, returnOrder, cancel };
+module.exports = { list, create, getById, update, deliver, returnOrder, cancel };

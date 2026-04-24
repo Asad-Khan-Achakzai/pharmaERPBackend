@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "seed": "node seed.js --drop"
+    "seed": "node seed.js --drop",
+    "add-super-admin": "node scripts/addSuperAdmin.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

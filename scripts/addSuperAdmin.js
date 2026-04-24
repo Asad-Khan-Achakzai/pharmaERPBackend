@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
- * Idempotent: adds one SUPER_ADMIN user for testing without dropping the database.
+ * Idempotent: adds one SUPER_ADMIN user without dropping the database.
  *
- * Usage (from pharma/backend):
+ * Usage (from pharmaERPBackend):
+ *   npm run add-super-admin
  *   node scripts/addSuperAdmin.js
  *
  * Env (optional):
@@ -11,8 +12,8 @@
  *   SUPER_ADMIN_PASSWORD — default Super@123
  *   SUPER_ADMIN_NAME     — default Super Admin
  *
- * Creates a small "Platform Administration" company if missing, sets home companyId there,
- * and sets activeCompanyId to your first existing tenant company so the app works immediately.
+ * Creates a "Platform Administration" company if missing, and (if needed) a minimal
+ * default tenant company so activeCompanyId is set for APIs (see companyScope middleware).
  */
 
 require('dotenv').config();
@@ -29,21 +30,6 @@ const NAME = process.env.SUPER_ADMIN_NAME || 'Super Admin';
 async function main() {
   await mongoose.connect(MONGODB_URI);
   console.log('Connected:', MONGODB_URI);
-
-  const existingSa = await User.findOne({ email: EMAIL });
-  if (existingSa) {
-    if (existingSa.role === ROLES.SUPER_ADMIN) {
-      console.log(`User already exists: ${EMAIL} (SUPER_ADMIN). No changes.`);
-      await mongoose.disconnect();
-      process.exit(0);
-    }
-    console.error(
-      `A user with email ${EMAIL} already exists with role ${existingSa.role}. ` +
-        'Use a different SUPER_ADMIN_EMAIL or remove/rename that user first.'
-    );
-    await mongoose.disconnect();
-    process.exit(1);
-  }
 
   let platformCo = await Company.findOne({ email: 'platform.internal@local' });
   if (!platformCo) {
@@ -63,17 +49,41 @@ async function main() {
     console.log('Using existing platform company:', platformCo._id.toString());
   }
 
-  const tenant = await Company.findOne({
+  const existing = await User.findOne({ companyId: platformCo._id, email: EMAIL });
+  if (existing) {
+    if (existing.role === ROLES.SUPER_ADMIN) {
+      console.log(`User already exists: ${EMAIL} (SUPER_ADMIN). No changes.`);
+      await mongoose.disconnect();
+      process.exit(0);
+    }
+    console.error(
+      `A user with email ${EMAIL} already exists on the platform company with role ${existing.role}. ` +
+        'Use a different SUPER_ADMIN_EMAIL or remove that user first.'
+    );
+    await mongoose.disconnect();
+    process.exit(1);
+  }
+
+  let tenant = await Company.findOne({
     _id: { $ne: platformCo._id },
     isDeleted: { $ne: true }
   }).sort({ createdAt: 1 });
 
   if (!tenant) {
-    console.error(
-      'No tenant company found (besides platform). Create a company first (e.g. register via /auth/register), then run this script again.'
-    );
-    await mongoose.disconnect();
-    process.exit(1);
+    tenant = await Company.create({
+      name: 'Default tenant',
+      address: '—',
+      city: '—',
+      state: '—',
+      country: 'Pakistan',
+      phone: '—',
+      email: 'default.tenant@local',
+      currency: 'PKR',
+      isActive: true
+    });
+    console.log('Created default tenant company (no other company existed):', tenant._id.toString());
+  } else {
+    console.log('Using tenant for activeCompanyId:', tenant.name, `(${tenant._id})`);
   }
 
   await User.create({

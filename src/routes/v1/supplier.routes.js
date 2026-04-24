@@ -3,7 +3,7 @@ const router = express.Router();
 const c = require('../../controllers/supplier.controller');
 const { authenticate } = require('../../middleware/auth');
 const { companyScope } = require('../../middleware/companyScope');
-const { checkPermission } = require('../../middleware/checkPermission');
+const { checkPermission, allowLookupAccess } = require('../../middleware/checkPermission');
 const { validate, validateQuery } = require('../../middleware/validate');
 const {
   createSchema,
@@ -28,6 +28,7 @@ const recentPaymentsQuerySchema = Joi.object({
 
 router.use(authenticate, companyScope);
 
+router.get('/lookup', allowLookupAccess, c.lookup);
 router.get('/balances/summary', checkPermission('suppliers.view'), c.balancesSummary);
 router.get(
   '/payments/recent',

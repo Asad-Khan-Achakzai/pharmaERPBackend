@@ -78,15 +78,6 @@ const list = async (companyId, query) => {
   return { docs, total, page, limit };
 };
 
-/** Active company users who can be selected as the order’s assigned rep (orders.create UI). */
-const listAssignableReps = async (companyId) => {
-  const docs = await User.find({ companyId, isActive: true })
-    .select('name email role')
-    .sort({ name: 1 })
-    .lean();
-  return docs;
-};
-
 const create = async (companyId, data, reqUser) => {
   let medicalRepId = reqUser.userId;
   if (data.medicalRepId) {
@@ -109,15 +100,13 @@ const create = async (companyId, data, reqUser) => {
   const productMap = {};
   products.forEach((p) => { productMap[p._id.toString()] = p; });
 
-  const orderNumber = await generateOrderNumber(Order, companyId, 'ORD');
-
   const items = buildLineItemsFromPayload(data, productMap, pharmacy, distributor);
 
   const { items: itemsWithSnap, totals } = financialService.enrichOrderItemsWithFinancialSnapshot(items, distributor);
   const totalOrderedAmount = totals.totalAmount;
 
-  const order = await Order.create({
-    companyId, orderNumber,
+  const createPayload = () => ({
+    companyId,
     pharmacyId: data.pharmacyId,
     doctorId: data.doctorId || null,
     distributorId: data.distributorId,
@@ -134,6 +123,28 @@ const create = async (companyId, data, reqUser) => {
     notes: data.notes,
     createdBy: reqUser.userId
   });
+
+  /** Uniqueness on orderNumber: retry if two requests race or legacy numbering edge cases. */
+  const maxAttempts = 8;
+  let order;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const orderNumber = await generateOrderNumber(Order, companyId, 'ORD');
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      order = await Order.create({ ...createPayload(), orderNumber });
+      break;
+    } catch (e) {
+      const isOrderNumberDup =
+        e &&
+        e.code === 11000 &&
+        (e.keyPattern?.orderNumber === 1 || (e.keyValue && Object.prototype.hasOwnProperty.call(e.keyValue, 'orderNumber')));
+      if (isOrderNumberDup) continue;
+      throw e;
+    }
+  }
+  if (!order) {
+    throw new ApiError(409, 'Could not assign a unique order number. Please try again.');
+  }
 
   await auditService.log({ companyId, userId: reqUser.userId, action: 'order.create', entityType: 'Order', entityId: order._id, changes: { after: order.toObject() } });
 
@@ -539,4 +550,4 @@ const cancel = async (companyId, id, reqUser) => {
   return order;
 };
 
-module.exports = { list, listAssignableReps, create, getById, update, deliver, returnOrder, cancel };
+module.exports = { list, create, getById, update, deliver, returnOrder, cancel };

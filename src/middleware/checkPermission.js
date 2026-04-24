@@ -43,4 +43,10 @@ const checkPermissionAny = (...requiredPermissions) => {
   };
 };
 
-module.exports = { checkPermission, checkPermissionAny };
+/**
+ * After `authenticate` + `companyScope` only. Use for dedicated `/lookup` (and similar)
+ * read endpoints — not for full resource `GET /` list APIs (those stay `checkPermission` gated).
+ */
+const allowLookupAccess = (_req, _res, next) => next();
+
+module.exports = { checkPermission, checkPermissionAny, allowLookupAccess };

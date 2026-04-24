@@ -3,12 +3,13 @@ const router = express.Router();
 const userController = require('../../controllers/user.controller');
 const { authenticate } = require('../../middleware/auth');
 const { companyScope } = require('../../middleware/companyScope');
-const { checkPermission } = require('../../middleware/checkPermission');
+const { checkPermission, allowLookupAccess } = require('../../middleware/checkPermission');
 const { validate } = require('../../middleware/validate');
 const { createUserSchema, updateUserSchema } = require('../../validators/user.validator');
 
 router.use(authenticate, companyScope);
 
+router.get('/assignable', allowLookupAccess, userController.assignable);
 router.get('/', checkPermission('users.view'), userController.list);
 router.post('/', checkPermission('users.create'), validate(createUserSchema), userController.create);
 router.get('/:id', checkPermission('users.view'), userController.getById);
