@@ -2,7 +2,9 @@ const jwt = require('jsonwebtoken');
 const env = require('../config/env');
 const ApiError = require('../utils/ApiError');
 const User = require('../models/User');
+const Role = require('../models/Role');
 const asyncHandler = require('./asyncHandler');
+const { resolveEffectivePermissions } = require('../utils/effectivePermissions');
 
 const authenticate = asyncHandler(async (req, _res, next) => {
   const authHeader = req.headers.authorization;
@@ -19,12 +21,24 @@ const authenticate = asyncHandler(async (req, _res, next) => {
     throw new ApiError(401, 'User not found or inactive');
   }
 
+  const useRb = String(env.USE_ROLE_BASED_AUTH || '1') !== '0';
+  let roleDoc = null;
+  if (user.roleId && useRb) {
+    roleDoc = await Role.findOne({
+      _id: user.roleId,
+      companyId: user.companyId,
+      isDeleted: { $ne: true }
+    }).lean();
+  }
+  const permissions = resolveEffectivePermissions(user, roleDoc, env.USE_ROLE_BASED_AUTH);
+
   req.user = {
     userId: user._id,
     companyId: user.companyId,
     activeCompanyId: user.activeCompanyId || null,
     role: user.role,
-    permissions: user.permissions || [],
+    roleId: user.roleId || null,
+    permissions,
     name: user.name,
     email: user.email
   };

@@ -1,9 +1,34 @@
+const mongoose = require('mongoose');
 const User = require('../models/User');
+const Role = require('../models/Role');
 const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const { ALL_PERMISSIONS } = require('../constants/permissions');
 const { ROLES } = require('../constants/enums');
+const { ADMIN_ACCESS } = require('../constants/rbac');
 const auditService = require('./audit.service');
+
+const applyRoleIdToUserPayload = async (companyId, data) => {
+  const next = { ...data };
+  const rid = data.roleId;
+  if (rid !== undefined && rid !== null && rid !== '' && mongoose.Types.ObjectId.isValid(rid)) {
+    const role = await Role.findOne({ _id: rid, companyId, isDeleted: { $ne: true } });
+    if (!role) throw new ApiError(400, 'Invalid role for this company');
+    next.role = (role.permissions || []).includes(ADMIN_ACCESS) ? ROLES.ADMIN : ROLES.MEDICAL_REP;
+    next.roleId = role._id;
+    next.permissions = [];
+    return next;
+  }
+  if (data.roleId === null || data.roleId === '') {
+    next.roleId = null;
+  } else if (data.roleId !== undefined && !mongoose.Types.ObjectId.isValid(data.roleId)) {
+    throw new ApiError(400, 'Invalid roleId');
+  }
+  if (data.role === ROLES.ADMIN) {
+    next.permissions = ALL_PERMISSIONS;
+  }
+  return next;
+};
 
 const list = async (companyId, query) => {
   const { page, limit, skip, sort, search } = parsePagination(query);
@@ -19,7 +44,11 @@ const list = async (companyId, query) => {
   }
 
   const [docs, total] = await Promise.all([
-    User.find(filter).sort(sort).skip(skip).limit(limit),
+    User.find(filter)
+      .sort(sort)
+      .skip(skip)
+      .limit(limit)
+      .populate('roleId', 'name code isSystem'),
     User.countDocuments(filter)
   ]);
 
@@ -36,11 +65,9 @@ const create = async (companyId, data, reqUser) => {
     throw new ApiError(409, 'User with this email already exists in this company');
   }
 
-  if (data.role === ROLES.ADMIN) {
-    data.permissions = ALL_PERMISSIONS;
-  }
+  const payload = await applyRoleIdToUserPayload(companyId, data);
 
-  const user = await User.create({ ...data, companyId, createdBy: reqUser.userId });
+  const user = await User.create({ ...payload, companyId, createdBy: reqUser.userId });
 
   await auditService.log({
     companyId,
@@ -55,7 +82,7 @@ const create = async (companyId, data, reqUser) => {
 };
 
 const getById = async (companyId, id) => {
-  const user = await User.findOne({ _id: id, companyId });
+  const user = await User.findOne({ _id: id, companyId }).populate('roleId', 'name code isSystem permissions');
   if (!user) throw new ApiError(404, 'User not found');
   return user;
 };
@@ -70,11 +97,12 @@ const update = async (companyId, id, data, reqUser) => {
 
   const before = user.toJSON();
 
-  if (data.role === ROLES.ADMIN) {
-    data.permissions = ALL_PERMISSIONS;
+  const payload = await applyRoleIdToUserPayload(companyId, data);
+  if (payload.password === '' || payload.password == null) {
+    delete payload.password;
   }
 
-  Object.assign(user, { ...data, updatedBy: reqUser.userId });
+  Object.assign(user, { ...payload, updatedBy: reqUser.userId });
   await user.save();
 
   await auditService.log({

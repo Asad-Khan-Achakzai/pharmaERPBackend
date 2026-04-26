@@ -12,7 +12,10 @@ const userSchema = new mongoose.Schema(
     email: { type: String, required: true, trim: true, lowercase: true },
     password: { type: String, required: true, select: false },
     role: { type: String, enum: Object.values(ROLES), required: true },
+    /** Company-scoped RBAC; when set, effective permissions come from Role only (see auth middleware). */
+    roleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Role', default: null, index: true },
     phone: { type: String, trim: true },
+    /** Legacy; ignored for authorization when roleId is set. */
     permissions: [{ type: String }],
     isActive: { type: Boolean, default: true },
     refreshToken: { type: String, select: false },

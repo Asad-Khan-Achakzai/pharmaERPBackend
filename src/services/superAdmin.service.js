@@ -8,6 +8,7 @@ const Expense = require('../models/Expense');
 const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const { generateTokens } = require('./auth.tokens');
+const { seedDefaultRolesForCompany } = require('./role.service');
 
 const notDeleted = { isDeleted: { $ne: true } };
 
@@ -33,7 +34,9 @@ const listCompanies = async (query) => {
 const createCompany = async (payload) => {
   const data = { ...payload };
   if (data.email === '') data.email = undefined;
-  return Company.create(data);
+  const company = await Company.create(data);
+  await seedDefaultRolesForCompany(company._id, {});
+  return company;
 };
 
 const updateCompany = async (id, payload) => {

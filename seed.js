@@ -3,6 +3,7 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const { roundPKR } = require('./src/utils/currency');
 const { generateOrderNumber } = require('./src/utils/orderNumber');
+const { seedDefaultRolesForCompany } = require('./src/services/role.service');
 const {
   Company,
   User,
@@ -106,21 +107,7 @@ async function createCompanyBundle({ rng, code, index }) {
     cashOpeningBalance: index === 0 ? 400000 : 250000
   });
 
-  const permissions = [
-    'dashboard.view',
-    'products.view',
-    'distributors.view',
-    'inventory.view',
-    'pharmacies.view',
-    'orders.view',
-    'orders.create',
-    'payments.view',
-    'payments.create',
-    'ledger.view',
-    'reports.view',
-    'attendance.view',
-    'attendance.mark'
-  ];
+  const { adminRole, medicalRole } = await seedDefaultRolesForCompany(company._id, {});
 
   const admin = await User.create({
     companyId: company._id,
@@ -128,6 +115,7 @@ async function createCompanyBundle({ rng, code, index }) {
     email: `admin.${code.toLowerCase()}@pharmaerp.pk`,
     password: 'Admin@123',
     role: ROLES.ADMIN,
+    roleId: adminRole._id,
     phone: `+92-300-11${index}11${index}`,
     permissions: []
   });
@@ -141,8 +129,9 @@ async function createCompanyBundle({ rng, code, index }) {
         email: `rep${i}.${code.toLowerCase()}@pharmaerp.pk`,
         password: 'Rep@1234',
         role: ROLES.MEDICAL_REP,
+        roleId: medicalRole._id,
         phone: `+92-321-${index}${i}${i}${i}${i}${i}${i}${i}`,
-        permissions,
+        permissions: [],
         createdBy: admin._id
       })
     );

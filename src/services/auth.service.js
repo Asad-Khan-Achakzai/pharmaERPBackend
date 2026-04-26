@@ -4,8 +4,9 @@ const User = require('../models/User');
 const Company = require('../models/Company');
 const ApiError = require('../utils/ApiError');
 const { ROLES } = require('../constants/enums');
-const { ALL_PERMISSIONS } = require('../constants/permissions');
 const { generateTokens } = require('./auth.tokens');
+const { seedDefaultRolesForCompany } = require('./role.service');
+const { formatUserForClient } = require('../utils/authUserPayload');
 
 const register = async ({ companyName, companyEmail, companyPhone, name, email, password }) => {
   const existingCompany = await Company.findOne({ email: companyEmail });
@@ -19,20 +20,23 @@ const register = async ({ companyName, companyEmail, companyPhone, name, email, 
     phone: companyPhone
   });
 
+  const { adminRole } = await seedDefaultRolesForCompany(company._id, {});
+
   const user = await User.create({
     companyId: company._id,
     name,
     email,
     password,
     role: ROLES.ADMIN,
-    permissions: ALL_PERMISSIONS
+    roleId: adminRole._id,
+    permissions: []
   });
 
   const tokens = generateTokens(user._id, company._id);
   user.refreshToken = tokens.refreshToken;
   await user.save();
 
-  return { user: user.toJSON(), company, tokens };
+  return { user: (await formatUserForClient(user._id)) || user.toJSON(), company, tokens };
 };
 
 const login = async (email, password, ip) => {
@@ -56,7 +60,7 @@ const login = async (email, password, ip) => {
   user.refreshToken = tokens.refreshToken;
   await user.save();
 
-  return { user: user.toJSON(), tokens };
+  return { user: (await formatUserForClient(user._id)) || user.toJSON(), tokens };
 };
 
 const refreshToken = async (token) => {
@@ -79,7 +83,7 @@ const refreshToken = async (token) => {
 };
 
 const getMe = async (userId) => {
-  const user = await User.findById(userId).populate('companyId').populate('activeCompanyId');
+  const user = await formatUserForClient(userId);
   if (!user) {
     throw new ApiError(404, 'User not found');
   }

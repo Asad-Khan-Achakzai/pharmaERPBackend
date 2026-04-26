@@ -2,14 +2,14 @@ const Product = require('../models/Product');
 const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const auditService = require('./audit.service');
+const { userHasPermission } = require('../utils/effectivePermissions');
 
 /** Cost-related fields; omitted from GET /products & GET /products/:id when user lacks products.viewCostPrice. */
 const PRODUCT_COST_PROJECTION_OMIT = '-casting -castingPercent';
 
 function canViewProductCostOnProductApi(reqUser) {
   if (!reqUser) return false;
-  if (reqUser.role === 'ADMIN' || reqUser.role === 'SUPER_ADMIN') return true;
-  return (reqUser.permissions || []).includes('products.viewCostPrice');
+  return userHasPermission(reqUser, 'products.viewCostPrice');
 }
 
 const list = async (companyId, query, reqUser) => {

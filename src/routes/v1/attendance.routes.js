@@ -4,7 +4,6 @@ const c = require('../../controllers/attendance.controller');
 const { authenticate } = require('../../middleware/auth');
 const { companyScope } = require('../../middleware/companyScope');
 const { checkPermission } = require('../../middleware/checkPermission');
-const { adminRepOrPermission } = require('../../middleware/attendanceAccess');
 const { validate, validateQuery } = require('../../middleware/validate');
 const {
   markAttendanceSchema,
@@ -16,20 +15,20 @@ const {
 
 router.use(authenticate, companyScope);
 
-router.post('/mark', adminRepOrPermission('attendance.mark'), validate(markAttendanceSchema), c.mark);
-router.post('/checkin', adminRepOrPermission('attendance.mark'), c.checkin);
-router.post('/checkout', adminRepOrPermission('attendance.mark'), c.checkout);
-router.get('/me/today', adminRepOrPermission('attendance.mark'), c.meToday);
-router.get('/today', adminRepOrPermission('attendance.view'), c.today);
+router.post('/mark', checkPermission('attendance.mark'), validate(markAttendanceSchema), c.mark);
+router.post('/checkin', checkPermission('attendance.mark'), c.checkin);
+router.post('/checkout', checkPermission('attendance.mark'), c.checkout);
+router.get('/me/today', checkPermission('attendance.mark'), c.meToday);
+router.get('/today', checkPermission('attendance.view'), c.today);
 router.post(
   '/admin/mark-absent-today',
-  adminRepOrPermission('attendance.view'),
+  checkPermission('admin.access'),
   validate(adminMarkAbsentTodaySchema),
   c.adminMarkAbsentToday
 );
 router.post(
   '/admin/set-today-status',
-  adminRepOrPermission('attendance.view'),
+  checkPermission('admin.access'),
   validate(adminSetTodayStatusSchema),
   c.adminSetTodayStatus
 );

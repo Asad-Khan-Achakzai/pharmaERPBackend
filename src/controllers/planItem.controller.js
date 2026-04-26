@@ -2,12 +2,12 @@ const planItemService = require('../services/planItem.service');
 const ApiResponse = require('../utils/ApiResponse');
 const ApiError = require('../utils/ApiError');
 const asyncHandler = require('../middleware/asyncHandler');
-const { ROLES } = require('../constants/enums');
+const { userHasPermission } = require('../utils/effectivePermissions');
 
 const listToday = asyncHandler(async (req, res) => {
   let targetId = req.query.employeeId || req.user.userId;
   if (String(targetId) !== String(req.user.userId)) {
-    if (![ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.user.role)) {
+    if (!userHasPermission(req.user, 'admin.access')) {
       throw new ApiError(403, 'Only administrators can view another employee\'s plan items');
     }
   }

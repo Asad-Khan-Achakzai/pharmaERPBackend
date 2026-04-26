@@ -3,6 +3,7 @@ const router = express.Router();
 
 const authRoutes = require('./auth.routes');
 const userRoutes = require('./user.routes');
+const roleRoutes = require('./role.routes');
 const productRoutes = require('./product.routes');
 const distributorRoutes = require('./distributor.routes');
 const inventoryRoutes = require('./inventory.routes');
@@ -30,6 +31,7 @@ const superAdminRoutes = require('./superAdmin.routes');
 router.use('/auth', authRoutes);
 router.use('/super-admin', superAdminRoutes);
 router.use('/users', userRoutes);
+router.use('/roles', roleRoutes);
 router.use('/products', productRoutes);
 router.use('/distributors', distributorRoutes);
 router.use('/inventory', inventoryRoutes);

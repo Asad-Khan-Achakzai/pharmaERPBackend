@@ -1,4 +1,5 @@
 const PERMISSIONS = {
+  system:       ['admin.access', 'roles.manage'],
   dashboard:    ['view'],
   products:     ['view', 'create', 'edit', 'delete', 'viewCostPrice'],
   distributors: ['view', 'create', 'edit', 'delete'],

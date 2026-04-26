@@ -5,6 +5,7 @@ const supplierService = require('../services/supplier.service');
 const ApiResponse = require('../utils/ApiResponse');
 const ApiError = require('../utils/ApiError');
 const asyncHandler = require('../middleware/asyncHandler');
+const { userHasPermission } = require('../utils/effectivePermissions');
 
 const dashboard = asyncHandler(async (req, res) => { ApiResponse.success(res, await reportService.dashboard(req.companyId)); });
 const sales = asyncHandler(async (req, res) => { ApiResponse.success(res, await reportService.sales(req.companyId, req.query.from, req.query.to)); });
@@ -76,7 +77,7 @@ const supplierBalanceReport = asyncHandler(async (req, res) => {
 });
 
 const patchCompanyCashOpening = asyncHandler(async (req, res) => {
-  if (req.user.role !== 'ADMIN' && req.user.role !== 'SUPER_ADMIN') {
+  if (!userHasPermission(req.user, 'admin.access')) {
     throw new ApiError(403, 'Only administrators can update cash opening balance');
   }
   ApiResponse.success(

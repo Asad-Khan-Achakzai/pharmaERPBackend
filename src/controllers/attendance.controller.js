@@ -3,10 +3,10 @@ const salaryStructureService = require('../services/salaryStructure.service');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../middleware/asyncHandler');
 const ApiError = require('../utils/ApiError');
-const { ROLES } = require('../constants/enums');
+const { userHasPermission } = require('../utils/effectivePermissions');
 
 const assertEmployeeScope = (req, employeeId) => {
-  if (req.user.role === ROLES.ADMIN || req.user.role === ROLES.SUPER_ADMIN) return;
+  if (userHasPermission(req.user, 'admin.access')) return;
   if (employeeId !== req.user.userId) throw new ApiError(403, 'You can only access your own attendance');
 };
 
@@ -56,7 +56,7 @@ const monthlySummary = asyncHandler(async (req, res) => {
 
 /** Only ADMIN / SUPER_ADMIN — correct mistaken check-in for an employee (today, Pacific). */
 const adminMarkAbsentToday = asyncHandler(async (req, res) => {
-  if (req.user.role !== ROLES.ADMIN && req.user.role !== ROLES.SUPER_ADMIN) {
+  if (!userHasPermission(req.user, 'admin.access')) {
     throw new ApiError(403, 'Only administrators can mark employees absent');
   }
   const { employeeId } = req.body;
@@ -67,7 +67,7 @@ const adminMarkAbsentToday = asyncHandler(async (req, res) => {
 
 /** Only ADMIN / SUPER_ADMIN — set present / absent / half-day / leave for today (Pacific). */
 const adminSetTodayStatus = asyncHandler(async (req, res) => {
-  if (req.user.role !== ROLES.ADMIN && req.user.role !== ROLES.SUPER_ADMIN) {
+  if (!userHasPermission(req.user, 'admin.access')) {
     throw new ApiError(403, 'Only administrators can set employee attendance');
   }
   const { employeeId, status } = req.body;
