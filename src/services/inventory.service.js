@@ -352,6 +352,20 @@ const getTransfers = async (companyId, query) => {
   const { page, limit, skip, sort } = parsePagination(query);
   const filter = { companyId };
   if (query.distributorId) filter.distributorId = query.distributorId;
+  if (query.createdAtFrom || query.createdAtTo) {
+    filter.createdAt = {};
+    if (query.createdAtFrom) {
+      const from = new Date(query.createdAtFrom);
+      if (!Number.isNaN(from.getTime())) filter.createdAt.$gte = from;
+    }
+    if (query.createdAtTo) {
+      const to = new Date(query.createdAtTo);
+      if (!Number.isNaN(to.getTime())) filter.createdAt.$lte = to;
+    }
+    if (Object.keys(filter.createdAt).length === 0) {
+      delete filter.createdAt;
+    }
+  }
 
   const [docs, total] = await Promise.all([
     StockTransfer.find(filter)

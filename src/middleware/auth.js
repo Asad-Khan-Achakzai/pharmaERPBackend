@@ -17,8 +17,11 @@ const authenticate = asyncHandler(async (req, _res, next) => {
   const decoded = jwt.verify(token, env.JWT_ACCESS_SECRET);
 
   const user = await User.findById(decoded.userId).select('+permissions');
-  if (!user || !user.isActive) {
-    throw new ApiError(401, 'User not found or inactive');
+  if (!user) {
+    throw new ApiError(401, 'Authentication required');
+  }
+  if (!user.isActive) {
+    throw new ApiError(401, 'Your account is deactivated. Please contact an administrator.');
   }
 
   const useRb = String(env.USE_ROLE_BASED_AUTH || '1') !== '0';

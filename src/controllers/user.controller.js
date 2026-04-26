@@ -28,9 +28,9 @@ const update = asyncHandler(async (req, res) => {
   ApiResponse.success(res, user, 'User updated');
 });
 
-const remove = asyncHandler(async (req, res) => {
-  await userService.remove(req.companyId, req.params.id, req.user);
-  ApiResponse.success(res, null, 'User deactivated');
+const setStatus = asyncHandler(async (req, res) => {
+  const user = await userService.setStatus(req.companyId, req.params.id, req.body, req.user);
+  ApiResponse.success(res, user, user.isActive ? 'User activated successfully' : 'User deactivated successfully');
 });
 
-module.exports = { assignable, list, create, getById, update, remove };
+module.exports = { assignable, list, create, getById, update, setStatus };

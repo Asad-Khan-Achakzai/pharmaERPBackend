@@ -9,6 +9,14 @@ const { seedDefaultRolesForCompany } = require('./role.service');
 const { formatUserForClient } = require('../utils/authUserPayload');
 
 const register = async ({ companyName, companyEmail, companyPhone, name, email, password }) => {
+  const userEmail = email ? String(email).toLowerCase().trim() : '';
+  if (userEmail) {
+    const existingUser = await User.findOne({ email: userEmail });
+    if (existingUser) {
+      throw new ApiError(409, 'User with this email already exists');
+    }
+  }
+
   const existingCompany = await Company.findOne({ email: companyEmail });
   if (existingCompany) {
     throw new ApiError(409, 'A company with this email already exists');
@@ -25,7 +33,7 @@ const register = async ({ companyName, companyEmail, companyPhone, name, email, 
   const user = await User.create({
     companyId: company._id,
     name,
-    email,
+    email: userEmail,
     password,
     role: ROLES.ADMIN,
     roleId: adminRole._id,
@@ -40,13 +48,14 @@ const register = async ({ companyName, companyEmail, companyPhone, name, email, 
 };
 
 const login = async (email, password, ip) => {
-  const user = await User.findOne({ email }).select('+password +refreshToken');
+  const emailNorm = email ? String(email).toLowerCase().trim() : '';
+  const user = await User.findOne({ email: emailNorm }).select('+password +refreshToken');
   if (!user) {
     throw new ApiError(401, 'Invalid email or password');
   }
 
   if (!user.isActive) {
-    throw new ApiError(403, 'Account is deactivated');
+    throw new ApiError(403, 'Your account is deactivated. Please contact an administrator.');
   }
 
   const isMatch = await user.comparePassword(password);
@@ -73,6 +82,10 @@ const refreshToken = async (token) => {
 
   if (!user || user.refreshToken !== token) {
     throw new ApiError(401, 'Invalid refresh token');
+  }
+
+  if (!user.isActive) {
+    throw new ApiError(403, 'Your account is deactivated. Please contact an administrator.');
   }
 
   const tokens = generateTokens(user._id, user.companyId);

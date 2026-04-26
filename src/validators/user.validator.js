@@ -35,4 +35,8 @@ const updateUserSchema = Joi.object({
   isActive: Joi.boolean()
 }).min(1);
 
-module.exports = { createUserSchema, updateUserSchema };
+const updateUserStatusSchema = Joi.object({
+  isActive: Joi.boolean().required()
+});
+
+module.exports = { createUserSchema, updateUserSchema, updateUserStatusSchema };

@@ -8,6 +8,8 @@ const { ROLES } = require('../constants/enums');
 const { ADMIN_ACCESS } = require('../constants/rbac');
 const auditService = require('./audit.service');
 
+const normalizeEmail = (e) => (e == null || e === '' ? '' : String(e).toLowerCase().trim());
+
 const applyRoleIdToUserPayload = async (companyId, data) => {
   const next = { ...data };
   const rid = data.roleId;
@@ -60,12 +62,16 @@ const create = async (companyId, data, reqUser) => {
     throw new ApiError(400, 'SUPER_ADMIN accounts cannot be created from tenant user management');
   }
 
-  const existing = await User.findOne({ companyId, email: data.email });
+  const email = normalizeEmail(data.email);
+  if (!email) {
+    throw new ApiError(400, 'Valid email is required');
+  }
+  const existing = await User.findOne({ email });
   if (existing) {
-    throw new ApiError(409, 'User with this email already exists in this company');
+    throw new ApiError(409, 'User with this email already exists');
   }
 
-  const payload = await applyRoleIdToUserPayload(companyId, data);
+  const payload = await applyRoleIdToUserPayload(companyId, { ...data, email });
 
   const user = await User.create({ ...payload, companyId, createdBy: reqUser.userId });
 
@@ -95,9 +101,23 @@ const update = async (companyId, id, data, reqUser) => {
     throw new ApiError(400, 'SUPER_ADMIN role cannot be changed from tenant user management');
   }
 
+  if (data.email !== undefined && data.email != null) {
+    const nextEmail = normalizeEmail(data.email);
+    if (nextEmail && nextEmail !== String(user.email).toLowerCase().trim()) {
+      const taken = await User.findOne({ email: nextEmail, _id: { $ne: user._id } });
+      if (taken) {
+        throw new ApiError(409, 'User with this email already exists');
+      }
+    }
+  }
+
   const before = user.toJSON();
 
-  const payload = await applyRoleIdToUserPayload(companyId, data);
+  const toApply = { ...data };
+  if (data.email !== undefined && data.email != null) {
+    toApply.email = normalizeEmail(data.email);
+  }
+  const payload = await applyRoleIdToUserPayload(companyId, toApply);
   if (payload.password === '' || payload.password == null) {
     delete payload.password;
   }
@@ -117,26 +137,52 @@ const update = async (companyId, id, data, reqUser) => {
   return user;
 };
 
-const remove = async (companyId, id, reqUser) => {
+/**
+ * Deactivate/activate a user in place (isActive). Does not remove the document — preserves
+ * references in orders, attendance, etc.
+ */
+const setStatus = async (companyId, id, { isActive }, reqUser) => {
+  if (typeof isActive !== 'boolean') {
+    throw new ApiError(400, 'isActive must be a boolean');
+  }
+
   const user = await User.findOne({ _id: id, companyId });
   if (!user) throw new ApiError(404, 'User not found');
 
   if (user._id.toString() === reqUser.userId.toString()) {
-    throw new ApiError(400, 'Cannot deactivate your own account');
+    throw new ApiError(400, 'You cannot change your own active status');
   }
 
-  await user.softDelete(reqUser.userId);
+  if (user.role === ROLES.SUPER_ADMIN) {
+    throw new ApiError(400, 'Cannot change active status of a platform account from tenant user management');
+  }
+
+  if (isActive === false && user.isActive) {
+    const otherActive = await User.countDocuments({
+      companyId,
+      isActive: true,
+      _id: { $ne: user._id }
+    });
+    if (otherActive === 0) {
+      throw new ApiError(400, 'Cannot deactivate the last active user in this company');
+    }
+  }
+
+  const before = user.toJSON();
+  user.isActive = isActive;
+  user.updatedBy = reqUser.userId;
+  await user.save();
 
   await auditService.log({
     companyId,
     userId: reqUser.userId,
-    action: 'user.delete',
+    action: isActive ? 'user.activate' : 'user.deactivate',
     entityType: 'User',
     entityId: user._id,
-    changes: { after: { isActive: false } }
+    changes: { before, after: user.toJSON() }
   });
 
   return user;
 };
 
-module.exports = { list, create, getById, update, remove };
+module.exports = { list, create, getById, update, setStatus };
