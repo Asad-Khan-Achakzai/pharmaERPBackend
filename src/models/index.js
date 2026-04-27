@@ -1,6 +1,7 @@
 module.exports = {
   Company: require('./Company'),
   User: require('./User'),
+  UserCompanyAccess: require('./UserCompanyAccess'),
   Product: require('./Product'),
   Distributor: require('./Distributor'),
   DistributorInventory: require('./DistributorInventory'),

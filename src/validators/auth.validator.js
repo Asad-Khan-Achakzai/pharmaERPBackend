@@ -23,4 +23,8 @@ const changePasswordSchema = Joi.object({
   newPassword: Joi.string().required().min(6).max(128)
 });
 
-module.exports = { registerSchema, loginSchema, refreshTokenSchema, changePasswordSchema };
+const switchCompanySchema = Joi.object({
+  companyId: Joi.string().required()
+});
+
+module.exports = { registerSchema, loginSchema, refreshTokenSchema, changePasswordSchema, switchCompanySchema };

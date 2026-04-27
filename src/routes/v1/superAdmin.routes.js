@@ -3,19 +3,51 @@ const router = express.Router();
 const superAdminController = require('../../controllers/superAdmin.controller');
 const { authenticate } = require('../../middleware/auth');
 const { requireSuperAdmin } = require('../../middleware/requireSuperAdmin');
-const { validate } = require('../../middleware/validate');
+const { requireSuperAdminOrPlatformCompaniesManage } = require('../../middleware/requireSuperAdminOrPlatformCompaniesManage');
+const { resolveHomePermissions } = require('../../middleware/resolveHomePermissions');
+const { validate, validateQuery } = require('../../middleware/validate');
 const {
   createCompanySchema,
   updateCompanySchema,
-  switchCompanySchema
+  switchCompanySchema,
+  listPlatformUsersQuerySchema,
+  createPlatformUserBodySchema,
+  updatePlatformUserBodySchema
 } = require('../../validators/superAdmin.validator');
 
-router.use(authenticate, requireSuperAdmin);
+const asSuperAdmin = [authenticate, requireSuperAdmin];
+const asSuperOrPlatformCompanies = [
+  authenticate,
+  resolveHomePermissions,
+  requireSuperAdminOrPlatformCompaniesManage
+];
 
-router.get('/companies', superAdminController.listCompanies);
-router.post('/companies', validate(createCompanySchema), superAdminController.createCompany);
-router.patch('/companies/:id', validate(updateCompanySchema), superAdminController.updateCompany);
-router.get('/companies/:id/summary', superAdminController.getCompanySummary);
-router.post('/switch-company', validate(switchCompanySchema), superAdminController.switchCompany);
+/** List + platform user CRUD: Super Admin, or `platform.companies.manage` (read-only list for company picker + management). */
+router.get('/companies', asSuperOrPlatformCompanies, superAdminController.listCompanies);
+router.post('/companies', asSuperAdmin, validate(createCompanySchema), superAdminController.createCompany);
+router.patch('/companies/:id', asSuperAdmin, validate(updateCompanySchema), superAdminController.updateCompany);
+router.get('/companies/:id/summary', asSuperAdmin, superAdminController.getCompanySummary);
+router.post('/switch-company', asSuperAdmin, validate(switchCompanySchema), superAdminController.switchCompany);
+
+router.get(
+  '/platform-users',
+  asSuperOrPlatformCompanies,
+  validateQuery(listPlatformUsersQuerySchema),
+  superAdminController.listPlatformUsers
+);
+router.get('/platform-users/:id', asSuperOrPlatformCompanies, superAdminController.getPlatformUser);
+router.post(
+  '/platform-users',
+  asSuperOrPlatformCompanies,
+  validate(createPlatformUserBodySchema),
+  superAdminController.createPlatformUser
+);
+router.put(
+  '/platform-users/:id',
+  asSuperOrPlatformCompanies,
+  validate(updatePlatformUserBodySchema),
+  superAdminController.updatePlatformUser
+);
+router.delete('/platform-users/:id', asSuperOrPlatformCompanies, superAdminController.deletePlatformUser);
 
 module.exports = router;

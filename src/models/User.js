@@ -1,12 +1,14 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
-const { ROLES } = require('../constants/enums');
+const { ROLES, USER_TYPES } = require('../constants/enums');
 const { softDeletePlugin } = require('../plugins/softDelete');
 
 const userSchema = new mongoose.Schema(
   {
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', required: true },
-    /** For SUPER_ADMIN: operating tenant when using business APIs (server-side source of truth). */
+    /** COMPANY: home tenant. PLATFORM: primary/home company id; not used as active tenant for APIs. */
+    userType: { type: String, enum: Object.values(USER_TYPES), default: USER_TYPES.COMPANY, index: true },
+    /** For SUPER_ADMIN / legacy: last operating tenant; JWT is source of truth for active context. */
     activeCompanyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', default: null },
     name: { type: String, required: true, trim: true },
     email: { type: String, required: true, trim: true, lowercase: true },
@@ -52,3 +54,4 @@ userSchema.methods.toJSON = function () {
 userSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model('User', userSchema);
+module.exports.USER_TYPES = USER_TYPES;

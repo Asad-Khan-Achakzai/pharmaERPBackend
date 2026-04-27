@@ -27,9 +27,11 @@ const reportRoutes = require('./report.routes');
 const supplierRoutes = require('./supplier.routes');
 const auditLogRoutes = require('./auditLog.routes');
 const superAdminRoutes = require('./superAdmin.routes');
+const platformRoutes = require('./platform.routes');
 
 router.use('/auth', authRoutes);
 router.use('/super-admin', superAdminRoutes);
+router.use('/platform', platformRoutes);
 router.use('/users', userRoutes);
 router.use('/roles', roleRoutes);
 router.use('/products', productRoutes);

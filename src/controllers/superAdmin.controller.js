@@ -27,10 +27,40 @@ const switchCompany = asyncHandler(async (req, res) => {
   ApiResponse.success(res, { tokens, user, company }, 'Company context updated');
 });
 
+const listPlatformUsers = asyncHandler(async (req, res) => {
+  const result = await superAdminService.listPlatformUsers(req.query);
+  ApiResponse.paginated(res, result, 'Platform users');
+});
+
+const getPlatformUser = asyncHandler(async (req, res) => {
+  const user = await superAdminService.getPlatformUserById(req.params.id);
+  ApiResponse.success(res, user);
+});
+
+const createPlatformUser = asyncHandler(async (req, res) => {
+  const user = await superAdminService.createPlatformUser(req.body);
+  ApiResponse.created(res, user, 'Platform user created');
+});
+
+const updatePlatformUser = asyncHandler(async (req, res) => {
+  const user = await superAdminService.updatePlatformUser(req.params.id, req.body);
+  ApiResponse.success(res, user, 'Platform user updated');
+});
+
+const deletePlatformUser = asyncHandler(async (req, res) => {
+  const result = await superAdminService.deletePlatformUser(req.params.id, req.user.userId);
+  ApiResponse.success(res, result, 'Platform user removed');
+});
+
 module.exports = {
   listCompanies,
   createCompany,
   updateCompany,
   getCompanySummary,
-  switchCompany
+  switchCompany,
+  listPlatformUsers,
+  getPlatformUser,
+  createPlatformUser,
+  updatePlatformUser,
+  deletePlatformUser
 };

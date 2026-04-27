@@ -4,6 +4,12 @@ const ROLES = {
   MEDICAL_REP: 'MEDICAL_REP'
 };
 
+/** Tenant model: company users vs platform (multi-company) users. */
+const USER_TYPES = {
+  COMPANY: 'COMPANY',
+  PLATFORM: 'PLATFORM'
+};
+
 const ORDER_STATUS = {
   PENDING: 'PENDING',
   PARTIALLY_DELIVERED: 'PARTIALLY_DELIVERED',
@@ -147,6 +153,7 @@ const SUPPLIER_PAYMENT_VERIFICATION = {
 
 module.exports = {
   ROLES,
+  USER_TYPES,
   ORDER_STATUS,
   LEDGER_TYPE,
   LEDGER_ENTITY_TYPE,

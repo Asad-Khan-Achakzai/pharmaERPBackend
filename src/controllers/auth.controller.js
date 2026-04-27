@@ -19,7 +19,7 @@ const refreshToken = asyncHandler(async (req, res) => {
 });
 
 const getMe = asyncHandler(async (req, res) => {
-  const user = await authService.getMe(req.user.userId);
+  const user = await authService.getMe(req.user.userId, req.jwtAccess);
   ApiResponse.success(res, user);
 });
 
@@ -28,4 +28,10 @@ const changePassword = asyncHandler(async (req, res) => {
   ApiResponse.success(res, null, 'Password changed successfully');
 });
 
-module.exports = { register, login, refreshToken, getMe, changePassword };
+const switchCompany = asyncHandler(async (req, res) => {
+  const { companyId } = req.body;
+  const data = await authService.switchCompany(req.user.userId, companyId);
+  ApiResponse.success(res, data, 'Company context updated');
+});
+
+module.exports = { register, login, refreshToken, getMe, changePassword, switchCompany };

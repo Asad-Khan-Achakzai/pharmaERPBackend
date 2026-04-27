@@ -16,7 +16,8 @@ const PERMISSIONS = {
   attendance:   ['view', 'mark'],
   reports:      ['view'],
   suppliers:    ['view', 'manage'],
-  users:        ['view', 'create', 'edit', 'delete']
+  users:        ['view', 'create', 'edit', 'delete'],
+  platform:     ['dashboard.view', 'companies.manage']
 };
 
 const ALL_PERMISSIONS = [];

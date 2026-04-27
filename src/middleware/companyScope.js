@@ -1,27 +1,71 @@
 const ApiError = require('../utils/ApiError');
-const { ROLES } = require('../constants/enums');
+const { USER_TYPES } = require('../constants/enums');
+const { resolveEffectivePermissions } = require('../utils/effectivePermissions');
+const { effectiveUserType } = require('../utils/jwtAccess');
+const Role = require('../models/Role');
+const User = require('../models/User');
+const env = require('../config/env');
+const { hasAccessToCompany } = require('../utils/platformAccess.util');
+const mongoose = require('mongoose');
+const asyncHandler = require('./asyncHandler');
 
-const companyScope = (req, _res, next) => {
+const companyScope = asyncHandler(async (req, _res, next) => {
   if (!req.user) {
     return next(new ApiError(401, 'Authentication required'));
   }
+  if (!req.jwtAccess) {
+    return next(new ApiError(401, 'Authentication required'));
+  }
 
-  if (req.user.role === ROLES.SUPER_ADMIN) {
-    if (!req.user.activeCompanyId) {
+  const { jwtAccess } = req;
+  const userDoc = req.user._fromDb || (await User.findById(req.user.userId).select('+permissions').lean());
+  if (!userDoc) {
+    return next(new ApiError(401, 'Authentication required'));
+  }
+
+  if (effectiveUserType(userDoc) === USER_TYPES.PLATFORM) {
+    if (!jwtAccess.tenantCompanyId) {
       return next(
-        new ApiError(400, 'No company selected. Open Super Admin and choose a company to continue.')
+        new ApiError(403, 'No company selected. Select a company from the list or use Switch company.')
       );
     }
-    req.companyId = req.user.activeCompanyId;
-    return next();
+    const ok = await hasAccessToCompany(userDoc, jwtAccess.tenantCompanyId);
+    if (!ok) {
+      return next(new ApiError(403, 'Not allowed to access this company or access was revoked.'));
+    }
+    req.companyId = new mongoose.Types.ObjectId(String(jwtAccess.tenantCompanyId));
+  } else {
+    const home = String(userDoc.companyId);
+    const tenant = jwtAccess.tenantCompanyId ? String(jwtAccess.tenantCompanyId) : home;
+    if (tenant !== home) {
+      return next(new ApiError(403, 'Invalid session'));
+    }
+    req.companyId = new mongoose.Types.ObjectId(home);
   }
 
-  if (!req.user.companyId) {
-    return next(new ApiError(401, 'Company context required'));
+  const useRb = String(env.USE_ROLE_BASED_AUTH || '1') !== '0';
+  let roleDoc = null;
+  if (userDoc.roleId && useRb) {
+    roleDoc = await Role.findOne({
+      _id: userDoc.roleId,
+      companyId: req.companyId,
+      isDeleted: { $ne: true }
+    }).lean();
   }
+  const permissions = resolveEffectivePermissions(userDoc, roleDoc, env.USE_ROLE_BASED_AUTH);
 
-  req.companyId = req.user.companyId;
+  req.user = {
+    userId: userDoc._id,
+    companyId: userDoc.companyId,
+    activeCompanyId: userDoc.activeCompanyId || null,
+    role: userDoc.role,
+    roleId: userDoc.roleId || null,
+    permissions,
+    name: userDoc.name,
+    email: userDoc.email
+  };
+
   next();
-};
+});
 
 module.exports = { companyScope };
