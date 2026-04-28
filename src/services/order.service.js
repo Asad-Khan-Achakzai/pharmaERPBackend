@@ -13,7 +13,7 @@ const Pharmacy = require('../models/Pharmacy');
 const User = require('../models/User');
 const ApiError = require('../utils/ApiError');
 const { roundPKR } = require('../utils/currency');
-const { generateOrderNumber } = require('../utils/orderNumber');
+const { getNextSequenceNumber } = require('../utils/orderNumber');
 const { parsePagination } = require('../utils/pagination');
 const { ORDER_STATUS, LEDGER_TYPE, LEDGER_REFERENCE_TYPE, TRANSACTION_TYPE, LEDGER_ENTITY_TYPE } = require('../constants/enums');
 const auditService = require('./audit.service');
@@ -124,27 +124,8 @@ const create = async (companyId, data, reqUser) => {
     createdBy: reqUser.userId
   });
 
-  /** Uniqueness on orderNumber: retry if two requests race or legacy numbering edge cases. */
-  const maxAttempts = 8;
-  let order;
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const orderNumber = await generateOrderNumber(Order, companyId, 'ORD');
-    try {
-      // eslint-disable-next-line no-await-in-loop
-      order = await Order.create({ ...createPayload(), orderNumber });
-      break;
-    } catch (e) {
-      const isOrderNumberDup =
-        e &&
-        e.code === 11000 &&
-        (e.keyPattern?.orderNumber === 1 || (e.keyValue && Object.prototype.hasOwnProperty.call(e.keyValue, 'orderNumber')));
-      if (isOrderNumberDup) continue;
-      throw e;
-    }
-  }
-  if (!order) {
-    throw new ApiError(409, 'Could not assign a unique order number. Please try again.');
-  }
+  const orderNumber = await getNextSequenceNumber(companyId, 'ORD');
+  const order = await Order.create({ ...createPayload(), orderNumber });
 
   await auditService.log({ companyId, userId: reqUser.userId, action: 'order.create', entityType: 'Order', entityId: order._id, changes: { after: order.toObject() } });
 
@@ -319,7 +300,7 @@ const deliver = async (companyId, orderId, deliveryItems, reqUser) => {
     order.updatedBy = reqUser.userId;
     await order.save({ session });
 
-    const invoiceNumber = await generateOrderNumber(DeliveryRecord, companyId, 'INV');
+    const invoiceNumber = await getNextSequenceNumber(companyId, 'INV', { session });
 
     const pharmacyNetPayable = totalAmount;
     const [delivery] = await DeliveryRecord.create(

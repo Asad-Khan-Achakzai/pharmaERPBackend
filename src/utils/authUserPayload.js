@@ -1,11 +1,11 @@
 const User = require('../models/User');
-const Role = require('../models/Role');
 const Company = require('../models/Company');
 const env = require('../config/env');
 const { ROLES } = require('../constants/enums');
 const { USER_TYPES } = require('../constants/enums');
 const { ensureDefaultRolesForCompany } = require('../services/role.service');
 const { resolveEffectivePermissions } = require('./effectivePermissions');
+const { resolveRoleDocForTenant } = require('./resolveRoleForTenant');
 const { effectiveUserType } = require('./jwtAccess');
 const { getPlatformAllowedCompanyIds } = require('./platformAccess.util');
 const mongoose = require('mongoose');
@@ -45,20 +45,23 @@ const formatUserForClient = async (userId, options = {}) => {
     companyIdForRole = resolvedTenantCompanyId;
   }
 
-  const roleDoc =
-    user.roleId && useRb
-      ? await Role.findOne({
-        _id: user.roleId,
-        companyId: new mongoose.Types.ObjectId(String(companyIdForRole)),
-        isDeleted: { $ne: true }
-      }).lean()
-      : null;
+  const roleDoc = user.roleId && useRb ? await resolveRoleDocForTenant(user, companyIdForRole) : null;
   const permissions = resolveEffectivePermissions(user, roleDoc, env.USE_ROLE_BASED_AUTH);
   const { password, refreshToken, ...rest } = user;
+  /** Tenant-aligned role metadata for dashboard UI only (same roleDoc as effective permissions). Not used for authorization. */
+  let resolvedRole = null;
+  if (roleDoc) {
+    resolvedRole = {
+      code: roleDoc.code != null ? roleDoc.code : null,
+      isSystem: Boolean(roleDoc.isSystem),
+      name: roleDoc.name || undefined
+    };
+  }
   const out = {
     ...rest,
     permissions,
-    userType
+    userType,
+    resolvedRole
   };
 
   if (userType === USER_TYPES.PLATFORM && includeAllowedCompanies) {

@@ -24,6 +24,7 @@ const payrollRoutes = require('./payroll.routes');
 const attendanceRoutes = require('./attendance.routes');
 const salaryStructureRoutes = require('./salaryStructure.routes');
 const reportRoutes = require('./report.routes');
+const dashboardRoutes = require('./dashboard.routes');
 const supplierRoutes = require('./supplier.routes');
 const auditLogRoutes = require('./auditLog.routes');
 const superAdminRoutes = require('./superAdmin.routes');
@@ -54,6 +55,7 @@ router.use('/payroll', payrollRoutes);
 router.use('/attendance', attendanceRoutes);
 router.use('/salary-structures', salaryStructureRoutes);
 router.use('/reports', reportRoutes);
+router.use('/dashboard', dashboardRoutes);
 router.use('/suppliers', supplierRoutes);
 router.use('/audit-logs', auditLogRoutes);
 

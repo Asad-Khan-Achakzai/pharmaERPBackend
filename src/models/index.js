@@ -2,6 +2,7 @@ module.exports = {
   Company: require('./Company'),
   User: require('./User'),
   UserCompanyAccess: require('./UserCompanyAccess'),
+  Role: require('./Role'),
   Product: require('./Product'),
   Distributor: require('./Distributor'),
   DistributorInventory: require('./DistributorInventory'),
@@ -10,7 +11,9 @@ module.exports = {
   Doctor: require('./Doctor'),
   DoctorActivity: require('./DoctorActivity'),
   Order: require('./Order'),
+  OrderCounter: require('./OrderCounter'),
   DeliveryRecord: require('./DeliveryRecord'),
+  Collection: require('./Collection'),
   ReturnRecord: require('./ReturnRecord'),
   Ledger: require('./Ledger'),
   Payment: require('./Payment'),
@@ -25,5 +28,6 @@ module.exports = {
   Attendance: require('./Attendance'),
   AuditLog: require('./AuditLog'),
   Supplier: require('./Supplier'),
-  SupplierLedger: require('./SupplierLedger')
+  SupplierLedger: require('./SupplierLedger'),
+  Settlement: require('./Settlement')
 };

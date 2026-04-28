@@ -16,9 +16,10 @@ const {
 router.use(authenticate, companyScope);
 
 router.post('/mark', checkPermission('attendance.mark'), validate(markAttendanceSchema), c.mark);
-router.post('/checkin', checkPermission('attendance.mark'), c.checkin);
-router.post('/checkout', checkPermission('attendance.mark'), c.checkout);
-router.get('/me/today', checkPermission('attendance.mark'), c.meToday);
+/** Self-service: only `req.user.userId` — any authenticated company user may check in/out and read own today. */
+router.post('/checkin', c.checkin);
+router.post('/checkout', c.checkout);
+router.get('/me/today', c.meToday);
 router.get('/today', checkPermission('attendance.view'), c.today);
 router.post(
   '/admin/mark-absent-today',

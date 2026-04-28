@@ -11,6 +11,7 @@ const Expense = require('../models/Expense');
 const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const { generateTokens } = require('./auth.tokens');
+const { formatUserForClient } = require('../utils/authUserPayload');
 
 const notDeleted = { isDeleted: { $ne: true } };
 
@@ -107,9 +108,10 @@ const switchCompany = async (userId, companyId) => {
   user.refreshToken = tokens.refreshToken;
   await user.save();
 
+  const u = await formatUserForClient(userId, { resolvedTenantCompanyId: String(company._id) });
   return {
     tokens,
-    user: user.toJSON(),
+    user: u,
     company: { _id: company._id, name: company.name, city: company.city, currency: company.currency }
   };
 };

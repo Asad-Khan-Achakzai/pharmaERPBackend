@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "seed": "node seed.js --drop",
+    "seed": "node scripts/seed/index.js --drop",
     "add-super-admin": "node scripts/addSuperAdmin.js"
   },
   "dependencies": {

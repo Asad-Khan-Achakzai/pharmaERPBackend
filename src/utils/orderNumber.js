@@ -1,38 +1,49 @@
 const mongoose = require('mongoose');
+const OrderCounter = require('../models/OrderCounter');
 
-const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-/**
- * Per-company, per-day sequence: ORD-YYYYMMDD-####
- * Max sequence is computed numerically (not lexicographic string sort) so e.g. ...-1000 sorts after ...-999.
- */
-const generateOrderNumber = async (Model, companyId, prefix = 'ORD') => {
-  const today = new Date();
-  const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
-  const pattern = `${prefix}-${dateStr}-`;
-  const companyObjectId = typeof companyId === 'string' ? new mongoose.Types.ObjectId(companyId) : companyId;
-  const regex = new RegExp(`^${escapeRegex(pattern)}`);
-
-  const [row] = await Model.aggregate([
-    { $match: { companyId: companyObjectId, orderNumber: { $regex: regex } } },
-    {
-      $project: {
-        seq: {
-          $convert: {
-            input: { $ifNull: [{ $arrayElemAt: [{ $split: ['$orderNumber', '-'] }, 2] }, '0'] },
-            to: 'int',
-            onError: 0,
-            onNull: 0
-          }
-        }
-      }
-    },
-    { $group: { _id: null, maxSeq: { $max: '$seq' } } }
-  ]);
-
-  const nextSeq = (row && Number.isFinite(row.maxSeq) ? row.maxSeq : 0) + 1;
-  // 4 digits supports up to 9999 orders/day; padding avoids lexicographic bugs vs older 3-digit rows
-  return `${pattern}${String(nextSeq).padStart(4, '0')}`;
+const toYYYYMMDD_UTC = (d = new Date()) => {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}${m}${day}`;
 };
 
-module.exports = { generateOrderNumber };
+const toCompanyObjectId = (companyId) => {
+  if (companyId instanceof mongoose.Types.ObjectId) return companyId;
+  if (typeof companyId === 'string' && mongoose.isValidObjectId(companyId)) {
+    return new mongoose.Types.ObjectId(companyId);
+  }
+  return companyId;
+};
+
+/**
+ * Next document number: single atomic { $inc: 1 } on order_counters.
+ * @param {string|import('mongoose').Types.ObjectId} companyId
+ * @param {string} key - Prefix segment (e.g. ORD, INV, or seed O{code})
+ * @param {{ session?: import('mongoose').ClientSession, now?: Date }} [options]
+ * @returns {Promise<string>} e.g. ORD-20260125-0001
+ */
+const getNextSequenceNumber = async (companyId, key, options = {}) => {
+  const { session, now } = options;
+  const date = toYYYYMMDD_UTC(now || new Date());
+  const k = String(key || 'ORD').trim() || 'ORD';
+  const oid = toCompanyObjectId(companyId);
+
+  const doc = await OrderCounter.findOneAndUpdate(
+    { companyId: oid, date, key: k },
+    { $inc: { sequence: 1 } },
+    { upsert: true, new: true, session: session || undefined, setDefaultsOnInsert: true }
+  );
+
+  if (!doc || !Number.isFinite(doc.sequence) || doc.sequence < 1) {
+    throw new Error('order counter: invalid result after increment');
+  }
+
+  return `${k}-${date}-${String(doc.sequence).padStart(4, '0')}`;
+};
+
+module.exports = {
+  getNextSequenceNumber,
+  toYYYYMMDD_UTC,
+  toCompanyObjectId
+};

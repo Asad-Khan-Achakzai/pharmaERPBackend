@@ -1,8 +1,8 @@
 const ApiError = require('../utils/ApiError');
 const { USER_TYPES } = require('../constants/enums');
 const { resolveEffectivePermissions } = require('../utils/effectivePermissions');
+const { resolveRoleDocForTenant } = require('../utils/resolveRoleForTenant');
 const { effectiveUserType } = require('../utils/jwtAccess');
-const Role = require('../models/Role');
 const User = require('../models/User');
 const env = require('../config/env');
 const { hasAccessToCompany } = require('../utils/platformAccess.util');
@@ -44,14 +44,7 @@ const companyScope = asyncHandler(async (req, _res, next) => {
   }
 
   const useRb = String(env.USE_ROLE_BASED_AUTH || '1') !== '0';
-  let roleDoc = null;
-  if (userDoc.roleId && useRb) {
-    roleDoc = await Role.findOne({
-      _id: userDoc.roleId,
-      companyId: req.companyId,
-      isDeleted: { $ne: true }
-    }).lean();
-  }
+  const roleDoc = userDoc.roleId && useRb ? await resolveRoleDocForTenant(userDoc, req.companyId) : null;
   const permissions = resolveEffectivePermissions(userDoc, roleDoc, env.USE_ROLE_BASED_AUTH);
 
   req.user = {
