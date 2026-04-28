@@ -127,15 +127,52 @@ const DOCTOR_ACTIVITY_STATUS = {
   FAILED: 'FAILED'
 };
 
-/** Supplier (factory) liability ledger — not PnL; PURCHASE increases payable, PAYMENT reduces it */
+/** Procurement PO lifecycle — no stock / no supplier liability until GRN (Phase 2+). */
+const PURCHASE_ORDER_STATUS = {
+  DRAFT: 'DRAFT',
+  APPROVED: 'APPROVED',
+  PARTIALLY_RECEIVED: 'PARTIALLY_RECEIVED',
+  CLOSED: 'CLOSED',
+  CANCELLED: 'CANCELLED'
+};
+
+/** GRN posting state; inventory + supplier PURCHASE ledger only after POSTED (Phase 2+). */
+const GOODS_RECEIPT_NOTE_STATUS = {
+  DRAFT: 'DRAFT',
+  POSTED: 'POSTED',
+  CANCELLED: 'CANCELLED'
+};
+
+const SUPPLIER_INVOICE_STATUS = {
+  DRAFT: 'DRAFT',
+  POSTED: 'POSTED'
+};
+
+/**
+ * Supplier (factory) liability ledger — not PnL.
+ * PURCHASE increases payable; PAYMENT reduces it; ADJUSTMENT handles invoice↔GRN mismatch (Phase 3+).
+ */
 const SUPPLIER_LEDGER_TYPE = {
   PURCHASE: 'PURCHASE',
-  PAYMENT: 'PAYMENT'
+  PAYMENT: 'PAYMENT',
+  ADJUSTMENT: 'ADJUSTMENT'
+};
+
+/** When type === ADJUSTMENT: whether payable goes up (like purchase) or down (like payment). */
+const SUPPLIER_LEDGER_ADJUSTMENT_EFFECT = {
+  INCREASE_PAYABLE: 'INCREASE_PAYABLE',
+  DECREASE_PAYABLE: 'DECREASE_PAYABLE'
 };
 
 const SUPPLIER_LEDGER_REFERENCE_TYPE = {
   STOCK_TRANSFER: 'STOCK_TRANSFER',
-  MANUAL: 'MANUAL'
+  MANUAL: 'MANUAL',
+  /** Procurement: liability from posted GRN — referenceId = GoodsReceiptNote */
+  GOODS_RECEIPT_NOTE: 'GOODS_RECEIPT_NOTE',
+  /** Optional link to supplier invoice document */
+  SUPPLIER_INVOICE: 'SUPPLIER_INVOICE',
+  /** Invoice vs GRN / other procurement adjustments */
+  PROCUREMENT_ADJUSTMENT: 'PROCUREMENT_ADJUSTMENT'
 };
 
 /** Recorded on SupplierLedger rows where type === PAYMENT (audit / voucher) */
@@ -171,7 +208,11 @@ module.exports = {
   PLAN_ITEM_TYPE,
   PLAN_ITEM_STATUS,
   DOCTOR_ACTIVITY_STATUS,
+  PURCHASE_ORDER_STATUS,
+  GOODS_RECEIPT_NOTE_STATUS,
+  SUPPLIER_INVOICE_STATUS,
   SUPPLIER_LEDGER_TYPE,
+  SUPPLIER_LEDGER_ADJUSTMENT_EFFECT,
   SUPPLIER_LEDGER_REFERENCE_TYPE,
   SUPPLIER_PAYMENT_METHOD,
   SUPPLIER_PAYMENT_VERIFICATION

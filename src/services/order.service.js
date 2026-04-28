@@ -418,11 +418,23 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser) => {
 
       const returnLineAmount = roundPKR(finalSellingPrice * rItem.quantity);
 
+      const lineQty = dLine?.quantity > 0 ? dLine.quantity : rItem.quantity;
+      const returnCompanyShare =
+        dLine && dLine.companyShare != null
+          ? roundPKR((dLine.companyShare / lineQty) * rItem.quantity)
+          : roundPKR(
+              returnLineAmount -
+                (dLine && dLine.distributorShare != null
+                  ? roundPKR((dLine.distributorShare / lineQty) * rItem.quantity)
+                  : 0)
+            );
+
       returnRecordItems.push({
         productId: rItem.productId,
         quantity: rItem.quantity,
         avgCostAtTime,
         finalSellingPrice,
+        companyShare: returnCompanyShare,
         profitPerUnit,
         totalProfit,
         reason: rItem.reason || ''

@@ -16,6 +16,8 @@ const PERMISSIONS = {
   attendance:   ['view', 'mark'],
   reports:      ['view'],
   suppliers:    ['view', 'manage'],
+  /** SAP-style PO / GRN; liability on SupplierLedger only when GRN is posted — see procurement.routes */
+  procurement:  ['view', 'create', 'approve', 'receive', 'invoicePost'],
   users:        ['view', 'create', 'edit', 'delete'],
   platform:     ['dashboard.view', 'companies.manage']
 };

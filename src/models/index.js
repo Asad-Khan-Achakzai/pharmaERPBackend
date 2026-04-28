@@ -29,5 +29,10 @@ module.exports = {
   AuditLog: require('./AuditLog'),
   Supplier: require('./Supplier'),
   SupplierLedger: require('./SupplierLedger'),
+  PurchaseOrder: require('./PurchaseOrder'),
+  PurchaseOrderLine: require('./PurchaseOrderLine'),
+  GoodsReceiptNote: require('./GoodsReceiptNote'),
+  GoodsReceiptLine: require('./GoodsReceiptLine'),
+  SupplierInvoice: require('./SupplierInvoice'),
   Settlement: require('./Settlement')
 };

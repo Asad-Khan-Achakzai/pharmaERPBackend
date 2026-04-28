@@ -26,6 +26,7 @@ const salaryStructureRoutes = require('./salaryStructure.routes');
 const reportRoutes = require('./report.routes');
 const dashboardRoutes = require('./dashboard.routes');
 const supplierRoutes = require('./supplier.routes');
+const procurementRoutes = require('./procurement.routes');
 const auditLogRoutes = require('./auditLog.routes');
 const superAdminRoutes = require('./superAdmin.routes');
 const platformRoutes = require('./platform.routes');
@@ -57,6 +58,7 @@ router.use('/salary-structures', salaryStructureRoutes);
 router.use('/reports', reportRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/suppliers', supplierRoutes);
+router.use('/procurement', procurementRoutes);
 router.use('/audit-logs', auditLogRoutes);
 
 module.exports = router;

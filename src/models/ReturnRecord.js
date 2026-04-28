@@ -7,6 +7,8 @@ const returnItemSchema = new mongoose.Schema(
     quantity: { type: Number, required: true },
     avgCostAtTime: { type: Number },
     finalSellingPrice: { type: Number },
+    /** Company P&L revenue reversed (proportional to delivery line companyShare) */
+    companyShare: { type: Number },
     profitPerUnit: { type: Number },
     totalProfit: { type: Number },
     reason: { type: String }

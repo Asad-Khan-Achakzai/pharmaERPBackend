@@ -35,7 +35,16 @@ const paymentRecordSchema = Joi.object({
   paymentMethod: Joi.string().valid('CASH', 'BANK', 'CHEQUE', 'OTHER').required(),
   referenceNumber: Joi.string().trim().allow('', null),
   attachmentUrl: Joi.string().trim().allow('', null),
-  verificationStatus: Joi.string().valid('VERIFIED', 'UNVERIFIED').optional()
+  verificationStatus: Joi.string().valid('VERIFIED', 'UNVERIFIED').optional(),
+  /** Optional application of this payment to posted supplier invoices (Phase 4) */
+  paymentAllocations: Joi.array()
+    .items(
+      Joi.object({
+        supplierInvoiceId: Joi.string().trim().required(),
+        amount: Joi.number().positive().required()
+      })
+    )
+    .optional()
 });
 
 /** At least one field — correct mistaken payment details */

@@ -380,4 +380,4 @@ const getTransfers = async (companyId, query) => {
   return { docs, total, page, limit };
 };
 
-module.exports = { getAll, getByDistributor, transfer, getTransfers, getSummary };
+module.exports = { getAll, getByDistributor, transfer, getTransfers, getSummary, mergeIntoDestination };

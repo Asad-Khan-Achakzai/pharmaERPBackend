@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const mongoose = require('mongoose');
 const Supplier = require('../models/Supplier');
 const SupplierLedger = require('../models/SupplierLedger');
+const SupplierInvoice = require('../models/SupplierInvoice');
 const Company = require('../models/Company');
 const ApiError = require('../utils/ApiError');
 const { roundPKR } = require('../utils/currency');
@@ -9,7 +10,9 @@ const { parsePagination } = require('../utils/pagination');
 const {
   SUPPLIER_LEDGER_TYPE,
   SUPPLIER_LEDGER_REFERENCE_TYPE,
-  SUPPLIER_PAYMENT_VERIFICATION
+  SUPPLIER_PAYMENT_VERIFICATION,
+  SUPPLIER_LEDGER_ADJUSTMENT_EFFECT,
+  SUPPLIER_INVOICE_STATUS
 } = require('../constants/enums');
 const auditService = require('./audit.service');
 const logger = require('../utils/logger');
@@ -152,6 +155,43 @@ const recordPurchaseFromStockTransfer = async (
   return row;
 };
 
+/**
+ * PURCHASE liability from posted procurement GRN — idempotent per GRN (retry-safe).
+ */
+const recordPurchaseFromGrn = async ({ session, companyId, supplierId, grnId, amount, notes }, reqUser) => {
+  await getById(companyId, supplierId);
+
+  const existing = await SupplierLedger.findOne({
+    companyId: oid(companyId),
+    referenceType: SUPPLIER_LEDGER_REFERENCE_TYPE.GOODS_RECEIPT_NOTE,
+    referenceId: grnId,
+    type: SUPPLIER_LEDGER_TYPE.PURCHASE
+  }).session(session || null);
+
+  if (existing) return existing;
+
+  const a = roundPKR(amount);
+  if (a <= 0) return null;
+
+  const [row] = await SupplierLedger.create(
+    [
+      {
+        companyId: oid(companyId),
+        supplierId: oid(supplierId),
+        type: SUPPLIER_LEDGER_TYPE.PURCHASE,
+        amount: a,
+        referenceType: SUPPLIER_LEDGER_REFERENCE_TYPE.GOODS_RECEIPT_NOTE,
+        referenceId: grnId,
+        date: new Date(),
+        notes: notes || 'Goods receipt posted',
+        createdBy: reqUser.userId
+      }
+    ],
+    session ? { session } : {}
+  );
+  return row;
+};
+
 const recordManualPurchase = async (companyId, supplierId, { amount, date, notes }, reqUser) => {
   await getById(companyId, supplierId);
   const a = roundPKR(amount);
@@ -174,6 +214,38 @@ const recordPayment = async (companyId, supplierId, body, reqUser) => {
   if (a <= 0) throw new ApiError(400, 'Amount must be positive');
   if (!body.paymentMethod) throw new ApiError(400, 'paymentMethod is required');
 
+  let paymentAllocations;
+  if (body.paymentAllocations && body.paymentAllocations.length > 0) {
+    let allocSum = 0;
+    for (const al of body.paymentAllocations) {
+      const am = roundPKR(al.amount);
+      if (!al.supplierInvoiceId || !(am > 0)) {
+        throw new ApiError(400, 'Each allocation requires supplierInvoiceId and positive amount');
+      }
+      const inv = await SupplierInvoice.findOne({
+        _id: al.supplierInvoiceId,
+        companyId: oid(companyId),
+        supplierId: oid(supplierId),
+        status: SUPPLIER_INVOICE_STATUS.POSTED,
+        isDeleted: { $ne: true }
+      });
+      if (!inv) {
+        throw new ApiError(
+          400,
+          'Supplier invoice not found or not eligible (must belong to supplier and be posted)'
+        );
+      }
+      allocSum = roundPKR(allocSum + am);
+    }
+    if (allocSum > a + 1e-6) {
+      throw new ApiError(400, 'Sum of allocations cannot exceed payment amount');
+    }
+    paymentAllocations = body.paymentAllocations.map((x) => ({
+      supplierInvoiceId: oid(x.supplierInvoiceId),
+      amount: roundPKR(x.amount)
+    }));
+  }
+
   const voucherNumber = `SPAY-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 
   const row = await SupplierLedger.create({
@@ -190,7 +262,8 @@ const recordPayment = async (companyId, supplierId, body, reqUser) => {
     referenceNumber: body.referenceNumber || undefined,
     attachmentUrl: body.attachmentUrl || undefined,
     verificationStatus: body.verificationStatus || SUPPLIER_PAYMENT_VERIFICATION.UNVERIFIED,
-    voucherNumber
+    voucherNumber,
+    paymentAllocations
   });
 
   const warnings = [];
@@ -241,6 +314,13 @@ const listLedger = async (companyId, supplierId, query = {}) => {
   const entries = allRaw.map((row) => {
     if (row.type === SUPPLIER_LEDGER_TYPE.PURCHASE) balance = roundPKR(balance + row.amount);
     else if (row.type === SUPPLIER_LEDGER_TYPE.PAYMENT) balance = roundPKR(balance - row.amount);
+    else if (row.type === SUPPLIER_LEDGER_TYPE.ADJUSTMENT && row.adjustmentEffect) {
+      if (row.adjustmentEffect === SUPPLIER_LEDGER_ADJUSTMENT_EFFECT.INCREASE_PAYABLE) {
+        balance = roundPKR(balance + row.amount);
+      } else if (row.adjustmentEffect === SUPPLIER_LEDGER_ADJUSTMENT_EFFECT.DECREASE_PAYABLE) {
+        balance = roundPKR(balance - row.amount);
+      }
+    }
     return {
       ...row,
       referenceType: row.referenceType,
@@ -254,6 +334,20 @@ const listLedger = async (companyId, supplierId, query = {}) => {
 
   const pur = allRaw.filter((r) => r.type === SUPPLIER_LEDGER_TYPE.PURCHASE).reduce((sum, r) => sum + r.amount, 0);
   const pay = allRaw.filter((r) => r.type === SUPPLIER_LEDGER_TYPE.PAYMENT).reduce((sum, r) => sum + r.amount, 0);
+  const adjUp = allRaw
+    .filter(
+      (r) =>
+        r.type === SUPPLIER_LEDGER_TYPE.ADJUSTMENT &&
+        r.adjustmentEffect === SUPPLIER_LEDGER_ADJUSTMENT_EFFECT.INCREASE_PAYABLE
+    )
+    .reduce((sum, r) => sum + r.amount, 0);
+  const adjDn = allRaw
+    .filter(
+      (r) =>
+        r.type === SUPPLIER_LEDGER_TYPE.ADJUSTMENT &&
+        r.adjustmentEffect === SUPPLIER_LEDGER_ADJUSTMENT_EFFECT.DECREASE_PAYABLE
+    )
+    .reduce((sum, r) => sum + r.amount, 0);
 
   return {
     openingBalance,
@@ -264,7 +358,10 @@ const listLedger = async (companyId, supplierId, query = {}) => {
     summary: {
       totalPurchase: roundPKR(pur),
       totalPayment: roundPKR(pay),
-      closingBalance: roundPKR(openingBalance + pur - pay)
+      totalAdjustmentIncrease: roundPKR(adjUp),
+      totalAdjustmentDecrease: roundPKR(adjDn),
+      netAdjustment: roundPKR(adjUp - adjDn),
+      closingBalance: roundPKR(openingBalance + pur - pay + adjUp - adjDn)
     }
   };
 };
@@ -274,14 +371,29 @@ const balanceForSupplier = async (companyId, supplierId) => {
   const s = await Supplier.findOne({ _id: supplierId, companyId, isDeleted: { $ne: true } }).lean();
   if (!s) throw new ApiError(404, 'Supplier not found');
 
-  const agg = await SupplierLedger.aggregate([
-    { $match: { companyId: oid(companyId), supplierId: oid(supplierId), isDeleted: { $ne: true } } },
-    { $group: { _id: '$type', total: { $sum: '$amount' } } }
-  ]);
-  const pur = agg.find((x) => x._id === SUPPLIER_LEDGER_TYPE.PURCHASE)?.total || 0;
-  const pay = agg.find((x) => x._id === SUPPLIER_LEDGER_TYPE.PAYMENT)?.total || 0;
+  const rows = await SupplierLedger.find({
+    companyId: oid(companyId),
+    supplierId: oid(supplierId),
+    isDeleted: { $ne: true }
+  }).lean();
+
+  let pur = 0;
+  let pay = 0;
+  let adjUp = 0;
+  let adjDn = 0;
+  for (const row of rows) {
+    const a = roundPKR(row.amount || 0);
+    if (row.type === SUPPLIER_LEDGER_TYPE.PURCHASE) pur = roundPKR(pur + a);
+    else if (row.type === SUPPLIER_LEDGER_TYPE.PAYMENT) pay = roundPKR(pay + a);
+    else if (row.type === SUPPLIER_LEDGER_TYPE.ADJUSTMENT && row.adjustmentEffect === SUPPLIER_LEDGER_ADJUSTMENT_EFFECT.INCREASE_PAYABLE) {
+      adjUp = roundPKR(adjUp + a);
+    } else if (row.type === SUPPLIER_LEDGER_TYPE.ADJUSTMENT && row.adjustmentEffect === SUPPLIER_LEDGER_ADJUSTMENT_EFFECT.DECREASE_PAYABLE) {
+      adjDn = roundPKR(adjDn + a);
+    }
+  }
+
   const opening = roundPKR(s.openingBalance || 0);
-  const payable = roundPKR(opening + pur - pay);
+  const payable = roundPKR(opening + pur + adjUp - adjDn - pay);
 
   const lastPay = await SupplierLedger.findOne({
     companyId: oid(companyId),
@@ -299,13 +411,17 @@ const balanceForSupplier = async (companyId, supplierId) => {
     openingBalance: opening,
     totalPurchase: roundPKR(pur),
     totalPayment: roundPKR(pay),
+    totalAdjustmentIncrease: roundPKR(adjUp),
+    totalAdjustmentDecrease: roundPKR(adjDn),
+    netAdjustment: roundPKR(adjUp - adjDn),
     payable,
     totalPurchaseCasting: roundPKR(pur),
     totalPayments: roundPKR(pay),
     netPayable: payable,
     lastPaymentDate: lastPay?.date || null,
     lastPaymentAmount: lastPay ? roundPKR(lastPay.amount) : null,
-    note: 'Payable excludes shipping cost (PURCHASE reflects casting-only liability from transfers).'
+    note:
+      'Payable = opening + PURCHASE + adjustments(increase − decrease) − PAYMENT; GRNs use procurement purchase amounts; invoices may post mismatch adjustments.'
   };
 };
 
@@ -359,6 +475,10 @@ const updatePayment = async (companyId, supplierId, ledgerId, body, reqUser) => 
   if (body.amount !== undefined) {
     const a = roundPKR(body.amount);
     if (a <= 0) throw new ApiError(400, 'Amount must be positive');
+    const allocSum = roundPKR((row.paymentAllocations || []).reduce((s, x) => s + (x.amount || 0), 0));
+    if (allocSum > 0 && a + 1e-9 < allocSum) {
+      throw new ApiError(400, 'Amount cannot be less than the sum of invoice allocations');
+    }
     row.amount = a;
   }
   if (body.date !== undefined) row.date = new Date(body.date);
@@ -489,14 +609,47 @@ const supplierBalances = async (companyId) => {
   const ledgerAgg = await SupplierLedger.aggregate([
     { $match: { companyId: cid, isDeleted: { $ne: true } } },
     {
+      $project: {
+        supplierId: 1,
+        purchaseAmt: {
+          $cond: [{ $eq: ['$type', SUPPLIER_LEDGER_TYPE.PURCHASE] }, '$amount', 0]
+        },
+        paymentAmt: {
+          $cond: [{ $eq: ['$type', SUPPLIER_LEDGER_TYPE.PAYMENT] }, '$amount', 0]
+        },
+        adjustmentIncrease: {
+          $cond: [
+            {
+              $and: [
+                { $eq: ['$type', SUPPLIER_LEDGER_TYPE.ADJUSTMENT] },
+                { $eq: ['$adjustmentEffect', SUPPLIER_LEDGER_ADJUSTMENT_EFFECT.INCREASE_PAYABLE] }
+              ]
+            },
+            '$amount',
+            0
+          ]
+        },
+        adjustmentDecrease: {
+          $cond: [
+            {
+              $and: [
+                { $eq: ['$type', SUPPLIER_LEDGER_TYPE.ADJUSTMENT] },
+                { $eq: ['$adjustmentEffect', SUPPLIER_LEDGER_ADJUSTMENT_EFFECT.DECREASE_PAYABLE] }
+              ]
+            },
+            '$amount',
+            0
+          ]
+        }
+      }
+    },
+    {
       $group: {
         _id: '$supplierId',
-        totalPurchase: {
-          $sum: { $cond: [{ $eq: ['$type', SUPPLIER_LEDGER_TYPE.PURCHASE] }, '$amount', 0] }
-        },
-        totalPayment: {
-          $sum: { $cond: [{ $eq: ['$type', SUPPLIER_LEDGER_TYPE.PAYMENT] }, '$amount', 0] }
-        }
+        totalPurchase: { $sum: '$purchaseAmt' },
+        totalPayment: { $sum: '$paymentAmt' },
+        totalAdjustmentIncrease: { $sum: '$adjustmentIncrease' },
+        totalAdjustmentDecrease: { $sum: '$adjustmentDecrease' }
       }
     }
   ]);
@@ -509,6 +662,8 @@ const supplierBalances = async (companyId) => {
       openingBalance: roundPKR(s.openingBalance || 0),
       totalPurchase: 0,
       totalPayment: 0,
+      totalAdjustmentIncrease: 0,
+      totalAdjustmentDecrease: 0,
       isActive: s.isActive
     });
   }
@@ -519,11 +674,15 @@ const supplierBalances = async (companyId) => {
     if (!entry) continue;
     entry.totalPurchase = roundPKR(row.totalPurchase);
     entry.totalPayment = roundPKR(row.totalPayment);
+    entry.totalAdjustmentIncrease = roundPKR(row.totalAdjustmentIncrease || 0);
+    entry.totalAdjustmentDecrease = roundPKR(row.totalAdjustmentDecrease || 0);
   }
 
   const rows = Array.from(bySupplier.values()).map((r) => ({
     ...r,
-    payable: roundPKR(r.openingBalance + r.totalPurchase - r.totalPayment)
+    payable: roundPKR(
+      r.openingBalance + r.totalPurchase + r.totalAdjustmentIncrease - r.totalAdjustmentDecrease - r.totalPayment
+    )
   }));
   rows.sort((a, b) => b.payable - a.payable);
 
@@ -536,7 +695,8 @@ const supplierBalances = async (companyId) => {
     totals: {
       totalSupplierPayable,
       totalNetPayable,
-      help: 'Payable = openingBalance + PURCHASE − PAYMENT. Liability only; does not change delivery profit or expense module.'
+      help:
+        'Payable = openingBalance + PURCHASE + adj(increase) − adj(decrease) − PAYMENT; includes procurement mismatch adjustments.'
     }
   };
 };
@@ -548,6 +708,7 @@ module.exports = {
   update,
   remove,
   recordPurchaseFromStockTransfer,
+  recordPurchaseFromGrn,
   recordManualPurchase,
   recordPayment,
   listLedger,

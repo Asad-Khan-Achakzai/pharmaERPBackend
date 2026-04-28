@@ -2,9 +2,19 @@ const mongoose = require('mongoose');
 const {
   SUPPLIER_LEDGER_TYPE,
   SUPPLIER_LEDGER_REFERENCE_TYPE,
+  SUPPLIER_LEDGER_ADJUSTMENT_EFFECT,
   SUPPLIER_PAYMENT_METHOD,
   SUPPLIER_PAYMENT_VERIFICATION
 } = require('../constants/enums');
+
+const supplierPaymentAllocationSchema = new mongoose.Schema(
+  {
+    supplierInvoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'SupplierInvoice', required: true },
+    /** Portion of this payment (PKR) applied to the invoice */
+    amount: { type: Number, required: true, min: 0 }
+  },
+  { _id: false }
+);
 const { softDeletePlugin } = require('../plugins/softDelete');
 
 const supplierLedgerSchema = new mongoose.Schema(
@@ -14,6 +24,16 @@ const supplierLedgerSchema = new mongoose.Schema(
     type: { type: String, enum: Object.values(SUPPLIER_LEDGER_TYPE), required: true },
     /** Always positive PKR */
     amount: { type: Number, required: true, min: 0 },
+    /**
+     * PURCHASE: payable up (GRN posted — reference GOODS_RECEIPT_NOTE).
+     * PAYMENT: payable down — optional paymentAllocations for invoice matching.
+     * ADJUSTMENT: invoice vs GRN mismatch — use adjustmentEffect + referenceType PROCUREMENT_ADJUSTMENT / SUPPLIER_INVOICE.
+     */
+    adjustmentEffect: {
+      type: String,
+      enum: Object.values(SUPPLIER_LEDGER_ADJUSTMENT_EFFECT),
+      default: undefined
+    },
     referenceType: {
       type: String,
       enum: [...Object.values(SUPPLIER_LEDGER_REFERENCE_TYPE)],
@@ -34,7 +54,9 @@ const supplierLedgerSchema = new mongoose.Schema(
       default: SUPPLIER_PAYMENT_VERIFICATION.UNVERIFIED
     },
     /** Printable voucher id (unique when set) */
-    voucherNumber: { type: String, trim: true, sparse: true, unique: true }
+    voucherNumber: { type: String, trim: true, sparse: true, unique: true },
+    /** PAYMENT rows: partial allocation against supplier invoices (Phase 4+) */
+    paymentAllocations: { type: [supplierPaymentAllocationSchema], default: undefined }
   },
   { timestamps: true }
 );

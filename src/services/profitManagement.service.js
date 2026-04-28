@@ -40,6 +40,32 @@ const {
 const objectId = (id) => new mongoose.Types.ObjectId(id);
 const nd = { $ne: true };
 
+/** Company P&L revenue per delivery line (finalCompanyAmount / companyShare). Legacy rows: linePharmacyNet − distributorShare. */
+const companyRevenueFromDeliveryLine = {
+  $ifNull: [
+    '$items.companyShare',
+    {
+      $subtract: [
+        { $ifNull: ['$items.linePharmacyNet', 0] },
+        { $ifNull: ['$items.distributorShare', 0] }
+      ]
+    }
+  ]
+};
+
+/** Return line: negate company revenue reversed. Legacy: pharmacy net (qty × finalSellingPrice). */
+const companyRevenueFromReturnLine = {
+  $multiply: [
+    {
+      $ifNull: [
+        '$items.companyShare',
+        { $multiply: ['$items.quantity', { $ifNull: ['$items.finalSellingPrice', 0] }] }
+      ]
+    },
+    -1
+  ]
+};
+
 const endOfDay = (d) => {
   if (!d) return null;
   const x = new Date(d);
@@ -695,7 +721,7 @@ const productProfitability = async (companyId, query = {}) => {
       $group: {
         _id: '$items.productId',
         totalSold: { $sum: '$items.quantity' },
-        revenue: { $sum: { $ifNull: ['$items.linePharmacyNet', 0] } },
+        revenue: { $sum: companyRevenueFromDeliveryLine },
         cost: {
           $sum: {
             $multiply: ['$items.quantity', { $ifNull: ['$items.avgCostAtTime', 0] }]
@@ -716,11 +742,7 @@ const productProfitability = async (companyId, query = {}) => {
       $group: {
         _id: '$items.productId',
         totalSold: { $sum: { $multiply: ['$items.quantity', -1] } },
-        revenue: {
-          $sum: {
-            $multiply: [{ $multiply: ['$items.quantity', { $ifNull: ['$items.finalSellingPrice', 0] }] }, -1]
-          }
-        },
+        revenue: { $sum: companyRevenueFromReturnLine },
         cost: {
           $sum: {
             $multiply: [
