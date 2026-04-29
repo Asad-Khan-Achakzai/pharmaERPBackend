@@ -7,6 +7,7 @@ const { companyScope } = require('../../middleware/companyScope');
 const { checkPermission } = require('../../middleware/checkPermission');
 const { validate, validateQuery } = require('../../middleware/validate');
 const { visitSummaryQuerySchema, visitByEmployeeQuerySchema } = require('../../validators/planItem.validator');
+const { dashboardQuerySchema } = require('../../validators/reportDashboard.validator');
 
 const cashOpeningSchema = Joi.object({
   cashOpeningBalance: Joi.number().required()
@@ -19,7 +20,7 @@ const flowMonthsQuerySchema = Joi.object({
 router.use(authenticate, companyScope);
 router.get('/visit-summary', checkPermission('reports.view'), validateQuery(visitSummaryQuerySchema), c.visitSummary);
 router.get('/visit-by-employee', checkPermission('reports.view'), validateQuery(visitByEmployeeQuerySchema), c.visitByEmployee);
-router.get('/dashboard', checkPermission('dashboard.view'), c.dashboard);
+router.get('/dashboard', checkPermission('dashboard.view'), validateQuery(dashboardQuerySchema), c.dashboard);
 router.get('/sales', checkPermission('reports.view'), c.sales);
 router.get('/profit', checkPermission('reports.view'), c.profit);
 router.get('/expenses', checkPermission('reports.view'), c.expenses);

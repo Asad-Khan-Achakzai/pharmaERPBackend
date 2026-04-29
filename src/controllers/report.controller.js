@@ -7,7 +7,21 @@ const ApiError = require('../utils/ApiError');
 const asyncHandler = require('../middleware/asyncHandler');
 const { userHasPermission } = require('../utils/effectivePermissions');
 
-const dashboard = asyncHandler(async (req, res) => { ApiResponse.success(res, await reportService.dashboard(req.companyId)); });
+const dashboard = asyncHandler(async (req, res) => {
+  /** Company-wide dashboard KPIs: full admin only. `reports.view` is not enough (field roles often have it for menus). */
+  const companyWideKpis = userHasPermission(req.user, 'admin.access');
+  const from = req.query.from;
+  const to = req.query.to;
+  const opts = {};
+  if (from || to) {
+    opts.from = from;
+    opts.to = to;
+  }
+  if (!companyWideKpis) {
+    opts.restrictToRepId = req.user.userId;
+  }
+  ApiResponse.success(res, await reportService.dashboard(req.companyId, opts));
+});
 const sales = asyncHandler(async (req, res) => { ApiResponse.success(res, await reportService.sales(req.companyId, req.query.from, req.query.to)); });
 const profit = asyncHandler(async (req, res) => { ApiResponse.success(res, await reportService.profit(req.companyId, req.query.from, req.query.to)); });
 const expenses = asyncHandler(async (req, res) => { ApiResponse.success(res, await reportService.expenses(req.companyId, req.query.from, req.query.to)); });

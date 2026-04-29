@@ -15,20 +15,21 @@ const currentYyyyMm = () => {
 };
 
 const resolveMode = (user) => {
-  const canKpi = userHasPermission(user, 'admin.access') || userHasPermission(user, 'reports.view');
+  const companyWide = userHasPermission(user, 'admin.access');
   const weekly = userHasPermission(user, 'weeklyPlans.view');
-  if (canKpi && weekly) return 'hybrid';
-  if (canKpi) return 'monitoring';
+  if (companyWide && weekly) return 'hybrid';
+  if (companyWide) return 'monitoring';
   return 'execution';
 };
 
 /**
  * @param {string} companyId
  * @param {object} user - req.user (with userId, permissions, role)
+ * @param {object} [query] - validated `from` / `to` (YYYY-MM-DD) for dashboard KPIs
  * @returns {Promise<object>}
  */
-const getHome = async (companyId, user) => {
-  const canKpi = userHasPermission(user, 'admin.access') || userHasPermission(user, 'reports.view');
+const getHome = async (companyId, user, query = {}) => {
+  const companyWideKpis = userHasPermission(user, 'admin.access');
   const weekly = userHasPermission(user, 'weeklyPlans.view');
   const canTargets = userHasPermission(user, 'targets.view');
   const attTeam = userHasPermission(user, 'attendance.view');
@@ -39,11 +40,21 @@ const getHome = async (companyId, user) => {
   const tasks = [];
   const labels = [];
 
-  if (canKpi) {
-    tasks.push(() => reportService.dashboard(companyId));
+  const dashOpts = {};
+  if (query.from && query.to) {
+    dashOpts.from = query.from;
+    dashOpts.to = query.to;
+  }
+  if (companyWideKpis) {
+    tasks.push(() => reportService.dashboard(companyId, dashOpts));
     labels.push('kpis');
   } else {
-    tasks.push(() => Promise.resolve(null));
+    tasks.push(() =>
+      reportService.dashboard(companyId, {
+        ...dashOpts,
+        restrictToRepId: repId
+      })
+    );
     labels.push('kpis');
   }
 
@@ -118,7 +129,7 @@ const getHome = async (companyId, user) => {
   return {
     mode,
     features: {
-      canSeeCompanyFinancials: canKpi,
+      canSeeCompanyFinancials: companyWideKpis,
       showExecutionPanel: weekly
     },
     kpis: byLabel.kpis,

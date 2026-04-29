@@ -8,6 +8,7 @@ const Order = require('../models/Order');
 const Expense = require('../models/Expense');
 const Payroll = require('../models/Payroll');
 const DeliveryRecord = require('../models/DeliveryRecord');
+const ReturnRecord = require('../models/ReturnRecord');
 const Payment = require('../models/Payment');
 const Collection = require('../models/Collection');
 const Settlement = require('../models/Settlement');
@@ -31,6 +32,48 @@ const ApiError = require('../utils/ApiError');
 const objectId = (id) => new mongoose.Types.ObjectId(id);
 
 const nd = { $ne: true };
+
+const endOfDayDash = (d) => {
+  if (!d) return null;
+  const x = new Date(d);
+  x.setHours(23, 59, 59, 999);
+  return x;
+};
+
+const MS_PER_DAY = 86400000;
+const MAX_DASH_RANGE_DAYS = 800;
+
+/** @returns {{ $gte: Date, $lte: Date }} */
+const coalesceDashboardRange = (from, to) => {
+  if (!from && !to) return null;
+  if (!from || !to) {
+    throw new ApiError(400, 'from and to must both be provided for a date range');
+  }
+  const start = new Date(from);
+  const end = endOfDayDash(to);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    throw new ApiError(400, 'Invalid from or to date');
+  }
+  if (start > end) throw new ApiError(400, 'from must be on or before to');
+  const days = Math.ceil((end.getTime() - start.getTime()) / MS_PER_DAY);
+  if (days > MAX_DASH_RANGE_DAYS) throw new ApiError(400, 'Date range exceeds maximum allowed');
+  return { $gte: start, $lte: end };
+};
+
+/** Current calendar month in local time (default range for rep dashboard). */
+const defaultMonthRangeLocal = () => {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  const start = new Date(y, m, 1, 0, 0, 0, 0);
+  const end = endOfDayDash(new Date(y, m + 1, 0));
+  return { $gte: start, $lte: end };
+};
+
+const periodPayload = (range) => ({
+  from: range.$gte.toISOString().slice(0, 10),
+  to: range.$lte.toISOString().slice(0, 10)
+});
 
 /**
  * Distributor commission to deduct from company earnings:
@@ -65,11 +108,178 @@ const distributorCommissionNet = async (companyId, dateRange = null) => {
   return roundPKR(deliveryShare - reversal);
 };
 
-const dashboard = async (companyId) => {
-  const cid = objectId(companyId);
-  const [salesAgg, orderCounts, paymentAgg, outstandingAgg, bonusAgg, payrollAgg, expenseAgg, distributorCommissionTotal] = await Promise.all([
+const dashboardForMedicalRep = async (cid, repOid, dateRange) => {
+  const repMatchOrder = { companyId: cid, medicalRepId: repOid, isDeleted: nd };
+
+  const txPipeline = [
+    {
+      $match: {
+        companyId: cid,
+        type: { $in: ['SALE', 'RETURN'] },
+        isDeleted: nd,
+        date: dateRange
+      }
+    },
+    {
+      $lookup: {
+        from: 'deliveryrecords',
+        let: { rid: '$referenceId', rt: '$referenceType' },
+        pipeline: [
+          {
+            $match: {
+              $expr: {
+                $and: [{ $eq: ['$$rt', 'DELIVERY'] }, { $eq: ['$_id', '$$rid'] }]
+              }
+            }
+          },
+          { $project: { orderId: 1 } }
+        ],
+        as: 'del'
+      }
+    },
+    {
+      $lookup: {
+        from: 'returnrecords',
+        let: { rid: '$referenceId', rt: '$referenceType' },
+        pipeline: [
+          {
+            $match: {
+              $expr: {
+                $and: [{ $eq: ['$$rt', 'RETURN'] }, { $eq: ['$_id', '$$rid'] }]
+              }
+            }
+          },
+          { $project: { orderId: 1 } }
+        ],
+        as: 'ret'
+      }
+    },
+    {
+      $addFields: {
+        orderId: {
+          $ifNull: [{ $arrayElemAt: ['$del.orderId', 0] }, { $arrayElemAt: ['$ret.orderId', 0] }]
+        }
+      }
+    },
+    { $lookup: { from: 'orders', localField: 'orderId', foreignField: '_id', as: 'ord' } },
+    { $match: { 'ord.medicalRepId': repOid } },
+    { $group: { _id: null, totalRevenue: { $sum: '$revenue' }, totalProfit: { $sum: '$profit' } } }
+  ];
+
+  const [
+    salesAgg,
+    orderCounts,
+    deliveryKpiAgg,
+    returnCompanyShareAgg,
+    bonusAgg
+  ] = await Promise.all([
+    Transaction.aggregate(txPipeline),
+    Order.aggregate([
+      { $match: repMatchOrder },
+      { $group: { _id: '$status', count: { $sum: 1 } } }
+    ]),
+    DeliveryRecord.aggregate([
+      { $match: { companyId: cid, isDeleted: nd, deliveredAt: dateRange } },
+      { $lookup: { from: 'orders', localField: 'orderId', foreignField: '_id', as: 'ord' } },
+      { $unwind: '$ord' },
+      { $match: { 'ord.medicalRepId': repOid } },
+      {
+        $group: {
+          _id: null,
+          totalTpSubtotal: { $sum: { $ifNull: ['$tpSubtotal', 0] } },
+          totalCompanyShare: { $sum: { $ifNull: ['$companyShareTotal', 0] } }
+        }
+      }
+    ]),
+    ReturnRecord.aggregate([
+      { $match: { companyId: cid, isDeleted: nd, returnedAt: dateRange } },
+      { $lookup: { from: 'orders', localField: 'orderId', foreignField: '_id', as: 'ord' } },
+      { $unwind: '$ord' },
+      { $match: { 'ord.medicalRepId': repOid } },
+      { $unwind: '$items' },
+      { $group: { _id: null, returnCompanyShare: { $sum: { $ifNull: ['$items.companyShare', 0] } } } }
+    ]),
+    Order.aggregate([
+      { $match: repMatchOrder },
+      { $group: { _id: null, totalBonusUnitsOnOrders: { $sum: { $ifNull: ['$totalBonusQuantity', 0] } } } }
+    ])
+  ]);
+
+  const sales = salesAgg[0] || { totalRevenue: 0, totalProfit: 0 };
+  const grossProfit = roundPKR(sales.totalProfit);
+  const orderStatusMap = {};
+  orderCounts.forEach((o) => {
+    orderStatusMap[o._id] = o.count;
+  });
+  const bonusRow = bonusAgg[0] || { totalBonusUnitsOnOrders: 0 };
+  const delK = deliveryKpiAgg[0] || { totalTpSubtotal: 0, totalCompanyShare: 0 };
+  const retK = returnCompanyShareAgg[0] || { returnCompanyShare: 0 };
+  const totalGrossSalesTp = roundPKR(delK.totalTpSubtotal || 0);
+  const totalNetSalesCompany = roundPKR((delK.totalCompanyShare || 0) - (retK.returnCompanyShare || 0));
+
+  const response = {
+    totalSales: roundPKR(sales.totalRevenue),
+    totalGrossSalesTp,
+    totalNetSalesCompany,
+    grossProfit,
+    distributorCommissionTotal: 0,
+    totalPayroll: 0,
+    totalExpenses: 0,
+    netProfit: grossProfit,
+    totalPaid: 0,
+    totalOutstanding: 0,
+    ordersByStatus: orderStatusMap,
+    totalBonusGiven: bonusRow.totalBonusUnitsOnOrders || 0,
+    dashboardScope: 'self',
+    period: periodPayload(dateRange)
+  };
+
+  return withFinancialEnvelopePromise(response);
+};
+
+const withFinancialEnvelopePromise = (response) =>
+  withFinancialEnvelope({
+    data: response,
+    scope: FINANCIAL_SCOPE.SNAPSHOT,
+    canonical: canonicalFromDashboard(response)
+  });
+
+const dashboardCompanyWide = async (companyId, cid, dateRange) => {
+  const txMatch = { companyId: cid, type: { $in: ['SALE', 'RETURN'] }, isDeleted: nd };
+  if (dateRange) txMatch.date = dateRange;
+
+  const collectionMatch = { companyId: cid, isDeleted: nd };
+  if (dateRange) collectionMatch.date = dateRange;
+
+  const payrollMatch = { companyId: cid, status: 'PAID', isDeleted: nd };
+  if (dateRange) payrollMatch.paidOn = dateRange;
+
+  const expenseMatch = { companyId: cid, isDeleted: nd, category: { $ne: 'SALARY' } };
+  if (dateRange) expenseMatch.date = dateRange;
+
+  const deliveryMatch = { companyId: cid, isDeleted: nd };
+  if (dateRange) deliveryMatch.deliveredAt = dateRange;
+
+  const returnMatchBase = { companyId: cid, isDeleted: nd };
+  if (dateRange) returnMatchBase.returnedAt = dateRange;
+
+  const bonusMatch = { companyId: cid, isDeleted: nd };
+  if (dateRange) bonusMatch.createdAt = dateRange;
+
+  const [
+    salesAgg,
+    orderCounts,
+    paymentAgg,
+    outstandingAgg,
+    bonusAgg,
+    payrollAgg,
+    expenseAgg,
+    distributorCommissionTotal,
+    deliveryKpiAgg,
+    returnCompanyShareAgg
+  ] = await Promise.all([
     Transaction.aggregate([
-      { $match: { companyId: cid, type: { $in: ['SALE', 'RETURN'] }, isDeleted: nd } },
+      { $match: txMatch },
       { $group: { _id: null, totalRevenue: { $sum: '$revenue' }, totalProfit: { $sum: '$profit' } } }
     ]),
     Order.aggregate([
@@ -77,7 +287,7 @@ const dashboard = async (companyId) => {
       { $group: { _id: '$status', count: { $sum: 1 } } }
     ]),
     Collection.aggregate([
-      { $match: { companyId: cid, isDeleted: nd } },
+      { $match: collectionMatch },
       { $group: { _id: null, totalPaid: { $sum: '$amount' } } }
     ]),
     Ledger.aggregate([
@@ -91,18 +301,33 @@ const dashboard = async (companyId) => {
       }
     ]),
     Order.aggregate([
-      { $match: { companyId: cid, isDeleted: nd } },
+      { $match: bonusMatch },
       { $group: { _id: null, totalBonusUnitsOnOrders: { $sum: { $ifNull: ['$totalBonusQuantity', 0] } } } }
     ]),
     Payroll.aggregate([
-      { $match: { companyId: cid, status: 'PAID', isDeleted: nd } },
+      { $match: payrollMatch },
       { $group: { _id: null, totalPayroll: { $sum: '$netSalary' } } }
     ]),
     Expense.aggregate([
-      { $match: { companyId: cid, isDeleted: nd, category: { $ne: 'SALARY' } } },
+      { $match: expenseMatch },
       { $group: { _id: null, totalExpenses: { $sum: '$amount' } } }
     ]),
-    distributorCommissionNet(companyId)
+    distributorCommissionNet(companyId, dateRange || null),
+    DeliveryRecord.aggregate([
+      { $match: deliveryMatch },
+      {
+        $group: {
+          _id: null,
+          totalTpSubtotal: { $sum: { $ifNull: ['$tpSubtotal', 0] } },
+          totalCompanyShare: { $sum: { $ifNull: ['$companyShareTotal', 0] } }
+        }
+      }
+    ]),
+    ReturnRecord.aggregate([
+      { $match: returnMatchBase },
+      { $unwind: '$items' },
+      { $group: { _id: null, returnCompanyShare: { $sum: { $ifNull: ['$items.companyShare', 0] } } } }
+    ])
   ]);
 
   const sales = salesAgg[0] || { totalRevenue: 0, totalProfit: 0 };
@@ -115,12 +340,21 @@ const dashboard = async (companyId) => {
   const netProfit = roundPKR(grossProfit - distributorCommissionTotal - payroll - expenses.totalExpenses);
 
   const orderStatusMap = {};
-  orderCounts.forEach((o) => { orderStatusMap[o._id] = o.count; });
+  orderCounts.forEach((o) => {
+    orderStatusMap[o._id] = o.count;
+  });
 
   const bonusRow = bonusAgg[0] || { totalBonusUnitsOnOrders: 0 };
 
+  const delK = deliveryKpiAgg[0] || { totalTpSubtotal: 0, totalCompanyShare: 0 };
+  const retK = returnCompanyShareAgg[0] || { returnCompanyShare: 0 };
+  const totalGrossSalesTp = roundPKR(delK.totalTpSubtotal || 0);
+  const totalNetSalesCompany = roundPKR((delK.totalCompanyShare || 0) - (retK.returnCompanyShare || 0));
+
   const response = {
     totalSales: roundPKR(sales.totalRevenue),
+    totalGrossSalesTp,
+    totalNetSalesCompany,
     grossProfit,
     distributorCommissionTotal: roundPKR(distributorCommissionTotal),
     totalPayroll: roundPKR(payroll),
@@ -129,14 +363,37 @@ const dashboard = async (companyId) => {
     totalPaid: roundPKR(paid.totalPaid),
     totalOutstanding: roundPKR(outstanding.totalDebit - outstanding.totalCredit),
     ordersByStatus: orderStatusMap,
-    totalBonusGiven: bonusRow.totalBonusUnitsOnOrders || 0
+    totalBonusGiven: bonusRow.totalBonusUnitsOnOrders || 0,
+    dashboardScope: 'company',
+    ...(dateRange ? { period: periodPayload(dateRange) } : {})
   };
 
-  return withFinancialEnvelope({
-    data: response,
-    scope: FINANCIAL_SCOPE.SNAPSHOT,
-    canonical: canonicalFromDashboard(response)
-  });
+  return withFinancialEnvelopePromise(response);
+};
+
+/**
+ * Dashboard KPIs. Company-wide users: lifetime unless `from`/`to` together set a range.
+ * Field users (`restrictToRepId`): always scoped to orders where `medicalRepId` matches; date range defaults to current month.
+ *
+ * @param {string} companyId
+ * @param {{ from?: string, to?: string, restrictToRepId?: string }} [options]
+ */
+const dashboard = async (companyId, options = {}) => {
+  const { from, to, restrictToRepId } = options;
+  const cid = objectId(companyId);
+
+  if (restrictToRepId) {
+    let range;
+    if (from || to) {
+      range = coalesceDashboardRange(from, to);
+    } else {
+      range = defaultMonthRangeLocal();
+    }
+    return dashboardForMedicalRep(cid, objectId(String(restrictToRepId)), range);
+  }
+
+  const dateRange = from || to ? coalesceDashboardRange(from, to) : null;
+  return dashboardCompanyWide(companyId, cid, dateRange);
 };
 
 const sales = async (companyId, from, to) => {

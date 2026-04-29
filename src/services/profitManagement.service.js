@@ -66,6 +66,11 @@ const companyRevenueFromReturnLine = {
   ]
 };
 
+/** Customer invoice net per return line (additive reporting; mirrors legacy qty × finalSellingPrice). */
+const customerNetFromReturnLine = {
+  $multiply: [{ $multiply: ['$items.quantity', { $ifNull: ['$items.finalSellingPrice', 0] }] }, -1]
+};
+
 const endOfDay = (d) => {
   if (!d) return null;
   const x = new Date(d);
@@ -476,6 +481,9 @@ const summary = async (companyId, query = {}) => {
 
   const liquidity = await liquiditySnapshot(companyId, { startDate, endDate });
 
+  /** Sum of delivery/return company-share lines (same basis as product table `revenue`); additive KPI. */
+  const totalNetSalesCompany = roundPKR(products.reduce((s, p) => s + (Number(p.revenue) || 0), 0));
+
   const response = {
     basis: 'transaction_delivery',
     period: { startDate: startDate || null, endDate: endDate || null },
@@ -485,6 +493,7 @@ const summary = async (companyId, query = {}) => {
       distributorId: distributorId || null
     },
     totalRevenue,
+    totalNetSalesCompany,
     grossProfit,
     totalCost,
     netProfit,
@@ -722,6 +731,7 @@ const productProfitability = async (companyId, query = {}) => {
         _id: '$items.productId',
         totalSold: { $sum: '$items.quantity' },
         revenue: { $sum: companyRevenueFromDeliveryLine },
+        netSalesCustomer: { $sum: { $ifNull: ['$items.linePharmacyNet', 0] } },
         cost: {
           $sum: {
             $multiply: ['$items.quantity', { $ifNull: ['$items.avgCostAtTime', 0] }]
@@ -743,6 +753,7 @@ const productProfitability = async (companyId, query = {}) => {
         _id: '$items.productId',
         totalSold: { $sum: { $multiply: ['$items.quantity', -1] } },
         revenue: { $sum: companyRevenueFromReturnLine },
+        netSalesCustomer: { $sum: customerNetFromReturnLine },
         cost: {
           $sum: {
             $multiply: [
@@ -767,14 +778,22 @@ const productProfitability = async (companyId, query = {}) => {
       productId: row._id,
       totalSold: row.totalSold,
       revenue: row.revenue,
+      netSalesCustomer: row.netSalesCustomer || 0,
       cost: row.cost
     });
   }
   for (const row of returned) {
     const id = row._id.toString();
-    const cur = map.get(id) || { productId: row._id, totalSold: 0, revenue: 0, cost: 0 };
+    const cur = map.get(id) || {
+      productId: row._id,
+      totalSold: 0,
+      revenue: 0,
+      netSalesCustomer: 0,
+      cost: 0
+    };
     cur.totalSold += row.totalSold;
     cur.revenue += row.revenue;
+    cur.netSalesCustomer = (cur.netSalesCustomer || 0) + (row.netSalesCustomer || 0)
     cur.cost += row.cost;
     map.set(id, cur);
   }
@@ -787,6 +806,7 @@ const productProfitability = async (companyId, query = {}) => {
 
   let rows = [...map.values()].map((r) => {
     const rev = roundPKR(r.revenue);
+    const nsc = roundPKR(r.netSalesCustomer || 0);
     const c = roundPKR(r.cost);
     const profit = roundPKR(rev - c);
     return {
@@ -794,6 +814,7 @@ const productProfitability = async (companyId, query = {}) => {
       productName: nameById.get(r.productId.toString()) || 'Unknown',
       totalSold: roundPKR(r.totalSold),
       revenue: rev,
+      netSalesCustomer: nsc,
       cost: c,
       profit
     };
