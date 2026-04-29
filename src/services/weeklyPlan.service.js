@@ -4,12 +4,20 @@ const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const auditService = require('./audit.service');
 const planItemService = require('./planItem.service');
+const { escapeRegex, qScalar, applyCreatedAtRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
 
 const list = async (companyId, query) => {
-  const { page, limit, skip, sort } = parsePagination(query);
+  const { page, limit, skip, sort, search } = parsePagination(query);
+  const searchTerm = qScalar(search);
   const filter = { companyId };
   if (query.medicalRepId) filter.medicalRepId = query.medicalRepId;
   if (query.status) filter.status = query.status;
+  if (searchTerm) {
+    const rx = escapeRegex(searchTerm);
+    filter.notes = { $regex: rx, $options: 'i' };
+  }
+  applyCreatedAtRangeFromQuery(filter, query);
+  applyCreatedByFromQuery(filter, query);
   const [docs, total] = await Promise.all([
     WeeklyPlan.find(filter).populate('medicalRepId', 'name').sort(sort).skip(skip).limit(limit),
     WeeklyPlan.countDocuments(filter)

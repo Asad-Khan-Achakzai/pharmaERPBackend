@@ -8,6 +8,12 @@ const ApiError = require('../utils/ApiError');
 const { roundPKR } = require('../utils/currency');
 const { parsePagination } = require('../utils/pagination');
 const {
+  escapeRegex,
+  qScalar,
+  applyCreatedAtRangeFromQuery,
+  applyCreatedByFromQuery
+} = require('../utils/listQuery');
+const {
   SUPPLIER_LEDGER_TYPE,
   SUPPLIER_LEDGER_REFERENCE_TYPE,
   SUPPLIER_PAYMENT_VERIFICATION,
@@ -24,9 +30,20 @@ const PAYMENT_WARN_THRESHOLD = Number(process.env.SUPPLIER_PAYMENT_WARN_PKR) || 
 const oid = (id) => new mongoose.Types.ObjectId(id);
 
 const list = async (companyId, query = {}) => {
-  const { page, limit, skip, sort } = parsePagination(query);
+  const { page, limit, skip, sort, search } = parsePagination(query);
+  const searchTerm = qScalar(search);
   const filter = { companyId, isDeleted: { $ne: true } };
   if (query.isActive === 'true' || query.isActive === 'false') filter.isActive = query.isActive === 'true';
+  if (searchTerm) {
+    const rx = escapeRegex(searchTerm);
+    filter.$or = [
+      { name: { $regex: rx, $options: 'i' } },
+      { phone: { $regex: rx, $options: 'i' } },
+      { email: { $regex: rx, $options: 'i' } }
+    ];
+  }
+  applyCreatedAtRangeFromQuery(filter, query);
+  applyCreatedByFromQuery(filter, query);
   const [docs, total] = await Promise.all([
     Supplier.find(filter).sort(sort).skip(skip).limit(limit).lean(),
     Supplier.countDocuments(filter)

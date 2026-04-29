@@ -366,6 +366,10 @@ const getTransfers = async (companyId, query) => {
       delete filter.createdAt;
     }
   }
+  const createdByRaw = query.createdBy;
+  if (createdByRaw && mongoose.Types.ObjectId.isValid(createdByRaw)) {
+    filter.createdBy = new mongoose.Types.ObjectId(createdByRaw);
+  }
 
   const [docs, total] = await Promise.all([
     StockTransfer.find(filter)

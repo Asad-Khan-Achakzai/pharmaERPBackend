@@ -12,6 +12,12 @@ const {
 } = require('../constants/rbac');
 const { ROLES } = require('../constants/enums');
 const auditService = require('./audit.service');
+const {
+  escapeRegex,
+  qScalar,
+  applyCreatedAtRangeFromQuery,
+  applyCreatedByFromQuery
+} = require('../utils/listQuery');
 
 /**
  * Consistent ObjectId for multi-tenant queries (avoids empty results when user.companyId is
@@ -99,10 +105,20 @@ const list = async (companyId, query) => {
   await seedDefaultRolesForCompany(cid);
 
   const { page, limit, skip, sort, search } = parsePagination(query);
+  const searchTerm = qScalar(search);
+
+  await seedDefaultRolesForCompany(cid);
+
   const filter = { companyId: cid, isDeleted: { $ne: true } };
-  if (search) {
-    filter.name = { $regex: search, $options: 'i' };
+  if (searchTerm) {
+    const rx = escapeRegex(searchTerm);
+    filter.$or = [
+      { name: { $regex: rx, $options: 'i' } },
+      { code: { $regex: rx, $options: 'i' } }
+    ];
   }
+  applyCreatedAtRangeFromQuery(filter, query);
+  applyCreatedByFromQuery(filter, query);
   const [docs, total] = await Promise.all([
     Role.find(filter).sort(sort).skip(skip).limit(limit).lean(),
     Role.countDocuments(filter)

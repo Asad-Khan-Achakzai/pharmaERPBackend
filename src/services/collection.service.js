@@ -2,12 +2,23 @@ const mongoose = require('mongoose');
 const Collection = require('../models/Collection');
 const { parsePagination } = require('../utils/pagination');
 const financialService = require('./financial.service');
+const { escapeRegex, qScalar, applyDateFieldRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
 
 const list = async (companyId, query) => {
-  const { page, limit, skip, sort } = parsePagination(query);
+  const { page, limit, skip, sort, search } = parsePagination(query);
+  const searchTerm = qScalar(search);
   const filter = { companyId };
   if (query.pharmacyId) filter.pharmacyId = query.pharmacyId;
   if (query.collectorType) filter.collectorType = query.collectorType;
+  applyDateFieldRangeFromQuery(filter, query, 'date');
+  if (searchTerm) {
+    const rx = escapeRegex(searchTerm);
+    filter.$or = [
+      { referenceNumber: { $regex: rx, $options: 'i' } },
+      { notes: { $regex: rx, $options: 'i' } }
+    ];
+  }
+  applyCreatedByFromQuery(filter, query);
 
   const [docs, total] = await Promise.all([
     Collection.find(filter)

@@ -3,12 +3,38 @@ const User = require('../models/User');
 const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const auditService = require('./audit.service');
+const {
+  escapeRegex,
+  qScalar,
+  applyCreatedAtRangeFromQuery,
+  applyCreatedByFromQuery
+} = require('../utils/listQuery');
 
 const list = async (companyId, query) => {
-  const { page, limit, skip, sort } = parsePagination(query);
+  const { page, limit, skip, sort, search } = parsePagination(query);
+  const searchTerm = qScalar(search);
   const filter = { companyId };
   if (query.employeeId) filter.employeeId = query.employeeId;
   if (query.isActive !== undefined) filter.isActive = query.isActive === 'true' || query.isActive === true;
+  if (searchTerm && !query.employeeId) {
+    const rx = escapeRegex(searchTerm);
+    const emps = await User.find({
+      companyId,
+      name: { $regex: rx, $options: 'i' },
+      isDeleted: { $ne: true }
+    })
+      .select('_id')
+      .lean()
+      .limit(80);
+    const eids = emps.map((e) => e._id);
+    if (eids.length) {
+      filter.$or = [{ employeeId: { $in: eids } }];
+    } else {
+      filter.employeeId = { $in: [] };
+    }
+  }
+  applyCreatedAtRangeFromQuery(filter, query);
+  applyCreatedByFromQuery(filter, query);
 
   const [docs, total] = await Promise.all([
     SalaryStructure.find(filter)

@@ -2,19 +2,24 @@ const Doctor = require('../models/Doctor');
 const Pharmacy = require('../models/Pharmacy');
 const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
+const { escapeRegex, qScalar, applyCreatedAtRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
 const auditService = require('./audit.service');
 
 const list = async (companyId, query) => {
   const { page, limit, skip, sort, search } = parsePagination(query);
+  const searchTerm = qScalar(search);
   const filter = { companyId };
   if (query.isActive !== undefined) filter.isActive = query.isActive === 'true';
   if (query.pharmacyId) filter.pharmacyId = query.pharmacyId;
-  if (search) {
+  if (searchTerm) {
+    const rx = escapeRegex(searchTerm);
     filter.$or = [
-      { name: { $regex: search, $options: 'i' } },
-      { specialization: { $regex: search, $options: 'i' } }
+      { name: { $regex: rx, $options: 'i' } },
+      { specialization: { $regex: rx, $options: 'i' } }
     ];
   }
+  applyCreatedAtRangeFromQuery(filter, query);
+  applyCreatedByFromQuery(filter, query);
   const [docs, total] = await Promise.all([
     Doctor.find(filter).populate('pharmacyId', 'name city').sort(sort).skip(skip).limit(limit),
     Doctor.countDocuments(filter)

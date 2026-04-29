@@ -2,18 +2,23 @@ const Distributor = require('../models/Distributor');
 const DistributorInventory = require('../models/DistributorInventory');
 const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
+const { escapeRegex, qScalar, applyCreatedAtRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
 const auditService = require('./audit.service');
 
 const list = async (companyId, query) => {
   const { page, limit, skip, sort, search } = parsePagination(query);
+  const searchTerm = qScalar(search);
   const filter = { companyId };
   if (query.isActive !== undefined) filter.isActive = query.isActive === 'true';
-  if (search) {
+  if (searchTerm) {
+    const rx = escapeRegex(searchTerm);
     filter.$or = [
-      { name: { $regex: search, $options: 'i' } },
-      { city: { $regex: search, $options: 'i' } }
+      { name: { $regex: rx, $options: 'i' } },
+      { city: { $regex: rx, $options: 'i' } }
     ];
   }
+  applyCreatedAtRangeFromQuery(filter, query);
+  applyCreatedByFromQuery(filter, query);
   const [docs, total] = await Promise.all([
     Distributor.find(filter).sort(sort).skip(skip).limit(limit),
     Distributor.countDocuments(filter)

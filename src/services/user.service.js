@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Role = require('../models/Role');
 const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
+const { escapeRegex, qScalar, applyCreatedAtRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
 const { ALL_PERMISSIONS } = require('../constants/permissions');
 const { ROLES } = require('../constants/enums');
 const { ADMIN_ACCESS } = require('../constants/rbac');
@@ -34,16 +35,20 @@ const applyRoleIdToUserPayload = async (companyId, data) => {
 
 const list = async (companyId, query) => {
   const { page, limit, skip, sort, search } = parsePagination(query);
+  const searchTerm = qScalar(search);
 
   const filter = { companyId };
   if (query.role) filter.role = query.role;
   if (query.isActive !== undefined) filter.isActive = query.isActive === 'true';
-  if (search) {
+  if (searchTerm) {
+    const rx = escapeRegex(searchTerm);
     filter.$or = [
-      { name: { $regex: search, $options: 'i' } },
-      { email: { $regex: search, $options: 'i' } }
+      { name: { $regex: rx, $options: 'i' } },
+      { email: { $regex: rx, $options: 'i' } }
     ];
   }
+  applyCreatedAtRangeFromQuery(filter, query);
+  applyCreatedByFromQuery(filter, query);
 
   const [docs, total] = await Promise.all([
     User.find(filter)

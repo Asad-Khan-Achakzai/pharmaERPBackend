@@ -1,6 +1,7 @@
 const Product = require('../models/Product');
 const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
+const { escapeRegex, qScalar, applyCreatedAtRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
 const auditService = require('./audit.service');
 const { userHasPermission } = require('../utils/effectivePermissions');
 
@@ -14,14 +15,18 @@ function canViewProductCostOnProductApi(reqUser) {
 
 const list = async (companyId, query, reqUser) => {
   const { page, limit, skip, sort, search } = parsePagination(query);
+  const searchTerm = qScalar(search);
   const filter = { companyId };
   if (query.isActive !== undefined) filter.isActive = query.isActive === 'true';
-  if (search) {
+  if (searchTerm) {
+    const rx = escapeRegex(searchTerm);
     filter.$or = [
-      { name: { $regex: search, $options: 'i' } },
-      { composition: { $regex: search, $options: 'i' } }
+      { name: { $regex: rx, $options: 'i' } },
+      { composition: { $regex: rx, $options: 'i' } }
     ];
   }
+  applyCreatedAtRangeFromQuery(filter, query);
+  applyCreatedByFromQuery(filter, query);
   let q = Product.find(filter).sort(sort).skip(skip).limit(limit);
   if (!canViewProductCostOnProductApi(reqUser)) {
     q = q.select(PRODUCT_COST_PROJECTION_OMIT);

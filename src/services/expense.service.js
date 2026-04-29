@@ -5,16 +5,27 @@ const { parsePagination } = require('../utils/pagination');
 const { TRANSACTION_TYPE } = require('../constants/enums');
 const { roundPKR } = require('../utils/currency');
 const auditService = require('./audit.service');
+const {
+  escapeRegex,
+  qScalar,
+  applyDateFieldRangeFromQuery,
+  applyCreatedByFromQuery
+} = require('../utils/listQuery');
 
 const list = async (companyId, query) => {
-  const { page, limit, skip, sort } = parsePagination(query);
+  const { page, limit, skip, sort, search } = parsePagination(query);
+  const searchTerm = qScalar(search);
   const filter = { companyId };
   if (query.category) filter.category = query.category;
-  if (query.from || query.to) {
-    filter.date = {};
-    if (query.from) filter.date.$gte = new Date(query.from);
-    if (query.to) filter.date.$lte = new Date(query.to);
+  applyDateFieldRangeFromQuery(filter, query, 'date');
+  if (searchTerm) {
+    const rx = escapeRegex(searchTerm);
+    filter.$or = [
+      { description: { $regex: rx, $options: 'i' } },
+      { category: { $regex: rx, $options: 'i' } }
+    ];
   }
+  applyCreatedByFromQuery(filter, query);
   const [docs, total] = await Promise.all([
     Expense.find(filter)
       .populate('distributorId', 'name')

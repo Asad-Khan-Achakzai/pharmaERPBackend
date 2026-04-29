@@ -20,6 +20,12 @@ const auditService = require('./audit.service');
 const pdfService = require('./pdf.service');
 const financialService = require('./financial.service');
 const { calculateBonus, normalizeBonusScheme, lineTotalQuantity } = require('../utils/bonus');
+const {
+  escapeRegex,
+  qScalar,
+  applyCreatedAtRangeFromQuery,
+  applyCreatedByFromQuery
+} = require('../utils/listQuery');
 
 const paidUnitsInDeliveryBatch = (orderItem, alreadyDelivered, physicalBatchQty) => {
   const paidCap = Number(orderItem.quantity) || 0;
@@ -57,13 +63,28 @@ const buildLineItemsFromPayload = (data, productMap, pharmacy, distributor) => {
 
 const list = async (companyId, query) => {
   const { page, limit, skip, sort, search } = parsePagination(query);
+  const searchTerm = qScalar(search);
   const filter = { companyId };
   if (query.status) filter.status = query.status;
   if (query.distributorId) filter.distributorId = query.distributorId;
   if (query.pharmacyId) filter.pharmacyId = query.pharmacyId;
   if (query.medicalRepId) filter.medicalRepId = query.medicalRepId;
-  if (search) {
-    filter.$or = [{ orderNumber: { $regex: search, $options: 'i' } }];
+  applyCreatedByFromQuery(filter, query);
+  applyCreatedAtRangeFromQuery(filter, query);
+  if (searchTerm) {
+    const rx = escapeRegex(searchTerm);
+    const or = [{ orderNumber: { $regex: rx, $options: 'i' } }];
+    const pharmacies = await Pharmacy.find({
+      companyId,
+      isActive: true,
+      name: { $regex: rx, $options: 'i' }
+    })
+      .select('_id')
+      .lean()
+      .limit(100);
+    const pids = pharmacies.map((p) => p._id);
+    if (pids.length) or.push({ pharmacyId: { $in: pids } });
+    filter.$or = or;
   }
 
   const [docs, total] = await Promise.all([

@@ -2,12 +2,20 @@ const MedRepTarget = require('../models/MedRepTarget');
 const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const auditService = require('./audit.service');
+const { escapeRegex, qScalar, applyCreatedAtRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
 
 const list = async (companyId, query) => {
-  const { page, limit, skip, sort } = parsePagination(query);
+  const { page, limit, skip, sort, search } = parsePagination(query);
+  const searchTerm = qScalar(search);
   const filter = { companyId };
   if (query.medicalRepId) filter.medicalRepId = query.medicalRepId;
   if (query.month) filter.month = query.month;
+  if (searchTerm && !query.month) {
+    const rx = escapeRegex(searchTerm);
+    filter.month = { $regex: rx, $options: 'i' };
+  }
+  applyCreatedAtRangeFromQuery(filter, query);
+  applyCreatedByFromQuery(filter, query);
   const [docs, total] = await Promise.all([
     MedRepTarget.find(filter).populate('medicalRepId', 'name').sort(sort).skip(skip).limit(limit),
     MedRepTarget.countDocuments(filter)

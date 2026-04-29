@@ -13,6 +13,12 @@ const auditService = require('./audit.service');
 const salaryStructureService = require('./salaryStructure.service');
 const attendanceService = require('./attendance.service');
 const { generatePayslipPdf } = require('../utils/payslipPdf');
+const {
+  escapeRegex,
+  qScalar,
+  applyCreatedAtRangeFromQuery,
+  applyCreatedByFromQuery
+} = require('../utils/listQuery');
 
 const lineAmount = (basic, item) => {
   if (item.type === 'fixed') return roundPKR(item.value);
@@ -167,6 +173,15 @@ const applyPayrollListFilters = (filter, query) => {
     if (query.monthFrom) filter.month.$gte = query.monthFrom;
     if (query.monthTo) filter.month.$lte = query.monthTo;
   }
+
+  const searchTerm = qScalar(query.search);
+  if (searchTerm && !query.month && !query.monthFrom && !query.monthTo) {
+    const rx = escapeRegex(searchTerm);
+    filter.month = { $regex: rx, $options: 'i' };
+  }
+
+  applyCreatedAtRangeFromQuery(filter, query);
+  applyCreatedByFromQuery(filter, query);
 
   if (query.paidOnFrom || query.paidOnTo) {
     filter.paidOn = {};
