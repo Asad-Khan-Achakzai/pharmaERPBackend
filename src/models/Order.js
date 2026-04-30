@@ -33,7 +33,7 @@ const orderItemSchema = new mongoose.Schema(
 const orderSchema = new mongoose.Schema(
   {
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', required: true },
-    orderNumber: { type: String, unique: true },
+    orderNumber: { type: String },
     pharmacyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Pharmacy', required: true },
     doctorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Doctor' },
     distributorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Distributor', required: true },
@@ -61,6 +61,14 @@ const orderSchema = new mongoose.Schema(
 );
 
 orderSchema.index({ companyId: 1, status: 1 });
+/**
+ * orderNumber is unique per company (compound index with companyId).
+ * Do NOT assume global uniqueness.
+ */
+orderSchema.index(
+  { companyId: 1, orderNumber: 1 },
+  { unique: true, partialFilterExpression: { orderNumber: { $type: 'string' } } }
+);
 orderSchema.index({ companyId: 1, pharmacyId: 1 });
 orderSchema.index({ companyId: 1, distributorId: 1 });
 orderSchema.index({ companyId: 1, medicalRepId: 1 });
