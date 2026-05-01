@@ -17,7 +17,12 @@ const Distributor = require('../models/Distributor');
 const Company = require('../models/Company');
 const SupplierLedger = require('../models/SupplierLedger');
 const { roundPKR } = require('../utils/currency');
-const { LEDGER_ENTITY_TYPE, SETTLEMENT_DIRECTION, SUPPLIER_LEDGER_TYPE } = require('../constants/enums');
+const {
+  LEDGER_ENTITY_TYPE,
+  SETTLEMENT_DIRECTION,
+  SUPPLIER_LEDGER_TYPE,
+  COLLECTOR_TYPE
+} = require('../constants/enums');
 const {
   FINANCIAL_SCOPE,
   canonicalFromDashboard,
@@ -1114,11 +1119,70 @@ const computeImpliedCashBalance = async (companyId) => {
 };
 
 /**
+ * Company-only cash movement estimate:
+ * opening + collections taken by company + D→C settlements − C→D settlements − expenses − supplier payments.
+ */
+const computeCompanyCashFlow = async (companyId) => {
+  const cid = objectId(companyId);
+  const company = await Company.findById(cid).select('cashOpeningBalance').lean();
+  const opening = roundPKR(company?.cashOpeningBalance || 0);
+
+  const [cColCompany, cSet, cExp, cSup] = await Promise.all([
+    Collection.aggregate([
+      {
+        $match: {
+          companyId: cid,
+          collectorType: COLLECTOR_TYPE.COMPANY,
+          isDeleted: nd
+        }
+      },
+      { $group: { _id: null, t: { $sum: '$amount' } } }
+    ]),
+    Settlement.aggregate([
+      { $match: { companyId: cid, isDeleted: nd } },
+      { $group: { _id: '$direction', t: { $sum: '$amount' } } }
+    ]),
+    Expense.aggregate([{ $match: { companyId: cid, isDeleted: nd } }, { $group: { _id: null, t: { $sum: '$amount' } } }]),
+    SupplierLedger.aggregate([
+      { $match: { companyId: cid, type: SUPPLIER_LEDGER_TYPE.PAYMENT, isDeleted: nd } },
+      { $group: { _id: null, t: { $sum: '$amount' } } }
+    ])
+  ]);
+
+  const companyCollections = roundPKR(cColCompany[0]?.t || 0);
+  const inSettlement = roundPKR(
+    cSet.find((x) => x._id === SETTLEMENT_DIRECTION.DISTRIBUTOR_TO_COMPANY)?.t || 0
+  );
+  const outSettlement = roundPKR(
+    cSet.find((x) => x._id === SETTLEMENT_DIRECTION.COMPANY_TO_DISTRIBUTOR)?.t || 0
+  );
+  const expenses = roundPKR(cExp[0]?.t || 0);
+  const supplierPayments = roundPKR(cSup[0]?.t || 0);
+
+  const companyCashFlow = roundPKR(
+    opening + companyCollections + inSettlement - outSettlement - expenses - supplierPayments
+  );
+
+  return {
+    companyCashFlow,
+    components: {
+      opening,
+      inSettlement,
+      outSettlement,
+      supplierPayments,
+      expenses,
+      companyCollections
+    }
+  };
+};
+
+/**
  * Unified balance-sheet-style snapshot. Distributor payable = commission owed to distributors (existing clearing).
  */
 const financialSummary = async (companyId) => {
-  const [cashData, pharm, dist, sup] = await Promise.all([
+  const [cashData, companyCashData, pharm, dist, sup] = await Promise.all([
     computeImpliedCashBalance(companyId),
+    computeCompanyCashFlow(companyId),
     pharmacyBalances(companyId),
     distributorBalances(companyId),
     supplierService.supplierBalances(companyId)
@@ -1135,8 +1199,19 @@ const financialSummary = async (companyId) => {
   return {
     generatedAt: new Date().toISOString(),
     cashBalance: cashData.cashBalance,
+    companyCashFlow: companyCashData.companyCashFlow,
+    ecosystemCashFlow: cashData.cashBalance,
     cashOpeningBalance: cashData.cashOpeningBalance,
     cashComponents: cashData.components,
+    companyCashComponents: companyCashData.components,
+    ecosystemCashComponents: {
+      opening: cashData.cashOpeningBalance,
+      collections: cashData.components.totalPharmacyCollections,
+      inSettlement: cashData.components.settlementsInFromDistributors,
+      outSettlement: cashData.components.settlementsOutToDistributors,
+      supplierPayments: cashData.components.supplierPaymentsCashOut,
+      expenses: cashData.components.totalOperatingExpenses
+    },
     totalPharmacyReceivable,
     totalSupplierPayable,
     totalDistributorPayable,
@@ -1174,7 +1249,15 @@ const financialFlowMonthly = async (companyId, months = 12) => {
   const [cols, sets, exps, sups] = await Promise.all([
     Collection.aggregate([
       { $match: { companyId: cid, isDeleted: nd, date: dateRange } },
-      { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$date' } }, t: { $sum: '$amount' } } }
+      {
+        $group: {
+          _id: {
+            ym: { $dateToString: { format: '%Y-%m', date: '$date' } },
+            collectorType: '$collectorType'
+          },
+          t: { $sum: '$amount' }
+        }
+      }
     ]),
     Settlement.aggregate([
       { $match: { companyId: cid, isDeleted: nd, date: dateRange } },
@@ -1204,14 +1287,47 @@ const financialFlowMonthly = async (companyId, months = 12) => {
     if (r._id.direction === SETTLEMENT_DIRECTION.COMPANY_TO_DISTRIBUTOR) o.c2d += roundPKR(r.t);
   }
 
+  const colMap = new Map();
+  for (const r of cols) {
+    const ym = r._id.ym;
+    if (!colMap.has(ym)) colMap.set(ym, { all: 0, company: 0, distributor: 0 });
+    const o = colMap.get(ym);
+    const amt = roundPKR(r.t);
+    o.all = roundPKR(o.all + amt);
+    if (r._id.collectorType === COLLECTOR_TYPE.COMPANY) o.company = roundPKR(o.company + amt);
+    if (r._id.collectorType === COLLECTOR_TYPE.DISTRIBUTOR) o.distributor = roundPKR(o.distributor + amt);
+  }
+
   const series = monthKeys.map((ym) => {
-    const col = cols.find((c) => c._id === ym)?.t || 0;
+    const col = colMap.get(ym) || { all: 0, company: 0, distributor: 0 };
     const s = setMap.get(ym) || { d2c: 0, c2d: 0 };
     const exp = exps.find((e) => e._id === ym)?.t || 0;
     const sup = sups.find((x) => x._id === ym)?.t || 0;
-    const inflow = roundPKR(col + s.d2c);
+
+    // Legacy ecosystem-style series (kept for backward compatibility).
+    const inflow = roundPKR(col.all + s.d2c);
     const outflow = roundPKR(s.c2d + exp + sup);
-    return { month: ym, inflow, outflow, net: roundPKR(inflow - outflow) };
+    const net = roundPKR(inflow - outflow);
+
+    // Company-only cash movement series.
+    const companyInflow = roundPKR(col.company + s.d2c);
+    const companyOutflow = roundPKR(s.c2d + exp + sup);
+    const companyNet = roundPKR(companyInflow - companyOutflow);
+
+    return {
+      month: ym,
+      inflow,
+      outflow,
+      net,
+      ecosystemInflow: inflow,
+      ecosystemOutflow: outflow,
+      ecosystemNet: net,
+      companyInflow,
+      companyOutflow,
+      companyNet,
+      companyCollections: roundPKR(col.company),
+      distributorCollections: roundPKR(col.distributor)
+    };
   });
 
   return { monthKeys, series };
