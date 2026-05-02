@@ -65,7 +65,16 @@ const list = async (companyId, query) => {
   const { page, limit, skip, sort, search } = parsePagination(query);
   const searchTerm = qScalar(search);
   const filter = { companyId };
-  if (query.status) filter.status = query.status;
+  const statusParam = qScalar(query.status);
+  const statusUpper = statusParam ? String(statusParam).toUpperCase() : '';
+  if (statusUpper === 'ALL') {
+    /* show every status including CANCELLED */
+  } else if (statusParam && Object.values(ORDER_STATUS).includes(statusUpper)) {
+    filter.status = statusUpper;
+  } else {
+    /** Default list: hide cancelled orders unless client passes status=CANCELLED or status=ALL */
+    filter.status = { $ne: ORDER_STATUS.CANCELLED };
+  }
   if (query.distributorId) filter.distributorId = query.distributorId;
   if (query.pharmacyId) filter.pharmacyId = query.pharmacyId;
   if (query.medicalRepId) filter.medicalRepId = query.medicalRepId;

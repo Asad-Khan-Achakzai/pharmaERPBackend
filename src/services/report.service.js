@@ -21,7 +21,8 @@ const {
   LEDGER_ENTITY_TYPE,
   SETTLEMENT_DIRECTION,
   SUPPLIER_LEDGER_TYPE,
-  COLLECTOR_TYPE
+  COLLECTOR_TYPE,
+  ORDER_STATUS
 } = require('../constants/enums');
 const {
   FINANCIAL_SCOPE,
@@ -113,6 +114,67 @@ const distributorCommissionNet = async (companyId, dateRange = null) => {
   return roundPKR(deliveryShare - reversal);
 };
 
+/**
+ * Same net-TP semantics as doctorActivity.service `computeNetTpAchieved` (without doctor filter):
+ * - Fully returned orders: no delivery credit and no return debit for TP.
+ * - Otherwise: sum delivery.tpSubtotal in scope minus sum (order line tpAtTime × return qty) for returns in scope.
+ *
+ * @param {mongoose.Types.ObjectId} cid
+ * @param {{ $gte: Date, $lte: Date } | null} dateRange - null = lifetime (no deliveredAt/returnedAt filter)
+ * @param {mongoose.Types.ObjectId | null} medicalRepOid - if set, only orders with this medicalRepId
+ */
+const computeDashboardNetGrossSalesTp = async (cid, dateRange, medicalRepOid = null) => {
+  const deliveryFilter = { companyId: cid, isDeleted: nd };
+  if (dateRange) deliveryFilter.deliveredAt = dateRange;
+
+  const returnFilter = { companyId: cid, isDeleted: nd };
+  if (dateRange) returnFilter.returnedAt = dateRange;
+
+  const repIdStr = medicalRepOid ? String(medicalRepOid) : null;
+
+  /** @param {any} order */
+  const isOrderFullyReturned = (order) => {
+    if (!order) return false;
+    if (order.status === ORDER_STATUS.RETURNED) return true;
+    if (!order.items?.length) return false;
+    return order.items.every((i) => (i.returnedQty || 0) >= (i.deliveredQty || 0));
+  };
+
+  const [deliveries, returns] = await Promise.all([
+    DeliveryRecord.find(deliveryFilter)
+      .populate({ path: 'orderId', select: 'items status medicalRepId' })
+      .lean(),
+    ReturnRecord.find(returnFilter)
+      .populate({ path: 'orderId', select: 'items status medicalRepId' })
+      .lean()
+  ]);
+
+  let deliveredTp = 0;
+  for (const d of deliveries) {
+    const order = d.orderId;
+    if (!order) continue;
+    if (repIdStr && String(order.medicalRepId) !== repIdStr) continue;
+    if (isOrderFullyReturned(order)) continue;
+    deliveredTp += roundPKR(d.tpSubtotal || 0);
+  }
+  deliveredTp = roundPKR(deliveredTp);
+
+  let returnedTp = 0;
+  for (const ret of returns) {
+    const order = ret.orderId;
+    if (!order) continue;
+    if (repIdStr && String(order.medicalRepId) !== repIdStr) continue;
+    if (isOrderFullyReturned(order)) continue;
+    for (const ri of ret.items || []) {
+      const oi = order.items.find((i) => String(i.productId) === String(ri.productId));
+      if (oi) returnedTp += roundPKR(Number(oi.tpAtTime) * Number(ri.quantity));
+    }
+  }
+  returnedTp = roundPKR(returnedTp);
+
+  return roundPKR(deliveredTp - returnedTp);
+};
+
 const dashboardForMedicalRep = async (cid, repOid, dateRange) => {
   const repMatchOrder = { companyId: cid, medicalRepId: repOid, isDeleted: nd };
 
@@ -176,7 +238,8 @@ const dashboardForMedicalRep = async (cid, repOid, dateRange) => {
     orderCounts,
     deliveryKpiAgg,
     returnCompanyShareAgg,
-    bonusAgg
+    bonusAgg,
+    totalGrossSalesTp
   ] = await Promise.all([
     Transaction.aggregate(txPipeline),
     Order.aggregate([
@@ -191,7 +254,6 @@ const dashboardForMedicalRep = async (cid, repOid, dateRange) => {
       {
         $group: {
           _id: null,
-          totalTpSubtotal: { $sum: { $ifNull: ['$tpSubtotal', 0] } },
           totalCompanyShare: { $sum: { $ifNull: ['$companyShareTotal', 0] } }
         }
       }
@@ -207,7 +269,8 @@ const dashboardForMedicalRep = async (cid, repOid, dateRange) => {
     Order.aggregate([
       { $match: repMatchOrder },
       { $group: { _id: null, totalBonusUnitsOnOrders: { $sum: { $ifNull: ['$totalBonusQuantity', 0] } } } }
-    ])
+    ]),
+    computeDashboardNetGrossSalesTp(cid, dateRange, repOid)
   ]);
 
   const sales = salesAgg[0] || { totalRevenue: 0, totalProfit: 0 };
@@ -217,9 +280,8 @@ const dashboardForMedicalRep = async (cid, repOid, dateRange) => {
     orderStatusMap[o._id] = o.count;
   });
   const bonusRow = bonusAgg[0] || { totalBonusUnitsOnOrders: 0 };
-  const delK = deliveryKpiAgg[0] || { totalTpSubtotal: 0, totalCompanyShare: 0 };
+  const delK = deliveryKpiAgg[0] || { totalCompanyShare: 0 };
   const retK = returnCompanyShareAgg[0] || { returnCompanyShare: 0 };
-  const totalGrossSalesTp = roundPKR(delK.totalTpSubtotal || 0);
   const totalNetSalesCompany = roundPKR((delK.totalCompanyShare || 0) - (retK.returnCompanyShare || 0));
 
   const response = {
@@ -281,7 +343,8 @@ const dashboardCompanyWide = async (companyId, cid, dateRange) => {
     expenseAgg,
     distributorCommissionTotal,
     deliveryKpiAgg,
-    returnCompanyShareAgg
+    returnCompanyShareAgg,
+    totalGrossSalesTp
   ] = await Promise.all([
     Transaction.aggregate([
       { $match: txMatch },
@@ -323,7 +386,6 @@ const dashboardCompanyWide = async (companyId, cid, dateRange) => {
       {
         $group: {
           _id: null,
-          totalTpSubtotal: { $sum: { $ifNull: ['$tpSubtotal', 0] } },
           totalCompanyShare: { $sum: { $ifNull: ['$companyShareTotal', 0] } }
         }
       }
@@ -332,7 +394,8 @@ const dashboardCompanyWide = async (companyId, cid, dateRange) => {
       { $match: returnMatchBase },
       { $unwind: '$items' },
       { $group: { _id: null, returnCompanyShare: { $sum: { $ifNull: ['$items.companyShare', 0] } } } }
-    ])
+    ]),
+    computeDashboardNetGrossSalesTp(cid, dateRange || null, null)
   ]);
 
   const sales = salesAgg[0] || { totalRevenue: 0, totalProfit: 0 };
@@ -351,9 +414,8 @@ const dashboardCompanyWide = async (companyId, cid, dateRange) => {
 
   const bonusRow = bonusAgg[0] || { totalBonusUnitsOnOrders: 0 };
 
-  const delK = deliveryKpiAgg[0] || { totalTpSubtotal: 0, totalCompanyShare: 0 };
+  const delK = deliveryKpiAgg[0] || { totalCompanyShare: 0 };
   const retK = returnCompanyShareAgg[0] || { returnCompanyShare: 0 };
-  const totalGrossSalesTp = roundPKR(delK.totalTpSubtotal || 0);
   const totalNetSalesCompany = roundPKR((delK.totalCompanyShare || 0) - (retK.returnCompanyShare || 0));
 
   const response = {

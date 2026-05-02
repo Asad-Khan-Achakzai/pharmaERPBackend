@@ -35,14 +35,34 @@ const update = async (companyId, id, data, reqUser) => {
   const before = target.toObject();
   if (data.salesTarget !== undefined) target.salesTarget = data.salesTarget;
   if (data.packsTarget !== undefined) target.packsTarget = data.packsTarget;
+  const sales = Number(target.salesTarget) || 0;
+  const packs = Number(target.packsTarget) || 0;
+  if (sales <= 0 && packs <= 0) {
+    throw new ApiError(400, 'At least one of sales target or packs target must be greater than 0');
+  }
   target.updatedBy = reqUser.userId;
   await target.save();
   await auditService.log({ companyId, userId: reqUser.userId, action: 'target.update', entityType: 'MedRepTarget', entityId: target._id, changes: { before, after: target.toObject() } });
   return target;
 };
 
+const remove = async (companyId, id, reqUser) => {
+  const target = await MedRepTarget.findOne({ _id: id, companyId });
+  if (!target) throw new ApiError(404, 'Target not found');
+  const before = target.toObject();
+  await target.softDelete(reqUser.userId);
+  await auditService.log({
+    companyId,
+    userId: reqUser.userId,
+    action: 'target.delete',
+    entityType: 'MedRepTarget',
+    entityId: target._id,
+    changes: { before }
+  });
+};
+
 const getByRep = async (companyId, repId) => {
   return MedRepTarget.find({ companyId, medicalRepId: repId }).sort({ month: -1 });
 };
 
-module.exports = { list, create, update, getByRep };
+module.exports = { list, create, update, remove, getByRep };

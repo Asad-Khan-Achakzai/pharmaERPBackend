@@ -10,7 +10,8 @@ const { createTargetSchema, updateTargetSchema } = require('../../validators/tar
 router.use(authenticate, companyScope);
 router.get('/', checkPermission('targets.view'), c.list);
 router.post('/', checkPermission('targets.create'), validate(createTargetSchema), c.create);
-router.put('/:id', checkPermission('targets.edit'), validate(updateTargetSchema), c.update);
 router.get('/rep/:id', checkPermission('targets.view'), c.getByRep);
+router.put('/:id', checkPermission('targets.edit'), validate(updateTargetSchema), c.update);
+router.delete('/:id', checkPermission('targets.edit'), c.remove);
 
 module.exports = router;

@@ -11,7 +11,9 @@ const createOrderSchema = Joi.object({
       productId: Joi.string().required(),
       quantity: Joi.number().integer().min(1).required(),
       distributorDiscount: Joi.number().min(0).max(100),
-      clinicDiscount: Joi.number().min(0).max(100)
+      clinicDiscount: Joi.number().min(0).max(100),
+      /** Manual bonus (free) units; if omitted, server uses pharmacy buy/get scheme */
+      bonusQuantity: Joi.number().integer().min(0).optional()
     })
   ).min(1).required(),
   notes: Joi.string().trim().allow('')
@@ -27,7 +29,8 @@ const updateOrderSchema = Joi.object({
       productId: Joi.string().required(),
       quantity: Joi.number().integer().min(1).required(),
       distributorDiscount: Joi.number().min(0).max(100),
-      clinicDiscount: Joi.number().min(0).max(100)
+      clinicDiscount: Joi.number().min(0).max(100),
+      bonusQuantity: Joi.number().integer().min(0).optional()
     })
   ).min(1),
   notes: Joi.string().trim().allow('')
