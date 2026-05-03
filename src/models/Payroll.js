@@ -60,9 +60,15 @@ const payrollSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-payrollSchema.index({ companyId: 1, employeeId: 1, month: 1 }, { unique: true });
 payrollSchema.index({ companyId: 1, status: 1, paidOn: -1 });
 
 payrollSchema.plugin(softDeletePlugin);
+
+/** Only enforce uniqueness for active rows (isDeleted === false). Soft-deleted docs are omitted from the index.
+ *  Atlas rejects $ne / $exists:false in partial filters (they use $not). Legacy rows must set isDeleted explicitly — see fixPayrollPartialUniqueIndex.js */
+payrollSchema.index(
+  { companyId: 1, employeeId: 1, month: 1 },
+  { unique: true, partialFilterExpression: { isDeleted: false } }
+);
 
 module.exports = mongoose.model('Payroll', payrollSchema);
