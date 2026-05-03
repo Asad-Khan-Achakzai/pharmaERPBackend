@@ -4,7 +4,7 @@ const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../middleware/asyncHandler');
 
 const assignable = asyncHandler(async (req, res) => {
-  const data = await lookupService.assignableUsers(req.companyId);
+  const data = await lookupService.assignableUsers(req.companyId, req.query);
   ApiResponse.success(res, data, 'OK');
 });
 

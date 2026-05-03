@@ -168,7 +168,7 @@ const getById = async (companyId, id) => {
     .populate('doctorId', 'name specialization')
     .populate('distributorId', 'name city discountOnTP commissionPercentOnTP')
     .populate('medicalRepId', 'name')
-    .populate('items.productId', 'name composition');
+    .populate('items.productId', 'name composition mrp tp casting');
   if (!order) throw new ApiError(404, 'Order not found');
 
   const [deliveries, returns] = await Promise.all([

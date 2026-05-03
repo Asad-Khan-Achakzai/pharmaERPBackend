@@ -8,6 +8,7 @@ const Pharmacy = require('../models/Pharmacy');
 const Doctor = require('../models/Doctor');
 const User = require('../models/User');
 const Supplier = require('../models/Supplier');
+const { escapeRegex, qScalar } = require('../utils/listQuery');
 
 const LOOKUP_MAX = Math.min(100, Number(process.env.LOOKUP_MAX) || 100);
 
@@ -28,6 +29,11 @@ const applyActive = (base, q) => {
 const distributors = async (companyId, query = {}) => {
   const limit = clampLimit(query);
   const filter = applyActive({ companyId }, query);
+  const searchTerm = qScalar(query.search);
+  if (searchTerm) {
+    const rx = escapeRegex(searchTerm);
+    filter.name = { $regex: rx, $options: 'i' };
+  }
   const rows = await Distributor.find(filter)
     .select('name discountOnTP commissionPercentOnTP')
     .sort({ name: 1 })
@@ -44,6 +50,14 @@ const distributors = async (companyId, query = {}) => {
 const products = async (companyId, query = {}) => {
   const limit = clampLimit(query);
   const filter = applyActive({ companyId }, query);
+  const searchTerm = qScalar(query.search);
+  if (searchTerm) {
+    const rx = escapeRegex(searchTerm);
+    filter.$or = [
+      { name: { $regex: rx, $options: 'i' } },
+      { composition: { $regex: rx, $options: 'i' } }
+    ];
+  }
   const rows = await Product.find(filter)
     .select('name composition mrp tp casting')
     .sort({ name: 1 })
@@ -62,6 +76,14 @@ const products = async (companyId, query = {}) => {
 const pharmacies = async (companyId, query = {}) => {
   const limit = clampLimit(query);
   const filter = applyActive({ companyId }, query);
+  const searchTerm = qScalar(query.search);
+  if (searchTerm) {
+    const rx = escapeRegex(searchTerm);
+    filter.$or = [
+      { name: { $regex: rx, $options: 'i' } },
+      { city: { $regex: rx, $options: 'i' } }
+    ];
+  }
   const rows = await Pharmacy.find(filter)
     .select('name discountOnTP bonusScheme')
     .sort({ name: 1 })
@@ -80,6 +102,11 @@ const doctors = async (companyId, query = {}) => {
   const base = { companyId };
   const f = applyActive(base, query);
   if (query.pharmacyId) f.pharmacyId = query.pharmacyId;
+  const searchTerm = qScalar(query.search);
+  if (searchTerm) {
+    const rx = escapeRegex(searchTerm);
+    f.name = { $regex: rx, $options: 'i' };
+  }
   const rows = await Doctor.find(f)
     .select('name pharmacyId')
     .sort({ name: 1 })
@@ -93,11 +120,21 @@ const doctors = async (companyId, query = {}) => {
 };
 
 /** Same semantics as order assignable reps: active company users (minimal fields for dropdowns). */
-const assignableUsers = async (companyId) => {
-  const rows = await User.find({ companyId, isActive: true })
+const assignableUsers = async (companyId, query = {}) => {
+  const limit = clampLimit(query);
+  const filter = { companyId, isActive: true };
+  const searchTerm = qScalar(query.search);
+  if (searchTerm) {
+    const rx = escapeRegex(searchTerm);
+    filter.$or = [
+      { name: { $regex: rx, $options: 'i' } },
+      { email: { $regex: rx, $options: 'i' } }
+    ];
+  }
+  const rows = await User.find(filter)
     .select('name email role')
     .sort({ name: 1 })
-    .limit(LOOKUP_MAX)
+    .limit(limit)
     .lean();
   return rows.map((u) => ({
     _id: u._id,
@@ -114,6 +151,15 @@ const suppliers = async (companyId, query = {}) => {
     filter.isActive = query.isActive === 'true';
   } else {
     filter.isActive = true;
+  }
+  const searchTerm = qScalar(query.search);
+  if (searchTerm) {
+    const rx = escapeRegex(searchTerm);
+    filter.$or = [
+      { name: { $regex: rx, $options: 'i' } },
+      { email: { $regex: rx, $options: 'i' } },
+      { phone: { $regex: rx, $options: 'i' } }
+    ];
   }
   const rows = await Supplier.find(filter)
     .select('name phone email')
