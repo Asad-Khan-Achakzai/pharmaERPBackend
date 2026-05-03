@@ -13,6 +13,7 @@ router.post('/preview', checkPermission('payroll.create'), validate(previewPayro
 router.post('/', checkPermission('payroll.create'), validate(createPayrollSchema), c.create);
 router.get('/:id/payslip', checkPermission('payroll.view'), c.payslip);
 router.put('/:id', checkPermission('payroll.edit'), validate(updatePayrollSchema), c.update);
+router.delete('/:id', checkPermission('payroll.edit'), c.remove);
 router.post('/:id/pay', checkPermission('payroll.pay'), c.pay);
 
 module.exports = router;

@@ -406,6 +406,23 @@ const pay = async (companyId, id, reqUser) => {
   return payroll;
 };
 
+const remove = async (companyId, id, reqUser) => {
+  const payroll = await Payroll.findOne({ _id: id, companyId });
+  if (!payroll) throw new ApiError(404, 'Payroll not found');
+  if (payroll.status === PAYROLL_STATUS.PAID) throw new ApiError(400, 'Cannot delete paid payroll');
+  const before = payroll.toObject();
+  await payroll.softDelete(reqUser.userId);
+  await auditService.log({
+    companyId,
+    userId: reqUser.userId,
+    action: 'payroll.delete',
+    entityType: 'Payroll',
+    entityId: payroll._id,
+    changes: { before }
+  });
+  return { deleted: true };
+};
+
 const streamPayslipPdf = async (companyId, id, res) => {
   const payroll = await Payroll.findOne({ _id: id, companyId }).populate('employeeId', 'name email role');
   if (!payroll) throw new ApiError(404, 'Payroll not found');
@@ -425,4 +442,4 @@ const streamPayslipPdf = async (companyId, id, res) => {
   });
 };
 
-module.exports = { list, create, update, pay, preview: previewPayroll, streamPayslipPdf };
+module.exports = { list, create, update, pay, remove, preview: previewPayroll, streamPayslipPdf };
