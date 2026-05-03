@@ -14,7 +14,14 @@ const medRepTargetSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-medRepTargetSchema.index({ companyId: 1, medicalRepId: 1, month: 1 }, { unique: true });
+medRepTargetSchema.index(
+  { companyId: 1, medicalRepId: 1, month: 1 },
+  {
+    unique: true,
+    /** Allow re-creating targets after soft-delete. Atlas/MongoDB disallow $ne in partial indexes; use strict equality. */
+    partialFilterExpression: { isDeleted: false }
+  }
+);
 
 medRepTargetSchema.plugin(softDeletePlugin);
 
