@@ -20,6 +20,7 @@ const auditService = require('./audit.service');
 const pdfService = require('./pdf.service');
 const financialService = require('./financial.service');
 const { calculateBonus, normalizeBonusScheme, lineTotalQuantity } = require('../utils/bonus');
+const { utcNow, getBusinessMonthKey, requireCompanyIanaZone } = require('../utils/businessTime');
 const {
   escapeRegex,
   qScalar,
@@ -61,7 +62,7 @@ const buildLineItemsFromPayload = (data, productMap, pharmacy, distributor) => {
   });
 };
 
-const list = async (companyId, query) => {
+const list = async (companyId, query, timeZone = 'UTC') => {
   const { page, limit, skip, sort, search } = parsePagination(query);
   const searchTerm = qScalar(search);
   const filter = { companyId };
@@ -79,7 +80,7 @@ const list = async (companyId, query) => {
   if (query.pharmacyId) filter.pharmacyId = query.pharmacyId;
   if (query.medicalRepId) filter.medicalRepId = query.medicalRepId;
   applyCreatedByFromQuery(filter, query);
-  applyCreatedAtRangeFromQuery(filter, query);
+  applyCreatedAtRangeFromQuery(filter, query, timeZone);
   if (searchTerm) {
     const rx = escapeRegex(searchTerm);
     const or = [{ orderNumber: { $regex: rx, $options: 'i' } }];
@@ -108,13 +109,15 @@ const list = async (companyId, query) => {
   return { docs, total, page, limit };
 };
 
-const create = async (companyId, data, reqUser) => {
+const create = async (companyId, data, reqUser, _timeZone) => {
   let medicalRepId = reqUser.userId;
   if (data.medicalRepId) {
     const rep = await User.findOne({ _id: data.medicalRepId, companyId, isActive: true });
     if (!rep) throw new ApiError(400, 'Selected user is not an active member of this company');
     medicalRepId = data.medicalRepId;
   }
+
+  const orderDate = utcNow();
 
   const [pharmacy, distributor] = await Promise.all([
     Pharmacy.findOne({ _id: data.pharmacyId, companyId, isActive: true }),
@@ -150,6 +153,7 @@ const create = async (companyId, data, reqUser) => {
     finalCompanyRevenue: totals.finalCompanyRevenue,
     totalBonusQuantity: totals.totalBonusQuantity,
     totalCastingCost: totals.totalCastingCost,
+    orderDate,
     notes: data.notes,
     createdBy: reqUser.userId
   });
@@ -205,6 +209,7 @@ const update = async (companyId, id, data, reqUser) => {
     order.medicalRepId = data.medicalRepId;
   }
   if (data.notes !== undefined) order.notes = data.notes;
+
   if (data.items) {
     const [pharmacy, distributor] = await Promise.all([
       Pharmacy.findOne({ _id: order.pharmacyId, companyId }),
@@ -237,7 +242,11 @@ const update = async (companyId, id, data, reqUser) => {
   return order;
 };
 
-const deliver = async (companyId, orderId, deliveryItems, reqUser) => {
+const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC') => {
+  const tz = requireCompanyIanaZone(timeZone);
+  const deliveryItems = body.items;
+  const businessDate = utcNow();
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -290,7 +299,7 @@ const deliver = async (companyId, orderId, deliveryItems, reqUser) => {
 
       await DistributorInventory.updateOne(
         { _id: inv._id },
-        { $inc: { quantity: -physicalQty }, $set: { lastUpdated: new Date() } },
+        { $inc: { quantity: -physicalQty }, $set: { lastUpdated: utcNow() } },
         { session }
       );
 
@@ -348,7 +357,8 @@ const deliver = async (companyId, orderId, deliveryItems, reqUser) => {
           pharmacyNetPayable,
           companyShareTotal,
           distributorCommissionPercent: commissionPctSnapshot,
-          deliveredBy: reqUser.userId
+          deliveredBy: reqUser.userId,
+          deliveredAt: businessDate
         }
       ],
       { session, ordered: true }
@@ -362,7 +372,7 @@ const deliver = async (companyId, orderId, deliveryItems, reqUser) => {
       });
     }
 
-    const month = new Date().toISOString().slice(0, 7);
+    const month = getBusinessMonthKey(businessDate, tz);
     await MedRepTarget.updateOne(
       { companyId, medicalRepId: order.medicalRepId, month },
       { $inc: { achievedSales: totalAmount, achievedPacks: totalPacks } },
@@ -376,11 +386,11 @@ const deliver = async (companyId, orderId, deliveryItems, reqUser) => {
       orderId: order._id,
       invoiceNumber,
       pharmacyNetPayable,
-      date: new Date()
+      date: businessDate
     });
 
     await Transaction.create(
-      [{ companyId, type: TRANSACTION_TYPE.SALE, referenceType: 'DELIVERY', referenceId: delivery._id, revenue: totalAmount, cost: totalCost, profit: totalProfit, date: new Date(), description: `Sale - ${invoiceNumber}` }],
+      [{ companyId, type: TRANSACTION_TYPE.SALE, referenceType: 'DELIVERY', referenceId: delivery._id, revenue: totalAmount, cost: totalCost, profit: totalProfit, date: businessDate, description: `Sale - ${invoiceNumber}` }],
       { session, ordered: true }
     );
 
@@ -400,7 +410,8 @@ const deliver = async (companyId, orderId, deliveryItems, reqUser) => {
   }
 };
 
-const returnOrder = async (companyId, orderId, returnItems, reqUser) => {
+const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 'UTC') => {
+  const tz = requireCompanyIanaZone(timeZone);
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -440,7 +451,7 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser) => {
 
       await DistributorInventory.updateOne(
         { companyId, distributorId: order.distributorId, productId: rItem.productId },
-        { $inc: { quantity: rItem.quantity }, $set: { lastUpdated: new Date() } },
+        { $inc: { quantity: rItem.quantity }, $set: { lastUpdated: utcNow() } },
         { session }
       );
 
@@ -489,8 +500,20 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser) => {
     order.updatedBy = reqUser.userId;
     await order.save({ session });
 
+    const retDate = utcNow();
     const [returnRecord] = await ReturnRecord.create(
-      [{ companyId, orderId, items: returnRecordItems, totalAmount, totalCost, totalProfit, returnedBy: reqUser.userId }],
+      [
+        {
+          companyId,
+          orderId,
+          items: returnRecordItems,
+          totalAmount,
+          totalCost,
+          totalProfit,
+          returnedBy: reqUser.userId,
+          returnedAt: retDate
+        }
+      ],
       { session, ordered: true }
     );
 
@@ -502,14 +525,13 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser) => {
       });
     }
 
-    const month = new Date().toISOString().slice(0, 7);
+    const month = getBusinessMonthKey(returnRecord.returnedAt, tz);
     await MedRepTarget.updateOne(
       { companyId, medicalRepId: order.medicalRepId, month },
       { $inc: { achievedSales: -totalAmount, achievedPacks: -totalPacks } },
       { session }
     );
 
-    const retDate = new Date();
     await Ledger.create(
       [{ companyId, entityType: LEDGER_ENTITY_TYPE.PHARMACY, entityId: order.pharmacyId, type: LEDGER_TYPE.CREDIT, amount: totalAmount, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: returnRecord._id, description: `Return for order ${order.orderNumber}`, date: retDate }],
       { session, ordered: true }
@@ -546,7 +568,7 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser) => {
     }
 
     await Transaction.create(
-      [{ companyId, type: TRANSACTION_TYPE.RETURN, referenceType: 'RETURN', referenceId: returnRecord._id, revenue: -totalAmount, cost: -totalCost, profit: -totalProfit, date: new Date(), description: `Return - ${order.orderNumber}` }],
+      [{ companyId, type: TRANSACTION_TYPE.RETURN, referenceType: 'RETURN', referenceId: returnRecord._id, revenue: -totalAmount, cost: -totalCost, profit: -totalProfit, date: retDate, description: `Return - ${order.orderNumber}` }],
       { session, ordered: true }
     );
 

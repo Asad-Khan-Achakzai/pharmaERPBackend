@@ -5,7 +5,7 @@ const { parsePagination } = require('../utils/pagination');
 const { escapeRegex, qScalar, applyCreatedAtRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
 const auditService = require('./audit.service');
 
-const list = async (companyId, query) => {
+const list = async (companyId, query, timeZone = "UTC") => {
   const { page, limit, skip, sort, search } = parsePagination(query);
   const searchTerm = qScalar(search);
   const filter = { companyId };
@@ -18,7 +18,7 @@ const list = async (companyId, query) => {
       { specialization: { $regex: rx, $options: 'i' } }
     ];
   }
-  applyCreatedAtRangeFromQuery(filter, query);
+  applyCreatedAtRangeFromQuery(filter, query, timeZone);
   applyCreatedByFromQuery(filter, query);
   const [docs, total] = await Promise.all([
     Doctor.find(filter).populate('pharmacyId', 'name city').sort(sort).skip(skip).limit(limit),

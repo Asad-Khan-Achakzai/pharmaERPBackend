@@ -34,52 +34,14 @@ const financialService = require('./financial.service');
 const supplierService = require('./supplier.service');
 const auditService = require('./audit.service');
 const ApiError = require('../utils/ApiError');
+const businessTime = require('../utils/businessTime');
 
 const objectId = (id) => new mongoose.Types.ObjectId(id);
 
 const nd = { $ne: true };
 
-const endOfDayDash = (d) => {
-  if (!d) return null;
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
-};
-
-const MS_PER_DAY = 86400000;
-const MAX_DASH_RANGE_DAYS = 800;
-
-/** @returns {{ $gte: Date, $lte: Date }} */
-const coalesceDashboardRange = (from, to) => {
-  if (!from && !to) return null;
-  if (!from || !to) {
-    throw new ApiError(400, 'from and to must both be provided for a date range');
-  }
-  const start = new Date(from);
-  const end = endOfDayDash(to);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-    throw new ApiError(400, 'Invalid from or to date');
-  }
-  if (start > end) throw new ApiError(400, 'from must be on or before to');
-  const days = Math.ceil((end.getTime() - start.getTime()) / MS_PER_DAY);
-  if (days > MAX_DASH_RANGE_DAYS) throw new ApiError(400, 'Date range exceeds maximum allowed');
-  return { $gte: start, $lte: end };
-};
-
-/** Current calendar month in local time (default range for rep dashboard). */
-const defaultMonthRangeLocal = () => {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth();
-  const start = new Date(y, m, 1, 0, 0, 0, 0);
-  const end = endOfDayDash(new Date(y, m + 1, 0));
-  return { $gte: start, $lte: end };
-};
-
-const periodPayload = (range) => ({
-  from: range.$gte.toISOString().slice(0, 10),
-  to: range.$lte.toISOString().slice(0, 10)
-});
+const dGroupDay = (tz) => businessTime.mongoDateToStringDay('$date', tz);
+const ymGroup = (tz) => businessTime.mongoDateToStringMonth('$date', tz);
 
 /**
  * Distributor commission to deduct from company earnings:
@@ -175,7 +137,7 @@ const computeDashboardNetGrossSalesTp = async (cid, dateRange, medicalRepOid = n
   return roundPKR(deliveredTp - returnedTp);
 };
 
-const dashboardForMedicalRep = async (cid, repOid, dateRange) => {
+const dashboardForMedicalRep = async (cid, repOid, dateRange, tz) => {
   const repMatchOrder = { companyId: cid, medicalRepId: repOid, isDeleted: nd };
 
   const txPipeline = [
@@ -298,7 +260,7 @@ const dashboardForMedicalRep = async (cid, repOid, dateRange) => {
     ordersByStatus: orderStatusMap,
     totalBonusGiven: bonusRow.totalBonusUnitsOnOrders || 0,
     dashboardScope: 'self',
-    period: periodPayload(dateRange)
+    period: businessTime.periodPayloadFromUtcRange(dateRange, tz)
   };
 
   return withFinancialEnvelopePromise(response);
@@ -311,7 +273,7 @@ const withFinancialEnvelopePromise = (response) =>
     canonical: canonicalFromDashboard(response)
   });
 
-const dashboardCompanyWide = async (companyId, cid, dateRange) => {
+const dashboardCompanyWide = async (companyId, cid, dateRange, tz) => {
   const txMatch = { companyId: cid, type: { $in: ['SALE', 'RETURN'] }, isDeleted: nd };
   if (dateRange) txMatch.date = dateRange;
 
@@ -432,7 +394,7 @@ const dashboardCompanyWide = async (companyId, cid, dateRange) => {
     ordersByStatus: orderStatusMap,
     totalBonusGiven: bonusRow.totalBonusUnitsOnOrders || 0,
     dashboardScope: 'company',
-    ...(dateRange ? { period: periodPayload(dateRange) } : {})
+    ...(dateRange ? { period: businessTime.periodPayloadFromUtcRange(dateRange, tz) } : {})
   };
 
   return withFinancialEnvelopePromise(response);
@@ -446,46 +408,53 @@ const dashboardCompanyWide = async (companyId, cid, dateRange) => {
  * @param {{ from?: string, to?: string, restrictToRepId?: string }} [options]
  */
 const dashboard = async (companyId, options = {}) => {
-  const { from, to, restrictToRepId } = options;
+  const { from, to, restrictToRepId, timeZone } = options;
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   const cid = objectId(companyId);
 
   if (restrictToRepId) {
     let range;
     if (from || to) {
-      range = coalesceDashboardRange(from, to);
+      range = businessTime.coalesceBusinessDateRangeFromYmd(from, to, tz);
     } else {
-      range = defaultMonthRangeLocal();
+      range = businessTime.defaultBusinessMonthUtcRange(tz);
     }
-    return dashboardForMedicalRep(cid, objectId(String(restrictToRepId)), range);
+    return dashboardForMedicalRep(cid, objectId(String(restrictToRepId)), range, tz);
   }
 
-  const dateRange = from || to ? coalesceDashboardRange(from, to) : null;
-  return dashboardCompanyWide(companyId, cid, dateRange);
+  const dateRange = from || to ? businessTime.coalesceBusinessDateRangeFromYmd(from, to, tz) : null;
+  return dashboardCompanyWide(companyId, cid, dateRange, tz);
 };
 
-const sales = async (companyId, from, to) => {
+const sales = async (companyId, from, to, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   const match = { companyId: objectId(companyId), type: 'SALE', isDeleted: nd };
-  if (from || to) {
-    match.date = {};
-    if (from) match.date.$gte = new Date(from);
-    if (to) match.date.$lte = new Date(to);
-  }
+  businessTime.applyOptionalUtcRange(match, 'date', from, to, tz);
   return Transaction.aggregate([
     { $match: match },
-    { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$date' } }, revenue: { $sum: '$revenue' }, cost: { $sum: '$cost' }, profit: { $sum: '$profit' }, count: { $sum: 1 } } },
+    { $group: { _id: dGroupDay(tz), revenue: { $sum: '$revenue' }, cost: { $sum: '$cost' }, profit: { $sum: '$profit' }, count: { $sum: 1 } } },
     { $sort: { _id: 1 } }
   ]);
 };
 
-const profit = async (companyId, from, to) => {
+const profit = async (companyId, from, to, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   const match = { companyId: objectId(companyId), isDeleted: nd };
   const dateR = {};
   if (from || to) {
     match.date = {};
-    if (from) match.date.$gte = new Date(from);
-    if (to) match.date.$lte = new Date(to);
-    if (from) dateR.$gte = new Date(from);
-    if (to) dateR.$lte = new Date(to);
+    if (from) {
+      const lo = businessTime.filterLowerBoundUtc(from, tz);
+      if (!lo) throw new ApiError(400, 'Invalid from date');
+      match.date.$gte = lo;
+      dateR.$gte = lo;
+    }
+    if (to) {
+      const hi = businessTime.filterUpperBoundUtc(to, tz);
+      if (!hi) throw new ApiError(400, 'Invalid to date');
+      match.date.$lte = hi;
+      dateR.$lte = hi;
+    }
   }
   const [result, distributorCommissionTotal, payrollAgg, expenseAgg] = await Promise.all([
     Transaction.aggregate([
@@ -548,13 +517,10 @@ const profit = async (companyId, from, to) => {
   });
 };
 
-const expenses = async (companyId, from, to) => {
+const expenses = async (companyId, from, to, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   const match = { companyId: objectId(companyId), isDeleted: nd };
-  if (from || to) {
-    match.date = {};
-    if (from) match.date.$gte = new Date(from);
-    if (to) match.date.$lte = new Date(to);
-  }
+  businessTime.applyOptionalUtcRange(match, 'date', from, to, tz);
   return Expense.aggregate([
     { $match: match },
     { $group: { _id: '$category', total: { $sum: '$amount' }, count: { $sum: 1 } } },
@@ -645,57 +611,47 @@ const outstanding = async (companyId) => {
   ]);
 };
 
-const endOfDay = (d) => {
-  if (!d) return null;
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
-};
-
-const cashFlow = async (companyId, from, to) => {
+const cashFlow = async (companyId, from, to, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   const cid = objectId(companyId);
-  const dateRange = {};
-  if (from) dateRange.$gte = new Date(from);
-  if (to) dateRange.$lte = endOfDay(to);
 
   const collectionMatch = { companyId: cid, isDeleted: nd };
   const paymentLegacyMatch = { companyId: cid, isDeleted: nd };
   const expenseMatch = { companyId: cid, isDeleted: nd };
   const settlementMatch = { companyId: cid, isDeleted: nd };
   if (from || to) {
-    const dr = {};
-    if (from) dr.$gte = new Date(from);
-    if (to) dr.$lte = endOfDay(to);
-    collectionMatch.date = dr;
-    paymentLegacyMatch.date = { ...dr };
-    expenseMatch.date = { ...dr };
-    settlementMatch.date = { ...dr };
+    businessTime.applyOptionalUtcRange(collectionMatch, 'date', from, to, tz);
+    businessTime.applyOptionalUtcRange(paymentLegacyMatch, 'date', from, to, tz);
+    businessTime.applyOptionalUtcRange(expenseMatch, 'date', from, to, tz);
+    businessTime.applyOptionalUtcRange(settlementMatch, 'date', from, to, tz);
   }
+
+  const dayKey = dGroupDay(tz);
 
   const [collectionsIn, paymentsLegacyIn, expensesOut, settlementsD2C, settlementsC2D] = await Promise.all([
     Collection.aggregate([
       { $match: collectionMatch },
-      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$date' } }, amount: { $sum: '$amount' } } },
+      { $group: { _id: dayKey, amount: { $sum: '$amount' } } },
       { $sort: { _id: 1 } }
     ]),
     Payment.aggregate([
       { $match: paymentLegacyMatch },
-      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$date' } }, amount: { $sum: '$amount' } } },
+      { $group: { _id: dayKey, amount: { $sum: '$amount' } } },
       { $sort: { _id: 1 } }
     ]),
     Expense.aggregate([
       { $match: expenseMatch },
-      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$date' } }, amount: { $sum: '$amount' } } },
+      { $group: { _id: dayKey, amount: { $sum: '$amount' } } },
       { $sort: { _id: 1 } }
     ]),
     Settlement.aggregate([
       { $match: { ...settlementMatch, direction: SETTLEMENT_DIRECTION.DISTRIBUTOR_TO_COMPANY } },
-      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$date' } }, amount: { $sum: '$amount' } } },
+      { $group: { _id: dayKey, amount: { $sum: '$amount' } } },
       { $sort: { _id: 1 } }
     ]),
     Settlement.aggregate([
       { $match: { ...settlementMatch, direction: SETTLEMENT_DIRECTION.COMPANY_TO_DISTRIBUTOR } },
-      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$date' } }, amount: { $sum: '$amount' } } },
+      { $group: { _id: dayKey, amount: { $sum: '$amount' } } },
       { $sort: { _id: 1 } }
     ])
   ]);
@@ -905,17 +861,15 @@ const distributorBalanceDetail = async (companyId, distributorId) => {
   };
 };
 
-const collectionsPeriod = async (companyId, from, to, filters = {}) => {
+const collectionsPeriod = async (companyId, from, to, filters = {}, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   const cid = objectId(companyId);
   const match = { companyId: cid, isDeleted: nd };
-  if (from || to) {
-    match.date = {};
-    if (from) match.date.$gte = new Date(from);
-    if (to) match.date.$lte = endOfDay(to);
-  }
+  if (from || to) businessTime.applyOptionalUtcRange(match, 'date', from, to, tz);
   if (filters.pharmacyId) match.pharmacyId = objectId(filters.pharmacyId);
   if (filters.collectorType) match.collectorType = filters.collectorType;
 
+  const dayKey = dGroupDay(tz);
   const [grand, byCollector, byPharmacy, byDay, rows] = await Promise.all([
     Collection.aggregate([
       { $match: match },
@@ -941,7 +895,7 @@ const collectionsPeriod = async (companyId, from, to, filters = {}) => {
       { $match: match },
       {
         $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$date' } },
+          _id: dayKey,
           total: { $sum: '$amount' },
           count: { $sum: 1 }
         }
@@ -977,17 +931,15 @@ const collectionsPeriod = async (companyId, from, to, filters = {}) => {
   };
 };
 
-const settlementsPeriod = async (companyId, from, to, filters = {}) => {
+const settlementsPeriod = async (companyId, from, to, filters = {}, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   const cid = objectId(companyId);
   const match = { companyId: cid, isDeleted: nd };
-  if (from || to) {
-    match.date = {};
-    if (from) match.date.$gte = new Date(from);
-    if (to) match.date.$lte = endOfDay(to);
-  }
+  if (from || to) businessTime.applyOptionalUtcRange(match, 'date', from, to, tz);
   if (filters.distributorId) match.distributorId = objectId(filters.distributorId);
   if (filters.direction) match.direction = filters.direction;
 
+  const dayKey = dGroupDay(tz);
   const [grand, byDirection, byDistributor, byDay, rows] = await Promise.all([
     Settlement.aggregate([{ $match: match }, { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }]),
     Settlement.aggregate([
@@ -1008,7 +960,7 @@ const settlementsPeriod = async (companyId, from, to, filters = {}) => {
       { $match: match },
       {
         $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$date' } },
+          _id: dayKey,
           total: { $sum: '$amount' },
           count: { $sum: 1 }
         }
@@ -1052,7 +1004,8 @@ const settlementsPeriod = async (companyId, from, to, filters = {}) => {
 };
 
 /** Money-in / money-out story for the company in a period (collections + settlements). */
-const financialCashSummary = async (companyId, from, to, filters = {}) => {
+const financialCashSummary = async (companyId, from, to, filters = {}, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   const colFilters = {
     pharmacyId: filters.pharmacyId,
     collectorType: filters.collectorType
@@ -1061,8 +1014,8 @@ const financialCashSummary = async (companyId, from, to, filters = {}) => {
     distributorId: filters.distributorId,
     direction: filters.direction
   };
-  const col = await collectionsPeriod(companyId, from, to, colFilters);
-  const set = await settlementsPeriod(companyId, from, to, setFilters);
+  const col = await collectionsPeriod(companyId, from, to, colFilters, tz);
+  const set = await settlementsPeriod(companyId, from, to, setFilters, tz);
 
   const collectionsTotal = col.summary.totalAmount;
   const inFromDistributors = set.distributorToCompany.total;
@@ -1087,7 +1040,8 @@ const financialCashSummary = async (companyId, from, to, filters = {}) => {
 };
 
 /** Single endpoint: balances + optional period activity (if from/to provided). */
-const financialOverview = async (companyId, query = {}) => {
+const financialOverview = async (companyId, query = {}, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   const { from, to, pharmacyId, distributorId } = query;
   const [pharmacies, distributors] = await Promise.all([
     pharmacyBalances(companyId, { pharmacyId }),
@@ -1095,7 +1049,7 @@ const financialOverview = async (companyId, query = {}) => {
   ]);
 
   const out = {
-    generatedAt: new Date().toISOString(),
+    generatedAt: businessTime.utcNowIso(),
     pharmacyReceivables: pharmacies,
     distributorClearing: distributors
   };
@@ -1111,12 +1065,12 @@ const financialOverview = async (companyId, query = {}) => {
     out.collections = await collectionsPeriod(companyId, from, to, {
       pharmacyId,
       collectorType: query.collectorType
-    });
+    }, tz);
     out.settlements = await settlementsPeriod(companyId, from, to, {
       distributorId,
       direction: query.direction
-    });
-    out.cashSummary = await financialCashSummary(companyId, from, to, periodFilters);
+    }, tz);
+    out.cashSummary = await financialCashSummary(companyId, from, to, periodFilters, tz);
   }
 
   return out;
@@ -1259,7 +1213,7 @@ const financialSummary = async (companyId) => {
   );
 
   return {
-    generatedAt: new Date().toISOString(),
+    generatedAt: businessTime.utcNowIso(),
     cashBalance: cashData.cashBalance,
     companyCashFlow: companyCashData.companyCashFlow,
     ecosystemCashFlow: cashData.cashBalance,
@@ -1289,24 +1243,12 @@ const financialSummary = async (companyId) => {
   };
 };
 
-/** Monthly inflow vs outflow for charts (last N calendar months including current). */
-const financialFlowMonthly = async (companyId, months = 12) => {
-  const n = Math.min(36, Math.max(1, parseInt(months, 10) || 12));
+/** Monthly inflow vs outflow for charts (last N calendar months in company TZ, including current). */
+const financialFlowMonthly = async (companyId, months = 12, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   const cid = objectId(companyId);
-  const end = new Date();
-  const start = new Date(end.getFullYear(), end.getMonth() - (n - 1), 1);
-  start.setHours(0, 0, 0, 0);
-
-  const dateRange = { $gte: start, $lte: end };
-
-  const monthKeys = [];
-  {
-    const cur = new Date(start);
-    while (cur <= end) {
-      monthKeys.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}`);
-      cur.setMonth(cur.getMonth() + 1);
-    }
-  }
+  const { dateRange, monthKeys } = businessTime.lastNBusinessMonthsUtcRangeAndKeys(tz, months);
+  const ym = ymGroup(tz);
 
   const [cols, sets, exps, sups] = await Promise.all([
     Collection.aggregate([
@@ -1314,7 +1256,7 @@ const financialFlowMonthly = async (companyId, months = 12) => {
       {
         $group: {
           _id: {
-            ym: { $dateToString: { format: '%Y-%m', date: '$date' } },
+            ym,
             collectorType: '$collectorType'
           },
           t: { $sum: '$amount' }
@@ -1325,18 +1267,18 @@ const financialFlowMonthly = async (companyId, months = 12) => {
       { $match: { companyId: cid, isDeleted: nd, date: dateRange } },
       {
         $group: {
-          _id: { ym: { $dateToString: { format: '%Y-%m', date: '$date' } }, direction: '$direction' },
+          _id: { ym, direction: '$direction' },
           t: { $sum: '$amount' }
         }
       }
     ]),
     Expense.aggregate([
       { $match: { companyId: cid, isDeleted: nd, date: dateRange } },
-      { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$date' } }, t: { $sum: '$amount' } } }
+      { $group: { _id: ym, t: { $sum: '$amount' } } }
     ]),
     SupplierLedger.aggregate([
       { $match: { companyId: cid, type: SUPPLIER_LEDGER_TYPE.PAYMENT, isDeleted: nd, date: dateRange } },
-      { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$date' } }, t: { $sum: '$amount' } } }
+      { $group: { _id: ym, t: { $sum: '$amount' } } }
     ])
   ]);
 

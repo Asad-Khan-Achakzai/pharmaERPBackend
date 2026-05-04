@@ -42,6 +42,7 @@ async function main() {
       phone: '—',
       email: 'platform.internal@local',
       currency: 'PKR',
+      timeZone: 'Asia/Karachi',
       isActive: true
     });
     console.log('Created platform company:', platformCo._id.toString());
@@ -79,6 +80,7 @@ async function main() {
       phone: '—',
       email: 'default.tenant@local',
       currency: 'PKR',
+      timeZone: 'Asia/Karachi',
       isActive: true
     });
     console.log('Created default tenant company (no other company existed):', tenant._id.toString());

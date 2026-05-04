@@ -33,7 +33,7 @@ const applyRoleIdToUserPayload = async (companyId, data) => {
   return next;
 };
 
-const list = async (companyId, query) => {
+const list = async (companyId, query, timeZone = "UTC") => {
   const { page, limit, skip, sort, search } = parsePagination(query);
   const searchTerm = qScalar(search);
 
@@ -47,7 +47,7 @@ const list = async (companyId, query) => {
       { email: { $regex: rx, $options: 'i' } }
     ];
   }
-  applyCreatedAtRangeFromQuery(filter, query);
+  applyCreatedAtRangeFromQuery(filter, query, timeZone);
   applyCreatedByFromQuery(filter, query);
 
   const [docs, total] = await Promise.all([

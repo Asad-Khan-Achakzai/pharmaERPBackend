@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "test": "node --test src/utils/orderBackdate.test.js",
     "dev": "nodemon server.js",
     "seed": "node scripts/seed/index.js --drop",
     "add-super-admin": "node scripts/addSuperAdmin.js"

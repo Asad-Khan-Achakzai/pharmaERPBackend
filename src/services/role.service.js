@@ -98,7 +98,7 @@ const seedDefaultRolesForCompany = async (companyId, { createdBy = null } = {}) 
   return { adminRole, medicalRole };
 };
 
-const list = async (companyId, query) => {
+const list = async (companyId, query, timeZone = "UTC") => {
   const cid = toCompanyObjectId(companyId);
   if (!cid) throw new ApiError(400, 'Company context is required for roles list');
 
@@ -117,7 +117,7 @@ const list = async (companyId, query) => {
       { code: { $regex: rx, $options: 'i' } }
     ];
   }
-  applyCreatedAtRangeFromQuery(filter, query);
+  applyCreatedAtRangeFromQuery(filter, query, timeZone);
   applyCreatedByFromQuery(filter, query);
   const [docs, total] = await Promise.all([
     Role.find(filter).sort(sort).skip(skip).limit(limit).lean(),

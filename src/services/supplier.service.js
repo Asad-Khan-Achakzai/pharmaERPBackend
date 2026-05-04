@@ -42,7 +42,7 @@ const list = async (companyId, query = {}) => {
       { email: { $regex: rx, $options: 'i' } }
     ];
   }
-  applyCreatedAtRangeFromQuery(filter, query);
+  applyCreatedAtRangeFromQuery(filter, query, timeZone);
   applyCreatedByFromQuery(filter, query);
   const [docs, total] = await Promise.all([
     Supplier.find(filter).sort(sort).skip(skip).limit(limit).lean(),

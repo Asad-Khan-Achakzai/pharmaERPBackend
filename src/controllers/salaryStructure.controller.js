@@ -3,7 +3,7 @@ const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../middleware/asyncHandler');
 
 const list = asyncHandler(async (req, res) => {
-  ApiResponse.paginated(res, await salaryStructureService.list(req.companyId, req.query));
+  ApiResponse.paginated(res, await salaryStructureService.list(req.companyId, req.query, req.context.timeZone));
 });
 
 const getById = asyncHandler(async (req, res) => {

@@ -20,6 +20,8 @@ const Settlement = require('../models/Settlement');
 const Ledger = require('../models/Ledger');
 const reportService = require('./report.service');
 const { roundPKR } = require('../utils/currency');
+const ApiError = require('../utils/ApiError');
+const businessTime = require('../utils/businessTime');
 const {
   FINANCIAL_SCOPE,
   canonicalFromSummary,
@@ -71,17 +73,18 @@ const customerNetFromReturnLine = {
   $multiply: [{ $multiply: ['$items.quantity', { $ifNull: ['$items.finalSellingPrice', 0] }] }, -1]
 };
 
-const endOfDay = (d) => {
-  if (!d) return null;
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
-};
-
-const parseRange = (startDate, endDate) => {
+const parseRange = (startDate, endDate, timeZone) => {
   const r = {};
-  if (startDate) r.$gte = new Date(startDate);
-  if (endDate) r.$lte = endOfDay(endDate);
+  if (startDate) {
+    const lo = businessTime.filterLowerBoundUtc(String(startDate), timeZone);
+    if (!lo) throw new ApiError(400, 'Invalid startDate');
+    r.$gte = lo;
+  }
+  if (endDate) {
+    const hi = businessTime.filterUpperBoundUtc(String(endDate), timeZone);
+    if (!hi) throw new ApiError(400, 'Invalid endDate');
+    r.$lte = hi;
+  }
   return r;
 };
 
@@ -89,9 +92,9 @@ const parseRange = (startDate, endDate) => {
  * Distributor commission expense = delivery distributor share - return clearing reversal.
  * Keeps net profit aligned with actual company earnings without double counting.
  */
-const distributorCommissionCostSum = async (companyId, { startDate, endDate, distributorId }) => {
+const distributorCommissionCostSum = async (companyId, { startDate, endDate, distributorId, timeZone }) => {
   const cid = objectId(companyId);
-  const dateR = parseRange(startDate, endDate);
+  const dateR = parseRange(startDate, endDate, timeZone);
   const deliveryMatch = {
     companyId: cid,
     isDeleted: nd,
@@ -136,9 +139,9 @@ const distributorCommissionCostSum = async (companyId, { startDate, endDate, dis
 };
 
 /** Transaction-based revenue + COGS (includes returns). Optional distributor / product filters. */
-const sumSalesRevenueAndCogs = async (companyId, { startDate, endDate, distributorId, productId }) => {
+const sumSalesRevenueAndCogs = async (companyId, { startDate, endDate, distributorId, productId, timeZone }) => {
   const cid = objectId(companyId);
-  const dateR = parseRange(startDate, endDate);
+  const dateR = parseRange(startDate, endDate, timeZone);
   const baseMatch = {
     companyId: cid,
     isDeleted: nd,
@@ -272,9 +275,9 @@ const sumSalesRevenueAndCogs = async (companyId, { startDate, endDate, distribut
   };
 };
 
-const shippingCost = async (companyId, { startDate, endDate, productId }) => {
+const shippingCost = async (companyId, { startDate, endDate, productId, timeZone }) => {
   const cid = objectId(companyId);
-  const dateR = parseRange(startDate, endDate);
+  const dateR = parseRange(startDate, endDate, timeZone);
   const match = { companyId: cid, isDeleted: nd, ...(Object.keys(dateR).length ? { transferDate: dateR } : {}) };
   if (productId) {
     match.items = { $elemMatch: { productId: objectId(productId) } };
@@ -286,9 +289,9 @@ const shippingCost = async (companyId, { startDate, endDate, productId }) => {
   return roundPKR(agg[0]?.total || 0);
 };
 
-const payrollCostSum = async (companyId, { startDate, endDate, employeeId }) => {
+const payrollCostSum = async (companyId, { startDate, endDate, employeeId, timeZone }) => {
   const cid = objectId(companyId);
-  const dateR = parseRange(startDate, endDate);
+  const dateR = parseRange(startDate, endDate, timeZone);
   const match = {
     companyId: cid,
     isDeleted: nd,
@@ -304,9 +307,9 @@ const payrollCostSum = async (companyId, { startDate, endDate, employeeId }) => 
   return roundPKR(agg[0]?.total || 0);
 };
 
-const doctorActivityCostSum = async (companyId, { startDate, endDate }) => {
+const doctorActivityCostSum = async (companyId, { startDate, endDate, timeZone }) => {
   const cid = objectId(companyId);
-  const dateR = parseRange(startDate, endDate);
+  const dateR = parseRange(startDate, endDate, timeZone);
   const match = { companyId: cid, isDeleted: nd, ...(Object.keys(dateR).length ? { createdAt: dateR } : {}) };
   const agg = await DoctorActivity.aggregate([
     { $match: match },
@@ -315,9 +318,9 @@ const doctorActivityCostSum = async (companyId, { startDate, endDate }) => {
   return roundPKR(agg[0]?.total || 0);
 };
 
-const otherExpensesSum = async (companyId, { startDate, endDate }) => {
+const otherExpensesSum = async (companyId, { startDate, endDate, timeZone }) => {
   const cid = objectId(companyId);
-  const dateR = parseRange(startDate, endDate);
+  const dateR = parseRange(startDate, endDate, timeZone);
   const match = {
     companyId: cid,
     isDeleted: nd,
@@ -338,9 +341,9 @@ const otherExpensesSum = async (companyId, { startDate, endDate }) => {
  * collections appear separately until a distributor→company settlement is recorded.
  */
 const liquiditySnapshot = async (companyId, query = {}) => {
-  const { startDate, endDate } = query;
+  const { startDate, endDate, timeZone } = query;
   const cid = objectId(companyId);
-  const dateR = parseRange(startDate, endDate);
+  const dateR = parseRange(startDate, endDate, timeZone);
   const dateMatch = Object.keys(dateR).length ? { date: dateR } : {};
 
   const [colCompanyAgg, colDistributorAgg, setInAgg, setOutAgg, pb] = await Promise.all([
@@ -428,7 +431,7 @@ const liquiditySnapshot = async (companyId, query = {}) => {
   };
 };
 
-const summary = async (companyId, query = {}) => {
+const summary = async (companyId, query = {}, timeZone) => {
   const {
     startDate,
     endDate,
@@ -441,19 +444,21 @@ const summary = async (companyId, query = {}) => {
     startDate,
     endDate,
     distributorId,
-    productId
+    productId,
+    timeZone
   });
 
   const [ship, payroll, doctor, other] = await Promise.all([
-    shippingCost(companyId, { startDate, endDate, productId }),
-    payrollCostSum(companyId, { startDate, endDate, employeeId }),
-    doctorActivityCostSum(companyId, { startDate, endDate }),
-    otherExpensesSum(companyId, { startDate, endDate })
+    shippingCost(companyId, { startDate, endDate, productId, timeZone }),
+    payrollCostSum(companyId, { startDate, endDate, employeeId, timeZone }),
+    doctorActivityCostSum(companyId, { startDate, endDate, timeZone }),
+    otherExpensesSum(companyId, { startDate, endDate, timeZone })
   ]);
   const distributorCommission = await distributorCommissionCostSum(companyId, {
     startDate,
     endDate,
-    distributorId
+    distributorId,
+    timeZone
   });
 
   const grossProfit = roundPKR(totalRevenue - productCost);
@@ -473,13 +478,13 @@ const summary = async (companyId, query = {}) => {
   ];
   const highestCostCategory = [...costBreakdown].sort((a, b) => b.amount - a.amount)[0] || null;
 
-  const products = await productProfitability(companyId, { ...query, limit: 200 });
+  const products = await productProfitability(companyId, { ...query, limit: 200, timeZone });
   const sorted = [...products].sort((a, b) => b.profit - a.profit);
   const topProfitableProducts = sorted.slice(0, 5);
   const lossSorted = [...products].sort((a, b) => a.profit - b.profit);
   const topLossMakingProducts = lossSorted.slice(0, 5);
 
-  const liquidity = await liquiditySnapshot(companyId, { startDate, endDate });
+  const liquidity = await liquiditySnapshot(companyId, { startDate, endDate, timeZone });
 
   /** Sum of delivery/return company-share lines (same basis as product table `revenue`); additive KPI. */
   const totalNetSalesCompany = roundPKR(products.reduce((s, p) => s + (Number(p.revenue) || 0), 0));
@@ -534,10 +539,11 @@ const mergeMonthly = (a, b) => {
 };
 
 /** Revenue groupings: month (SALE+RETURN), product (delivery lines net of returns), distributor */
-const revenue = async (companyId, query = {}) => {
+const revenue = async (companyId, query = {}, timeZone) => {
   const { startDate, endDate, distributorId, productId } = query;
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   const cid = objectId(companyId);
-  const dateR = parseRange(startDate, endDate);
+  const dateR = parseRange(startDate, endDate, tz);
   const txDate = { companyId: cid, isDeleted: nd, ...(Object.keys(dateR).length ? { date: dateR } : {}) };
 
   let byMonth = [];
@@ -553,7 +559,7 @@ const revenue = async (companyId, query = {}) => {
         },
         {
           $group: {
-            _id: { $dateToString: { format: '%Y-%m', date: '$date', timezone: 'UTC' } },
+            _id: { $dateToString: { format: '%Y-%m', date: '$date', timezone: tz } },
             revenue: { $sum: '$revenue' }
           }
         },
@@ -572,7 +578,7 @@ const revenue = async (companyId, query = {}) => {
           { $match: { 'o.distributorId': did } },
           {
             $group: {
-              _id: { $dateToString: { format: '%Y-%m', date: '$date', timezone: 'UTC' } },
+              _id: { $dateToString: { format: '%Y-%m', date: '$date', timezone: tz } },
               revenue: { $sum: '$revenue' }
             }
           }
@@ -586,7 +592,7 @@ const revenue = async (companyId, query = {}) => {
           { $match: { 'o.distributorId': did } },
           {
             $group: {
-              _id: { $dateToString: { format: '%Y-%m', date: '$date', timezone: 'UTC' } },
+              _id: { $dateToString: { format: '%Y-%m', date: '$date', timezone: tz } },
               revenue: { $sum: '$revenue' }
             }
           }
@@ -671,7 +677,7 @@ const revenue = async (companyId, query = {}) => {
     }))
     .sort((a, b) => b.revenue - a.revenue);
 
-  const totalAgg = await sumSalesRevenueAndCogs(companyId, { startDate, endDate, distributorId, productId });
+  const totalAgg = await sumSalesRevenueAndCogs(companyId, { startDate, endDate, distributorId, productId, timeZone: tz });
 
   return {
     totalRevenue: totalAgg.totalRevenue,
@@ -681,20 +687,21 @@ const revenue = async (companyId, query = {}) => {
   };
 };
 
-const costs = async (companyId, query = {}) => {
+const costs = async (companyId, query = {}, timeZone) => {
   const { startDate, endDate, productId, employeeId } = query;
   const [productCost, ship, payroll, doctor, other, distributorCommission] = await Promise.all([
-    sumSalesRevenueAndCogs(companyId, { startDate, endDate, distributorId: query.distributorId, productId }).then(
+    sumSalesRevenueAndCogs(companyId, { startDate, endDate, distributorId: query.distributorId, productId, timeZone }).then(
       (x) => x.productCost
     ),
-    shippingCost(companyId, { startDate, endDate, productId }),
-    payrollCostSum(companyId, { startDate, endDate, employeeId }),
-    doctorActivityCostSum(companyId, { startDate, endDate }),
-    otherExpensesSum(companyId, { startDate, endDate }),
+    shippingCost(companyId, { startDate, endDate, productId, timeZone }),
+    payrollCostSum(companyId, { startDate, endDate, employeeId, timeZone }),
+    doctorActivityCostSum(companyId, { startDate, endDate, timeZone }),
+    otherExpensesSum(companyId, { startDate, endDate, timeZone }),
     distributorCommissionCostSum(companyId, {
       startDate,
       endDate,
-      distributorId: query.distributorId
+      distributorId: query.distributorId,
+      timeZone
     })
   ]);
 
@@ -715,9 +722,9 @@ const costs = async (companyId, query = {}) => {
 };
 
 const productProfitability = async (companyId, query = {}) => {
-  const { startDate, endDate, distributorId, productId, limit = 200 } = query;
+  const { startDate, endDate, distributorId, productId, limit = 200, timeZone } = query;
   const cid = objectId(companyId);
-  const dateR = parseRange(startDate, endDate);
+  const dateR = parseRange(startDate, endDate, timeZone);
 
   const delPipe = [
     { $match: { companyId: cid, isDeleted: nd, ...(Object.keys(dateR).length ? { deliveredAt: dateR } : {}) } },
@@ -825,10 +832,11 @@ const productProfitability = async (companyId, query = {}) => {
 };
 
 /** Monthly trend: revenue (transactions), cost components by natural dates */
-const trends = async (companyId, query = {}) => {
+const trends = async (companyId, query = {}, timeZone) => {
   const { startDate, endDate, granularity = 'month' } = query;
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   const cid = objectId(companyId);
-  const dateR = parseRange(startDate, endDate);
+  const dateR = parseRange(startDate, endDate, tz);
   const dateFormat = granularity === 'day' ? '%Y-%m-%d' : '%Y-%m';
 
   const transMatch = {
@@ -843,7 +851,7 @@ const trends = async (companyId, query = {}) => {
       { $match: transMatch },
       {
         $group: {
-          _id: { $dateToString: { format: dateFormat, date: '$date', timezone: 'UTC' } },
+          _id: { $dateToString: { format: dateFormat, date: '$date', timezone: tz } },
           revenue: { $sum: '$revenue' },
           cogs: { $sum: '$cost' }
         }
@@ -860,7 +868,7 @@ const trends = async (companyId, query = {}) => {
       },
       {
         $group: {
-          _id: { $dateToString: { format: dateFormat, date: '$transferDate', timezone: 'UTC' } },
+          _id: { $dateToString: { format: dateFormat, date: '$transferDate', timezone: tz } },
           shippingCost: { $sum: { $ifNull: ['$totalShippingCost', 0] } }
         }
       },
@@ -877,7 +885,7 @@ const trends = async (companyId, query = {}) => {
       },
       {
         $group: {
-          _id: { $dateToString: { format: dateFormat, date: '$paidOn', timezone: 'UTC' } },
+          _id: { $dateToString: { format: dateFormat, date: '$paidOn', timezone: tz } },
           payrollCost: { $sum: '$netSalary' }
         }
       },
@@ -893,7 +901,7 @@ const trends = async (companyId, query = {}) => {
       },
       {
         $group: {
-          _id: { $dateToString: { format: dateFormat, date: '$createdAt', timezone: 'UTC' } },
+          _id: { $dateToString: { format: dateFormat, date: '$createdAt', timezone: tz } },
           doctorActivityCost: { $sum: '$investedAmount' }
         }
       },
@@ -910,7 +918,7 @@ const trends = async (companyId, query = {}) => {
       },
       {
         $group: {
-          _id: { $dateToString: { format: dateFormat, date: '$date', timezone: 'UTC' } },
+          _id: { $dateToString: { format: dateFormat, date: '$date', timezone: tz } },
           otherExpenses: { $sum: '$amount' }
         }
       },
@@ -926,7 +934,7 @@ const trends = async (companyId, query = {}) => {
       },
       {
         $group: {
-          _id: { $dateToString: { format: dateFormat, date: '$deliveredAt', timezone: 'UTC' } },
+          _id: { $dateToString: { format: dateFormat, date: '$deliveredAt', timezone: tz } },
           distributorCommissionCost: { $sum: { $ifNull: ['$distributorShareTotal', 0] } }
         }
       },
@@ -945,7 +953,7 @@ const trends = async (companyId, query = {}) => {
       },
       {
         $group: {
-          _id: { $dateToString: { format: dateFormat, date: '$date', timezone: 'UTC' } },
+          _id: { $dateToString: { format: dateFormat, date: '$date', timezone: tz } },
           commissionReversal: { $sum: '$amount' }
         }
       },

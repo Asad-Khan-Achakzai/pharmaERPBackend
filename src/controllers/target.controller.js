@@ -2,7 +2,7 @@ const targetService = require('../services/target.service');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../middleware/asyncHandler');
 
-const list = asyncHandler(async (req, res) => { ApiResponse.paginated(res, await targetService.list(req.companyId, req.query)); });
+const list = asyncHandler(async (req, res) => { ApiResponse.paginated(res, await targetService.list(req.companyId, req.query, req.context.timeZone)); });
 const create = asyncHandler(async (req, res) => { ApiResponse.created(res, await targetService.create(req.companyId, req.body, req.user)); });
 const update = asyncHandler(async (req, res) => { ApiResponse.success(res, await targetService.update(req.companyId, req.params.id, req.body, req.user), 'Target updated'); });
 const remove = asyncHandler(async (req, res) => {

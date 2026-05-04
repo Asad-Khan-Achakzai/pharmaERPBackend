@@ -1,26 +1,31 @@
 const mongoose = require('mongoose');
+const { DateTime } = require('luxon');
 const PlanItem = require('../models/PlanItem');
 const WeeklyPlan = require('../models/WeeklyPlan');
 const VisitLog = require('../models/VisitLog');
 const Doctor = require('../models/Doctor');
 const ApiError = require('../utils/ApiError');
 const { PLAN_ITEM_TYPE, PLAN_ITEM_STATUS } = require('../constants/enums');
-const { dateDocFromPstYmd, pstTodayYmd, pstYmdFromJsDate } = require('../utils/attendancePst');
+const businessTime = require('../utils/businessTime');
 const attendanceService = require('./attendance.service');
 const auditService = require('./audit.service');
 
-const normalizePlanItemDate = (input) => {
+const normalizePlanItemDate = (input, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   if (typeof input === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(input)) {
-    return dateDocFromPstYmd(input);
+    return businessTime.businessDayStartUtc(input, tz);
   }
-  const ymd = pstYmdFromJsDate(new Date(input));
-  return dateDocFromPstYmd(ymd);
+  const js = input instanceof Date ? input : new Date(input);
+  if (Number.isNaN(js.getTime())) throw new ApiError(400, 'Invalid plan item date');
+  const ymd = businessTime.businessDayKeyFromUtcInstant(js, tz);
+  return businessTime.businessDayStartUtc(ymd, tz);
 };
 
-const assertDateWithinPlan = (itemDate, weekStart, weekEnd) => {
-  const d = pstYmdFromJsDate(itemDate);
-  const ws = pstYmdFromJsDate(new Date(weekStart));
-  const we = pstYmdFromJsDate(new Date(weekEnd));
+const assertDateWithinPlan = (itemDate, weekStart, weekEnd, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const d = businessTime.businessDayKeyFromUtcInstant(itemDate, tz);
+  const ws = businessTime.businessDayKeyFromUtcInstant(weekStart, tz);
+  const we = businessTime.businessDayKeyFromUtcInstant(weekEnd, tz);
   if (d < ws || d > we) {
     throw new ApiError(400, 'Plan item date must fall within the weekly plan range');
   }
@@ -35,11 +40,12 @@ const listByPlan = async (companyId, weeklyPlanId) => {
 };
 
 /**
- * Pending items for a rep on a Pacific calendar day (default: today).
+ * Pending items for a rep on a company business calendar day (default: today in company TZ).
  */
-const listTodayPending = async (companyId, employeeId, dateYmd) => {
-  const ymd = dateYmd || pstTodayYmd();
-  const dateDoc = dateDocFromPstYmd(ymd);
+const listTodayPending = async (companyId, employeeId, dateYmd, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const ymd = dateYmd || businessTime.nowInBusinessTime(tz).toISODate();
+  const dateDoc = businessTime.businessDayStartUtc(ymd, tz);
   return PlanItem.find({
     companyId,
     employeeId,
@@ -53,7 +59,8 @@ const listTodayPending = async (companyId, employeeId, dateYmd) => {
     .lean();
 };
 
-const bulkCreateForPlan = async (companyId, weeklyPlanId, items, reqUser) => {
+const bulkCreateForPlan = async (companyId, weeklyPlanId, items, reqUser, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   if (!items?.length) throw new ApiError(400, 'At least one plan item is required');
 
   const plan = await WeeklyPlan.findOne({ _id: weeklyPlanId, companyId, isDeleted: { $ne: true } });
@@ -63,8 +70,8 @@ const bulkCreateForPlan = async (companyId, weeklyPlanId, items, reqUser) => {
   const docs = [];
 
   for (const raw of items) {
-    const date = normalizePlanItemDate(raw.date);
-    assertDateWithinPlan(date, plan.weekStartDate, plan.weekEndDate);
+    const date = normalizePlanItemDate(raw.date, tz);
+    assertDateWithinPlan(date, plan.weekStartDate, plan.weekEndDate, tz);
 
     const type = raw.type || PLAN_ITEM_TYPE.DOCTOR_VISIT;
     let doctorId = raw.doctorId || null;
@@ -114,7 +121,8 @@ const bulkCreateForPlan = async (companyId, weeklyPlanId, items, reqUser) => {
   }
 };
 
-const markVisit = async (companyId, planItemId, body, reqUser) => {
+const markVisit = async (companyId, planItemId, body, reqUser, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
@@ -132,15 +140,26 @@ const markVisit = async (companyId, planItemId, body, reqUser) => {
       throw new ApiError(400, 'Only pending plan items can be marked as visited');
     }
 
-    await attendanceService.assertEmployeePresentForVisitDate(companyId, reqUser.userId, item.date);
+    await attendanceService.assertEmployeePresentForVisitDate(companyId, reqUser.userId, item.date, tz);
 
-    const visitTime = body.visitTime ? new Date(body.visitTime) : new Date();
+    const visitTime = body.visitTime
+      ? DateTime.fromISO(String(body.visitTime), { zone: 'utc' }).toJSDate()
+      : businessTime.utcNow();
+    if (body.visitTime && Number.isNaN(visitTime.getTime())) throw new ApiError(400, 'Invalid visitTime');
+
     const doctorId =
       item.type === PLAN_ITEM_TYPE.DOCTOR_VISIT ? item.doctorId : body.doctorId || null;
 
     if (item.type === PLAN_ITEM_TYPE.DOCTOR_VISIT && !doctorId) {
       throw new ApiError(400, 'Plan item is missing doctor');
     }
+
+    const parseOpt = (x) => {
+      if (x == null) return undefined;
+      const d = DateTime.fromISO(String(x), { zone: 'utc' });
+      if (!d.isValid) throw new ApiError(400, 'Invalid date');
+      return d.toJSDate();
+    };
 
     const [visitLog] = await VisitLog.create(
       [
@@ -150,8 +169,8 @@ const markVisit = async (companyId, planItemId, body, reqUser) => {
           employeeId: reqUser.userId,
           doctorId,
           visitTime,
-          checkInTime: body.checkInTime ? new Date(body.checkInTime) : undefined,
-          checkOutTime: body.checkOutTime ? new Date(body.checkOutTime) : undefined,
+          checkInTime: body.checkInTime != null ? parseOpt(body.checkInTime) : undefined,
+          checkOutTime: body.checkOutTime != null ? parseOpt(body.checkOutTime) : undefined,
           location: body.location?.lat != null && body.location?.lng != null
             ? { lat: body.location.lat, lng: body.location.lng }
             : undefined,
@@ -191,10 +210,6 @@ const markVisit = async (companyId, planItemId, body, reqUser) => {
   }
 };
 
-/**
- * Admin / planner: adjust status or notes without going through mark-visit flow.
- * Clearing non-VISITED status removes `visitLogId` (visit log rows are kept for audit).
- */
 const updateByAdmin = async (companyId, planItemId, data, reqUser) => {
   const item = await PlanItem.findOne({ _id: planItemId, companyId, isDeleted: { $ne: true } });
   if (!item) throw new ApiError(404, 'Plan item not found');
@@ -228,10 +243,12 @@ const updateByAdmin = async (companyId, planItemId, data, reqUser) => {
     .lean();
 };
 
-const markMissedForPstDate = async (ymd) => {
-  const dateDoc = dateDocFromPstYmd(ymd);
+const markMissedForCompanyBusinessDay = async (companyId, ymd, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const dateDoc = businessTime.businessDayStartUtc(ymd, tz);
   const res = await PlanItem.updateMany(
     {
+      companyId,
       date: dateDoc,
       status: PLAN_ITEM_STATUS.PENDING,
       isDeleted: { $ne: true }
@@ -241,12 +258,29 @@ const markMissedForPstDate = async (ymd) => {
   return res.modifiedCount || 0;
 };
 
+/** Cron helper: near end of local business day per company. */
+const runPlanItemsMissedTick = async () => {
+  const Company = require('../models/Company');
+  const companies = await Company.find({ isActive: true }).select('_id timeZone').lean();
+  let n = 0;
+  for (const c of companies) {
+    const tz = businessTime.getTimeZone(c);
+    const local = businessTime.nowInBusinessTime(tz);
+    if (local.hour === 23 && local.minute >= 55) {
+      const ymd = local.toISODate();
+      n += await markMissedForCompanyBusinessDay(c._id, ymd, tz);
+    }
+  }
+  return n;
+};
+
 module.exports = {
   listByPlan,
   listTodayPending,
   bulkCreateForPlan,
   markVisit,
   updateByAdmin,
-  markMissedForPstDate,
+  markMissedForCompanyBusinessDay,
+  runPlanItemsMissedTick,
   normalizePlanItemDate
 };

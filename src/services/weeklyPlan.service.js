@@ -6,7 +6,7 @@ const auditService = require('./audit.service');
 const planItemService = require('./planItem.service');
 const { escapeRegex, qScalar, applyCreatedAtRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
 
-const list = async (companyId, query) => {
+const list = async (companyId, query, timeZone = "UTC") => {
   const { page, limit, skip, sort, search } = parsePagination(query);
   const searchTerm = qScalar(search);
   const filter = { companyId };
@@ -16,7 +16,7 @@ const list = async (companyId, query) => {
     const rx = escapeRegex(searchTerm);
     filter.notes = { $regex: rx, $options: 'i' };
   }
-  applyCreatedAtRangeFromQuery(filter, query);
+  applyCreatedAtRangeFromQuery(filter, query, timeZone);
   applyCreatedByFromQuery(filter, query);
   const [docs, total] = await Promise.all([
     WeeklyPlan.find(filter).populate('medicalRepId', 'name').sort(sort).skip(skip).limit(limit),

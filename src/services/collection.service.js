@@ -4,13 +4,13 @@ const { parsePagination } = require('../utils/pagination');
 const financialService = require('./financial.service');
 const { escapeRegex, qScalar, applyDateFieldRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
 
-const list = async (companyId, query) => {
+const list = async (companyId, query, timeZone = "UTC") => {
   const { page, limit, skip, sort, search } = parsePagination(query);
   const searchTerm = qScalar(search);
   const filter = { companyId };
   if (query.pharmacyId) filter.pharmacyId = query.pharmacyId;
   if (query.collectorType) filter.collectorType = query.collectorType;
-  applyDateFieldRangeFromQuery(filter, query, 'date');
+  applyDateFieldRangeFromQuery(filter, query, 'date', timeZone);
   if (searchTerm) {
     const rx = escapeRegex(searchTerm);
     filter.$or = [

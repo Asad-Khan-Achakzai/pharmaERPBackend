@@ -9,7 +9,7 @@ const assignable = asyncHandler(async (req, res) => {
 });
 
 const list = asyncHandler(async (req, res) => {
-  const result = await userService.list(req.companyId, req.query);
+  const result = await userService.list(req.companyId, req.query, req.context.timeZone);
   ApiResponse.paginated(res, result);
 });
 

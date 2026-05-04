@@ -4,6 +4,8 @@ const { resolveEffectivePermissions } = require('../utils/effectivePermissions')
 const { resolveRoleDocForTenant } = require('../utils/resolveRoleForTenant');
 const { effectiveUserType } = require('../utils/jwtAccess');
 const User = require('../models/User');
+const Company = require('../models/Company');
+const { Info } = require('luxon');
 const env = require('../config/env');
 const { hasAccessToCompany } = require('../utils/platformAccess.util');
 const mongoose = require('mongoose');
@@ -42,6 +44,22 @@ const companyScope = asyncHandler(async (req, _res, next) => {
     }
     req.companyId = new mongoose.Types.ObjectId(home);
   }
+
+  const company = await Company.findById(req.companyId).lean();
+  if (!company) {
+    return next(new ApiError(404, 'Company not found'));
+  }
+
+  const tzRaw = company.timeZone != null ? String(company.timeZone).trim() : '';
+  if (!tzRaw || !Info.isValidIANAZone(tzRaw)) {
+    return next(new ApiError(422, 'Company timezone is not configured. Onboarding incomplete.'));
+  }
+
+  req.context = {
+    company,
+    companyId: req.companyId,
+    timeZone: tzRaw
+  };
 
   const useRb = String(env.USE_ROLE_BASED_AUTH || '1') !== '0';
   const roleDoc = userDoc.roleId && useRb ? await resolveRoleDocForTenant(userDoc, req.companyId) : null;

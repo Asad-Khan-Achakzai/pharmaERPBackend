@@ -5,7 +5,7 @@ const ApiError = require('../utils/ApiError');
 const asyncHandler = require('../middleware/asyncHandler');
 
 const list = asyncHandler(async (req, res) => {
-  const result = await collectionService.list(req.companyId, req.query);
+  const result = await collectionService.list(req.companyId, req.query, req.context.timeZone);
   ApiResponse.paginated(res, result);
 });
 

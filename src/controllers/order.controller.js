@@ -3,12 +3,12 @@ const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../middleware/asyncHandler');
 
 const list = asyncHandler(async (req, res) => {
-  const result = await orderService.list(req.companyId, req.query);
+  const result = await orderService.list(req.companyId, req.query, req.context.timeZone);
   ApiResponse.paginated(res, result);
 });
 
 const create = asyncHandler(async (req, res) => {
-  const order = await orderService.create(req.companyId, req.body, req.user);
+  const order = await orderService.create(req.companyId, req.body, req.user, req.context.timeZone);
   ApiResponse.created(res, order);
 });
 
@@ -23,12 +23,12 @@ const update = asyncHandler(async (req, res) => {
 });
 
 const deliver = asyncHandler(async (req, res) => {
-  const delivery = await orderService.deliver(req.companyId, req.params.id, req.body.items, req.user);
+  const delivery = await orderService.deliver(req.companyId, req.params.id, req.body, req.user, req.context.timeZone);
   ApiResponse.success(res, delivery, 'Order delivered successfully');
 });
 
 const returnOrder = asyncHandler(async (req, res) => {
-  const returnRecord = await orderService.returnOrder(req.companyId, req.params.id, req.body.items, req.user);
+  const returnRecord = await orderService.returnOrder(req.companyId, req.params.id, req.body.items, req.user, req.context.timeZone);
   ApiResponse.success(res, returnRecord, 'Return processed successfully');
 });
 

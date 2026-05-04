@@ -13,7 +13,7 @@ const lookup = asyncHandler(async (req, res) => {
 });
 
 const list = asyncHandler(async (req, res) => {
-  ApiResponse.success(res, await supplierService.list(req.companyId, req.query));
+  ApiResponse.success(res, await supplierService.list(req.companyId, req.query, req.context.timeZone));
 });
 
 const getById = asyncHandler(async (req, res) => {

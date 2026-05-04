@@ -1,4 +1,6 @@
 const mongoose = require('mongoose');
+const { DateTime } = require('luxon');
+const businessTime = require('./businessTime');
 
 const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -8,49 +10,38 @@ const qScalar = (v) => {
   return String(Array.isArray(v) ? v[0] : v).trim();
 };
 
-const parseYmdStart = (s) => {
-  const parts = String(s).trim().split('-').map((x) => parseInt(x, 10));
-  if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) return null;
-  const [y, m, d] = parts;
-  return new Date(y, m - 1, d, 0, 0, 0, 0);
-};
-
-const parseYmdEnd = (s) => {
-  const parts = String(s).trim().split('-').map((x) => parseInt(x, 10));
-  if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) return null;
-  const [y, m, d] = parts;
-  return new Date(y, m - 1, d, 23, 59, 59, 999);
-};
-
 /**
- * From query: YYYY-MM-DD or ISO instant.
+ * From query: YYYY-MM-DD (interpreted in company IANA TZ) or ISO instant (UTC).
  * `bound` is only used for bare YYYY-MM-DD strings.
+ * @param {string} ianaTimeZone
  */
-const queryDateBound = (raw, bound) => {
+const queryDateBound = (raw, bound, ianaTimeZone) => {
+  const zone = businessTime.requireCompanyIanaZone(ianaTimeZone);
   const s = qScalar(raw);
   if (!s) return null;
   if (s.length > 10 || s.includes('T')) {
-    const d = new Date(s);
-    if (Number.isNaN(d.getTime())) return null;
-    return d;
+    const dt = DateTime.fromISO(s, { zone: 'utc' });
+    if (!dt.isValid) return null;
+    return dt.toJSDate();
   }
-  const d = bound === 'end' ? parseYmdEnd(s) : parseYmdStart(s);
-  if (!d || Number.isNaN(d.getTime())) return null;
-  return d;
+  return bound === 'end'
+    ? businessTime.filterUpperBoundUtc(s, zone)
+    : businessTime.filterLowerBoundUtc(s, zone);
 };
 
 /** Mutates filter: `createdAt` range from query.from / query.to */
-const applyCreatedAtRangeFromQuery = (filter, query) => {
+const applyCreatedAtRangeFromQuery = (filter, query, ianaTimeZone) => {
   const fromRaw = query.from;
   const toRaw = query.to;
   if (!fromRaw && !toRaw) return;
+  const zone = businessTime.requireCompanyIanaZone(ianaTimeZone);
   filter.createdAt = {};
   if (fromRaw) {
-    const t0 = queryDateBound(fromRaw, 'start');
+    const t0 = queryDateBound(fromRaw, 'start', zone);
     if (t0) filter.createdAt.$gte = t0;
   }
   if (toRaw) {
-    const t1 = queryDateBound(toRaw, 'end');
+    const t1 = queryDateBound(toRaw, 'end', zone);
     if (t1) filter.createdAt.$lte = t1;
   }
   if (!Object.keys(filter.createdAt).length) delete filter.createdAt;
@@ -66,18 +57,20 @@ const applyCreatedByFromQuery = (filter, query) => {
 
 /**
  * Mutates filter: arbitrary date field (e.g. `date`, `weekStartDate`) from query.from / query.to
+ * @param {string} [ianaTimeZone]
  */
-const applyDateFieldRangeFromQuery = (filter, query, fieldName = 'date') => {
+const applyDateFieldRangeFromQuery = (filter, query, fieldName = 'date', ianaTimeZone) => {
   const fromRaw = query.from;
   const toRaw = query.to;
   if (!fromRaw && !toRaw) return;
+  const zone = businessTime.requireCompanyIanaZone(ianaTimeZone);
   filter[fieldName] = {};
   if (fromRaw) {
-    const t0 = queryDateBound(fromRaw, 'start');
+    const t0 = queryDateBound(fromRaw, 'start', zone);
     if (t0) filter[fieldName].$gte = t0;
   }
   if (toRaw) {
-    const t1 = queryDateBound(toRaw, 'end');
+    const t1 = queryDateBound(toRaw, 'end', zone);
     if (t1) filter[fieldName].$lte = t1;
   }
   if (!Object.keys(filter[fieldName]).length) delete filter[fieldName];

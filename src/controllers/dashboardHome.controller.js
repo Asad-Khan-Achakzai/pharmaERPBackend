@@ -13,7 +13,7 @@ const home = asyncHandler(async (req, res) => {
   if (!isNewDashboardEnabled()) {
     throw new ApiError(404, 'Dashboard aggregation is not enabled');
   }
-  const data = await dashboardHomeService.getHome(req.companyId, req.user, req.query);
+  const data = await dashboardHomeService.getHome(req.companyId, req.user, req.query, req.context.timeZone);
   ApiResponse.success(res, data);
 });
 

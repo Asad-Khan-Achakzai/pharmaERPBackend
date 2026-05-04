@@ -12,7 +12,7 @@ const dashboard = asyncHandler(async (req, res) => {
   const companyWideKpis = userHasPermission(req.user, 'admin.access');
   const from = req.query.from;
   const to = req.query.to;
-  const opts = {};
+  const opts = { timeZone: req.context.timeZone };
   if (from || to) {
     opts.from = from;
     opts.to = to;
@@ -22,14 +22,34 @@ const dashboard = asyncHandler(async (req, res) => {
   }
   ApiResponse.success(res, await reportService.dashboard(req.companyId, opts));
 });
-const sales = asyncHandler(async (req, res) => { ApiResponse.success(res, await reportService.sales(req.companyId, req.query.from, req.query.to)); });
-const profit = asyncHandler(async (req, res) => { ApiResponse.success(res, await reportService.profit(req.companyId, req.query.from, req.query.to)); });
-const expenses = asyncHandler(async (req, res) => { ApiResponse.success(res, await reportService.expenses(req.companyId, req.query.from, req.query.to)); });
+const sales = asyncHandler(async (req, res) => {
+  ApiResponse.success(
+    res,
+    await reportService.sales(req.companyId, req.query.from, req.query.to, req.context.timeZone)
+  );
+});
+const profit = asyncHandler(async (req, res) => {
+  ApiResponse.success(
+    res,
+    await reportService.profit(req.companyId, req.query.from, req.query.to, req.context.timeZone)
+  );
+});
+const expenses = asyncHandler(async (req, res) => {
+  ApiResponse.success(
+    res,
+    await reportService.expenses(req.companyId, req.query.from, req.query.to, req.context.timeZone)
+  );
+});
 const inventoryValuation = asyncHandler(async (req, res) => { ApiResponse.success(res, await reportService.inventoryValuation(req.companyId)); });
 const doctorROI = asyncHandler(async (req, res) => { ApiResponse.success(res, await reportService.doctorROI(req.companyId)); });
 const repPerformance = asyncHandler(async (req, res) => { ApiResponse.success(res, await reportService.repPerformance(req.companyId)); });
 const outstandingReport = asyncHandler(async (req, res) => { ApiResponse.success(res, await reportService.outstanding(req.companyId)); });
-const cashFlow = asyncHandler(async (req, res) => { ApiResponse.success(res, await reportService.cashFlow(req.companyId, req.query.from, req.query.to)); });
+const cashFlow = asyncHandler(async (req, res) => {
+  ApiResponse.success(
+    res,
+    await reportService.cashFlow(req.companyId, req.query.from, req.query.to, req.context.timeZone)
+  );
+});
 
 const pharmacyBalances = asyncHandler(async (req, res) => {
   ApiResponse.success(res, await reportService.pharmacyBalances(req.companyId, req.query));
@@ -48,10 +68,28 @@ const distributorBalanceDetail = asyncHandler(async (req, res) => {
   ApiResponse.success(res, data);
 });
 const collectionsPeriod = asyncHandler(async (req, res) => {
-  ApiResponse.success(res, await reportService.collectionsPeriod(req.companyId, req.query.from, req.query.to, req.query));
+  ApiResponse.success(
+    res,
+    await reportService.collectionsPeriod(
+      req.companyId,
+      req.query.from,
+      req.query.to,
+      req.query,
+      req.context.timeZone
+    )
+  );
 });
 const settlementsPeriod = asyncHandler(async (req, res) => {
-  ApiResponse.success(res, await reportService.settlementsPeriod(req.companyId, req.query.from, req.query.to, req.query));
+  ApiResponse.success(
+    res,
+    await reportService.settlementsPeriod(
+      req.companyId,
+      req.query.from,
+      req.query.to,
+      req.query,
+      req.context.timeZone
+    )
+  );
 });
 const financialCashSummary = asyncHandler(async (req, res) => {
   const { from, to, pharmacyId, distributorId, collectorType, direction } = req.query;
@@ -62,11 +100,11 @@ const financialCashSummary = asyncHandler(async (req, res) => {
       distributorId,
       collectorType,
       direction
-    })
+    }, req.context.timeZone)
   );
 });
 const financialOverview = asyncHandler(async (req, res) => {
-  ApiResponse.success(res, await reportService.financialOverview(req.companyId, req.query));
+  ApiResponse.success(res, await reportService.financialOverview(req.companyId, req.query, req.context.timeZone));
 });
 
 /** Unified cash + receivables + payables snapshot (balance-sheet style; does not change PnL). */
@@ -76,7 +114,7 @@ const financialSummary = asyncHandler(async (req, res) => {
 
 const financialFlowMonthly = asyncHandler(async (req, res) => {
   const months = req.query.months ? parseInt(req.query.months, 10) : 12;
-  ApiResponse.success(res, await reportService.financialFlowMonthly(req.companyId, months));
+  ApiResponse.success(res, await reportService.financialFlowMonthly(req.companyId, months, req.context.timeZone));
 });
 
 /** Alias names for integrations */
@@ -102,19 +140,25 @@ const patchCompanyCashOpening = asyncHandler(async (req, res) => {
 });
 
 const profitSummary = asyncHandler(async (req, res) => {
-  ApiResponse.success(res, await profitManagementService.summary(req.companyId, req.query));
+  ApiResponse.success(res, await profitManagementService.summary(req.companyId, req.query, req.context.timeZone));
 });
 const profitRevenue = asyncHandler(async (req, res) => {
-  ApiResponse.success(res, await profitManagementService.revenue(req.companyId, req.query));
+  ApiResponse.success(res, await profitManagementService.revenue(req.companyId, req.query, req.context.timeZone));
 });
 const profitCosts = asyncHandler(async (req, res) => {
-  ApiResponse.success(res, await profitManagementService.costs(req.companyId, req.query));
+  ApiResponse.success(res, await profitManagementService.costs(req.companyId, req.query, req.context.timeZone));
 });
 const profitProductProfitability = asyncHandler(async (req, res) => {
-  ApiResponse.success(res, await profitManagementService.productProfitability(req.companyId, req.query));
+  ApiResponse.success(
+    res,
+    await profitManagementService.productProfitability(req.companyId, {
+      ...req.query,
+      timeZone: req.context.timeZone
+    })
+  );
 });
 const profitTrends = asyncHandler(async (req, res) => {
-  ApiResponse.success(res, await profitManagementService.trends(req.companyId, req.query));
+  ApiResponse.success(res, await profitManagementService.trends(req.companyId, req.query, req.context.timeZone));
 });
 
 const visitSummary = asyncHandler(async (req, res) => {

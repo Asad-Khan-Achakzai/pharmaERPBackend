@@ -13,6 +13,9 @@ const { parsePagination } = require('../utils/pagination');
 const { generateTokens } = require('./auth.tokens');
 const { formatUserForClient } = require('../utils/authUserPayload');
 
+const { resolveCompanyTimeZone } = require('../utils/countryTimeZone');
+const { Info } = require('luxon');
+
 const notDeleted = { isDeleted: { $ne: true } };
 
 const listCompanies = async (query) => {
@@ -37,6 +40,8 @@ const listCompanies = async (query) => {
 const createCompany = async (payload) => {
   const data = { ...payload };
   if (data.email === '') data.email = undefined;
+  const tz = resolveCompanyTimeZone({ timeZone: data.timeZone, country: data.country });
+  data.timeZone = tz;
   const company = await Company.create(data);
   await seedDefaultRolesForCompany(company._id, {});
   return company;
@@ -45,7 +50,17 @@ const createCompany = async (payload) => {
 const updateCompany = async (id, payload) => {
   const company = await Company.findById(id);
   if (!company) throw new ApiError(404, 'Company not found');
-  Object.assign(company, payload);
+  const patch = { ...payload };
+  if (Object.prototype.hasOwnProperty.call(patch, 'timeZone')) {
+    const mergedCountry = patch.country != null ? patch.country : company.country;
+    company.timeZone = resolveCompanyTimeZone({ timeZone: patch.timeZone, country: mergedCountry });
+    delete patch.timeZone;
+  }
+  Object.assign(company, patch);
+  const tzCheck = company.timeZone != null ? String(company.timeZone).trim() : '';
+  if (!tzCheck || !Info.isValidIANAZone(tzCheck)) {
+    throw new ApiError(422, 'Company timezone is not configured. Onboarding incomplete.');
+  }
   await company.save();
   return company;
 };

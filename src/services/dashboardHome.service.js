@@ -8,11 +8,10 @@ const targetService = require('./target.service');
 const attendanceService = require('./attendance.service');
 const supplierService = require('./supplier.service');
 const { userHasPermission } = require('../utils/effectivePermissions');
+const businessTime = require('../utils/businessTime');
 
-const currentYyyyMm = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-};
+const currentYyyyMm = (timeZone) =>
+  businessTime.nowInBusinessTime(businessTime.requireCompanyIanaZone(timeZone)).toFormat('yyyy-MM');
 
 const resolveMode = (user) => {
   const companyWide = userHasPermission(user, 'admin.access');
@@ -28,7 +27,8 @@ const resolveMode = (user) => {
  * @param {object} [query] - validated `from` / `to` (YYYY-MM-DD) for dashboard KPIs
  * @returns {Promise<object>}
  */
-const getHome = async (companyId, user, query = {}) => {
+const getHome = async (companyId, user, query = {}, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   const companyWideKpis = userHasPermission(user, 'admin.access');
   const weekly = userHasPermission(user, 'weeklyPlans.view');
   const canTargets = userHasPermission(user, 'targets.view');
@@ -40,7 +40,7 @@ const getHome = async (companyId, user, query = {}) => {
   const tasks = [];
   const labels = [];
 
-  const dashOpts = {};
+  const dashOpts = { timeZone: tz };
   if (query.from && query.to) {
     dashOpts.from = query.from;
     dashOpts.to = query.to;
@@ -59,7 +59,7 @@ const getHome = async (companyId, user, query = {}) => {
   }
 
   if (weekly) {
-    tasks.push(() => planItemService.listTodayPending(companyId, repId, undefined));
+    tasks.push(() => planItemService.listTodayPending(companyId, repId, undefined, tz));
     labels.push('pendingPlanItems');
   } else {
     tasks.push(() => Promise.resolve([]));
@@ -75,7 +75,7 @@ const getHome = async (companyId, user, query = {}) => {
   }
 
   if (attTeam) {
-    tasks.push(() => attendanceService.listToday(companyId));
+    tasks.push(() => attendanceService.listToday(companyId, tz));
     labels.push('teamAtt');
   } else {
     tasks.push(() => Promise.resolve(null));
@@ -83,7 +83,7 @@ const getHome = async (companyId, user, query = {}) => {
   }
 
   if (attMine) {
-    tasks.push(() => attendanceService.getMeToday(companyId, repId));
+    tasks.push(() => attendanceService.getMeToday(companyId, repId, tz));
     labels.push('meAtt');
   } else {
     tasks.push(() => Promise.resolve(null));
@@ -116,7 +116,7 @@ const getHome = async (companyId, user, query = {}) => {
     }
   });
 
-  const yyyymm = currentYyyyMm();
+  const yyyymm = currentYyyyMm(tz);
   let targetCurrent = null;
   const targetRowsRaw = byLabel.targetRows;
   if (targetRowsRaw && Array.isArray(targetRowsRaw) && canTargets) {

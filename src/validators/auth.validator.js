@@ -4,6 +4,9 @@ const registerSchema = Joi.object({
   companyName: Joi.string().required().trim().min(2).max(100),
   companyEmail: Joi.string().email().required().trim(),
   companyPhone: Joi.string().trim().allow(''),
+  country: Joi.string().length(2).uppercase().required(),
+  timeZone: Joi.string().trim().allow('', null),
+  currency: Joi.string().trim().default('PKR'),
   name: Joi.string().required().trim().min(2).max(100),
   email: Joi.string().email().required().trim(),
   password: Joi.string().required().min(6).max(128)

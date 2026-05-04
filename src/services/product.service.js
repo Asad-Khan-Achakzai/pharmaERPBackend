@@ -13,7 +13,7 @@ function canViewProductCostOnProductApi(reqUser) {
   return userHasPermission(reqUser, 'products.viewCostPrice');
 }
 
-const list = async (companyId, query, reqUser) => {
+const list = async (companyId, query, reqUser, timeZone = "UTC") => {
   const { page, limit, skip, sort, search } = parsePagination(query);
   const searchTerm = qScalar(search);
   const filter = { companyId };
@@ -25,7 +25,7 @@ const list = async (companyId, query, reqUser) => {
       { composition: { $regex: rx, $options: 'i' } }
     ];
   }
-  applyCreatedAtRangeFromQuery(filter, query);
+  applyCreatedAtRangeFromQuery(filter, query, timeZone);
   applyCreatedByFromQuery(filter, query);
   let q = Product.find(filter).sort(sort).skip(skip).limit(limit);
   if (!canViewProductCostOnProductApi(reqUser)) {

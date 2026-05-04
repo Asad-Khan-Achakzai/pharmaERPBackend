@@ -9,6 +9,7 @@ const { resolveRoleDocForTenant } = require('./resolveRoleForTenant');
 const { effectiveUserType } = require('./jwtAccess');
 const { getPlatformAllowedCompanyIds } = require('./platformAccess.util');
 const mongoose = require('mongoose');
+const { Info } = require('luxon');
 
 /**
  * Public user object for API (login, register, getMe) with **resolved** permissions.
@@ -67,14 +68,18 @@ const formatUserForClient = async (userId, options = {}) => {
   if (userType === USER_TYPES.PLATFORM && includeAllowedCompanies) {
     const ids = await getPlatformAllowedCompanyIds(user);
     const companies = await Company.find({ _id: { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) } })
-      .select('name city currency isActive')
+      .select('name city currency isActive timeZone')
       .lean();
     out.allowedCompanies = companies.map((c) => ({
       _id: c._id,
       name: c.name,
       city: c.city,
       currency: c.currency,
-      isActive: c.isActive
+      isActive: c.isActive,
+      timeZone:
+        c.timeZone != null && String(c.timeZone).trim() !== '' && Info.isValidIANAZone(String(c.timeZone).trim())
+          ? String(c.timeZone).trim()
+          : null
     }));
     if (resolvedTenantCompanyId) {
       out.activeCompanyId =

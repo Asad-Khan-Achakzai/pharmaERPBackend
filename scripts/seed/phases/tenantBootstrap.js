@@ -150,6 +150,7 @@ async function seedTenantGraph() {
     phone: '+92-300-0000000',
     email: 'platform.internal@local',
     currency: 'PKR',
+    timeZone: 'Asia/Karachi',
     isActive: true
   });
 
@@ -164,6 +165,7 @@ async function seedTenantGraph() {
       phone: `+92-3${t.index}0-100200${t.index}`,
       email: `ops.${t.key}@seed.pharmaerp.test`,
       currency: 'PKR',
+      timeZone: 'Asia/Karachi',
       cashOpeningBalance: t.index === 0 ? 520000 : 260000,
       isActive: true
     });

@@ -10,8 +10,19 @@ const { formatUserForClient } = require('../utils/authUserPayload');
 const { effectiveUserType } = require('../utils/jwtAccess');
 const { getPlatformAllowedCompanyIds, hasAccessToCompany } = require('../utils/platformAccess.util');
 const { normalizeAccessPayload } = require('../utils/jwtAccess');
+const { resolveCompanyTimeZone } = require('../utils/countryTimeZone');
 
-const register = async ({ companyName, companyEmail, companyPhone, name, email, password }) => {
+const register = async ({
+  companyName,
+  companyEmail,
+  companyPhone,
+  name,
+  email,
+  password,
+  country,
+  timeZone,
+  currency
+}) => {
   const userEmail = email ? String(email).toLowerCase().trim() : '';
   if (userEmail) {
     const existingUser = await User.findOne({ email: userEmail });
@@ -25,10 +36,16 @@ const register = async ({ companyName, companyEmail, companyPhone, name, email, 
     throw new ApiError(409, 'A company with this email already exists');
   }
 
+  const resolvedTimeZone = resolveCompanyTimeZone({ timeZone, country });
+  const countryNorm = country != null ? String(country).trim().toUpperCase() : '';
+
   const company = await Company.create({
     name: companyName,
     email: companyEmail,
-    phone: companyPhone
+    phone: companyPhone,
+    country: countryNorm || undefined,
+    currency: currency || 'PKR',
+    timeZone: resolvedTimeZone
   });
 
   const { adminRole } = await seedDefaultRolesForCompany(company._id, {});

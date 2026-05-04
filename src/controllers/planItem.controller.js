@@ -11,12 +11,23 @@ const listToday = asyncHandler(async (req, res) => {
       throw new ApiError(403, 'Only administrators can view another employee\'s plan items');
     }
   }
-  const data = await planItemService.listTodayPending(req.companyId, targetId, req.query.date);
+  const data = await planItemService.listTodayPending(
+    req.companyId,
+    targetId,
+    req.query.date,
+    req.context.timeZone
+  );
   ApiResponse.success(res, data);
 });
 
 const markVisit = asyncHandler(async (req, res) => {
-  const data = await planItemService.markVisit(req.companyId, req.params.id, req.body, req.user);
+  const data = await planItemService.markVisit(
+    req.companyId,
+    req.params.id,
+    req.body,
+    req.user,
+    req.context.timeZone
+  );
   ApiResponse.success(res, data, 'Visit recorded');
 });
 

@@ -1,27 +1,30 @@
+const mongoose = require('mongoose');
 const { DateTime } = require('luxon');
 const Attendance = require('../models/Attendance');
 const User = require('../models/User');
 const ApiError = require('../utils/ApiError');
 const { ATTENDANCE_STATUS, ATTENDANCE_MARKED_BY } = require('../constants/enums');
-const {
-  TZ,
-  pstTodayYmd,
-  pstMinutesSinceMidnight,
-  dateDocFromPstYmd,
-  endOfPstDayJsDate,
-  formatHmPst,
-  pstMonthYmds,
-  pstYmdFromJsDate
-} = require('../utils/attendancePst');
+const businessTime = require('../utils/businessTime');
 
 const round2 = (n) => Math.round(n * 100) / 100;
 
-/** Earliest check-in on the Pacific business day (0 = any time that day). Previously 8:00 AM PT, which disabled the UI for most international users. */
+/** Earliest check-in on the business calendar day (0 = any time that day). */
 const CHECK_IN_FROM_MINUTES = 0;
 
-const findTodayRecord = async (companyId, employeeId) => {
-  const ymd = pstTodayYmd();
-  const dateDoc = dateDocFromPstYmd(ymd);
+const todayYmd = (tz) => businessTime.nowInBusinessTime(tz).toISODate();
+const dateDocFromYmd = (ymd, tz) => businessTime.businessDayStartUtc(ymd, tz);
+
+const parseJsDateFromBody = (raw) => {
+  if (raw instanceof Date) return raw;
+  const dt = DateTime.fromISO(String(raw), { zone: 'utc' });
+  if (!dt.isValid) throw new ApiError(400, 'Invalid date');
+  return dt.toJSDate();
+};
+
+const findTodayRecord = async (companyId, employeeId, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const ymd = todayYmd(tz);
+  const dateDoc = dateDocFromYmd(ymd, tz);
   return Attendance.findOne({
     companyId,
     employeeId,
@@ -30,7 +33,8 @@ const findTodayRecord = async (companyId, employeeId) => {
   });
 };
 
-const checkIn = async (companyId, employeeId) => {
+const checkIn = async (companyId, employeeId, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   const user = await User.findOne({
     _id: employeeId,
     companyId,
@@ -39,12 +43,12 @@ const checkIn = async (companyId, employeeId) => {
   });
   if (!user) throw new ApiError(403, 'Active employee not found');
 
-  const ymd = pstTodayYmd();
-  const dateDoc = dateDocFromPstYmd(ymd);
-  const mins = pstMinutesSinceMidnight();
+  const ymd = todayYmd(tz);
+  const dateDoc = dateDocFromYmd(ymd, tz);
+  const mins = businessTime.businessMinutesSinceMidnight(tz);
 
   if (mins < CHECK_IN_FROM_MINUTES) {
-    throw new ApiError(400, 'Check-in is available from 8:00 AM Pacific time');
+    throw new ApiError(400, 'Check-in is not available before the configured local opening time');
   }
 
   const existing = await Attendance.findOne({
@@ -57,7 +61,7 @@ const checkIn = async (companyId, employeeId) => {
     throw new ApiError(400, 'Already checked in today');
   }
 
-  const now = new Date();
+  const now = businessTime.utcNow();
   return Attendance.create({
     companyId,
     employeeId,
@@ -68,9 +72,10 @@ const checkIn = async (companyId, employeeId) => {
   });
 };
 
-const checkOut = async (companyId, employeeId) => {
-  const ymd = pstTodayYmd();
-  const dateDoc = dateDocFromPstYmd(ymd);
+const checkOut = async (companyId, employeeId, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const ymd = todayYmd(tz);
+  const dateDoc = dateDocFromYmd(ymd, tz);
   const rec = await Attendance.findOne({
     companyId,
     employeeId,
@@ -85,21 +90,19 @@ const checkOut = async (companyId, employeeId) => {
     throw new ApiError(400, 'Already checked out');
   }
 
-  rec.checkOutTime = new Date();
+  rec.checkOutTime = businessTime.utcNow();
   await rec.save();
   return rec;
 };
 
-/**
- * Legacy: first call acts as check-in (rules apply); optional manual checkOutTime; else duplicate → error with hint.
- */
-const markSelf = async (companyId, employeeId, body = {}) => {
-  const existing = await findTodayRecord(companyId, employeeId);
+const markSelf = async (companyId, employeeId, body = {}, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const existing = await findTodayRecord(companyId, employeeId, tz);
   if (!existing) {
-    return checkIn(companyId, employeeId);
+    return checkIn(companyId, employeeId, tz);
   }
   if (body.checkOutTime !== undefined) {
-    existing.checkOutTime = new Date(body.checkOutTime);
+    existing.checkOutTime = parseJsDateFromBody(body.checkOutTime);
     if (body.notes !== undefined) existing.notes = body.notes;
     await existing.save();
     return existing;
@@ -112,9 +115,10 @@ const markSelf = async (companyId, employeeId, body = {}) => {
   throw new ApiError(400, 'Already checked in today. Use POST /attendance/checkout to check out.');
 };
 
-const getMeToday = async (companyId, employeeId) => {
-  const ymd = pstTodayYmd();
-  const dateDoc = dateDocFromPstYmd(ymd);
+const getMeToday = async (companyId, employeeId, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const ymd = todayYmd(tz);
+  const dateDoc = dateDocFromYmd(ymd, tz);
   const doc = await Attendance.findOne({
     companyId,
     employeeId,
@@ -129,7 +133,7 @@ const getMeToday = async (companyId, employeeId) => {
     isDeleted: { $ne: true }
   });
 
-  const mins = pstMinutesSinceMidnight();
+  const mins = businessTime.businessMinutesSinceMidnight(tz);
   const canCheckIn = Boolean(user) && !doc && mins >= CHECK_IN_FROM_MINUTES;
   const canCheckOut = Boolean(doc?.checkInTime && !doc.checkOutTime);
 
@@ -143,6 +147,7 @@ const getMeToday = async (companyId, employeeId) => {
     canCheckIn,
     canCheckOut,
     uiStatus,
+    businessDate: ymd,
     pstDate: ymd
   };
 };
@@ -153,9 +158,10 @@ const dashboardLabel = (rec) => {
   return rec.status;
 };
 
-const listToday = async (companyId) => {
-  const ymd = pstTodayYmd();
-  const dateDoc = dateDocFromPstYmd(ymd);
+const listToday = async (companyId, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const ymd = todayYmd(tz);
+  const dateDoc = dateDocFromYmd(ymd, tz);
 
   const users = await User.find({
     companyId,
@@ -183,8 +189,8 @@ const listToday = async (companyId) => {
       name: u.name,
       role: u.role,
       status,
-      checkInTime: formatHmPst(r?.checkInTime),
-      checkOutTime: formatHmPst(r?.checkOutTime),
+      checkInTime: businessTime.formatHmBusiness(r?.checkInTime, tz),
+      checkOutTime: businessTime.formatHmBusiness(r?.checkOutTime, tz),
       hasCheckedOut
     };
   });
@@ -230,19 +236,20 @@ const listToday = async (companyId) => {
   };
 };
 
-const getMonthStatsForPayroll = async (companyId, employeeId, monthStr, asOfDate = new Date()) => {
+const getMonthStatsForPayroll = async (companyId, employeeId, monthStr, asOfDate, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const asOf = asOfDate == null ? businessTime.utcNow() : asOfDate;
   const [Y, M] = monthStr.split('-').map(Number);
   if (!Y || !M || M < 1 || M > 12) throw new ApiError(400, 'Invalid month (use YYYY-MM)');
 
-  const ymds = pstMonthYmds(monthStr);
+  const ymds = businessTime.businessMonthYmds(monthStr, tz);
   if (!ymds.length) throw new ApiError(400, 'Invalid month');
 
   const ymdSet = new Set(ymds);
-  const monthStartPst = DateTime.fromObject({ year: Y, month: M, day: 1 }, { zone: TZ }).startOf('month');
-  const monthEndPst = monthStartPst.endOf('month');
-  /** Widen range so legacy/manual rows (e.g. UTC midnight) are returned; we filter by Pacific YMD below. */
-  const rangeStart = monthStartPst.minus({ days: 2 }).startOf('day').toUTC().toJSDate();
-  const rangeEnd = monthEndPst.plus({ days: 2 }).endOf('day').toUTC().toJSDate();
+  const monthStartLocal = DateTime.fromObject({ year: Y, month: M, day: 1 }, { zone: tz }).startOf('month');
+  const monthEndLocal = monthStartLocal.endOf('month');
+  const rangeStart = monthStartLocal.minus({ days: 2 }).startOf('day').toUTC().toJSDate();
+  const rangeEnd = monthEndLocal.plus({ days: 2 }).endOf('day').toUTC().toJSDate();
 
   const candidates = await Attendance.find({
     companyId,
@@ -253,13 +260,15 @@ const getMonthStatsForPayroll = async (companyId, employeeId, monthStr, asOfDate
 
   const byYmd = new Map();
   for (const r of candidates) {
-    const k = pstYmdFromJsDate(r.date);
+    const k = businessTime.businessDayKeyFromUtcInstant(r.date, tz);
     if (ymdSet.has(k)) byYmd.set(k, r);
   }
 
-  const todayPst = DateTime.fromJSDate(asOfDate).setZone(TZ).startOf('day');
-  const monthLastPst = monthStartPst.endOf('month').startOf('day');
-  const eligibleThrough = todayPst < monthLastPst ? todayPst : monthLastPst;
+  const todayLocal = DateTime.fromJSDate(asOf instanceof Date ? asOf : new Date(asOf), { zone: 'utc' })
+    .setZone(tz)
+    .startOf('day');
+  const monthLastLocal = monthStartLocal.endOf('month').startOf('day');
+  const eligibleThrough = todayLocal < monthLastLocal ? todayLocal : monthLastLocal;
 
   let presentDays = 0;
   let absentDays = 0;
@@ -267,8 +276,8 @@ const getMonthStatsForPayroll = async (companyId, employeeId, monthStr, asOfDate
   let leaveDays = 0;
 
   for (const ymd of ymds) {
-    const dayPst = DateTime.fromISO(ymd, { zone: TZ }).startOf('day');
-    if (dayPst > eligibleThrough) break;
+    const dayLocal = DateTime.fromISO(ymd, { zone: tz }).startOf('day');
+    if (dayLocal > eligibleThrough) break;
 
     const rec = byYmd.get(ymd);
     if (!rec) {
@@ -299,18 +308,20 @@ const getMonthStatsForPayroll = async (companyId, employeeId, monthStr, asOfDate
     halfDays,
     leaveDays,
     totalDaysInMonth: ymds.length,
-    monthStart: dateDocFromPstYmd(ymds[0]),
-    monthEnd: dateDocFromPstYmd(ymds[ymds.length - 1])
+    monthStart: dateDocFromYmd(ymds[0], tz),
+    monthEnd: dateDocFromYmd(ymds[ymds.length - 1], tz)
   };
 };
 
-const runAutoCheckoutPst = async () => {
-  const ymd = DateTime.now().setZone(TZ).minus({ days: 1 }).toISODate();
-  const end = endOfPstDayJsDate(ymd);
-  const dateDoc = dateDocFromPstYmd(ymd);
+const runAutoCheckoutForCompanyDay = async (companyId, ymd, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const end = businessTime.businessDayToUtcRange(ymd, tz).$lte;
+  const dateDoc = dateDocFromYmd(ymd, tz);
+  const cid = mongoose.Types.ObjectId.isValid(companyId) ? new mongoose.Types.ObjectId(String(companyId)) : companyId;
 
   const res = await Attendance.updateMany(
     {
+      companyId: cid,
       date: dateDoc,
       status: ATTENDANCE_STATUS.PRESENT,
       checkInTime: { $ne: null },
@@ -323,17 +334,42 @@ const runAutoCheckoutPst = async () => {
   return res.modifiedCount ?? 0;
 };
 
-const report = async (companyId, query) => {
+/** Cron: run shortly after local midnight per company (see job). */
+const runAutoCheckoutTick = async () => {
+  const Company = require('../models/Company');
+  const companies = await Company.find({ isActive: true }).select('_id timeZone').lean();
+  let n = 0;
+  for (const c of companies) {
+    const tz = businessTime.getTimeZone(c);
+    const local = businessTime.nowInBusinessTime(tz);
+    if (local.hour === 0 && local.minute < 30) {
+      const ymd = local.minus({ days: 1 }).toISODate();
+      n += await runAutoCheckoutForCompanyDay(c._id, ymd, tz);
+    }
+  }
+  return n;
+};
+
+const report = async (companyId, query, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   const { employeeId, startDate, endDate } = query;
   if (!employeeId || !startDate || !endDate) {
     throw new ApiError(400, 'employeeId, startDate, and endDate are required');
   }
 
-  const startYmd = DateTime.fromJSDate(new Date(startDate)).setZone(TZ).toISODate();
-  const endYmd = DateTime.fromJSDate(new Date(endDate)).setZone(TZ).toISODate();
+  const toYmd = (raw) => {
+    const s = String(raw).trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    const dt = DateTime.fromISO(s, { zone: 'utc' });
+    if (!dt.isValid) throw new ApiError(400, 'Invalid date');
+    return dt.setZone(tz).toISODate();
+  };
 
-  let cur = DateTime.fromISO(startYmd, { zone: TZ }).startOf('day');
-  const end = DateTime.fromISO(endYmd, { zone: TZ }).startOf('day');
+  const startYmd = toYmd(startDate);
+  const endYmd = toYmd(endDate);
+
+  let cur = DateTime.fromISO(startYmd, { zone: tz }).startOf('day');
+  const end = DateTime.fromISO(endYmd, { zone: tz }).startOf('day');
   if (cur > end) throw new ApiError(400, 'startDate must be before endDate');
 
   const ymds = [];
@@ -343,8 +379,8 @@ const report = async (companyId, query) => {
   }
 
   const ymdSet = new Set(ymds);
-  const startDt = DateTime.fromISO(startYmd, { zone: TZ }).startOf('day');
-  const endDt = DateTime.fromISO(endYmd, { zone: TZ }).startOf('day');
+  const startDt = DateTime.fromISO(startYmd, { zone: tz }).startOf('day');
+  const endDt = DateTime.fromISO(endYmd, { zone: tz }).startOf('day');
   const rangeStart = startDt.minus({ days: 2 }).startOf('day').toUTC().toJSDate();
   const rangeEnd = endDt.plus({ days: 2 }).endOf('day').toUTC().toJSDate();
 
@@ -357,7 +393,7 @@ const report = async (companyId, query) => {
     .sort({ date: 1 })
     .lean();
 
-  const records = candidates.filter((r) => ymdSet.has(pstYmdFromJsDate(r.date)));
+  const records = candidates.filter((r) => ymdSet.has(businessTime.businessDayKeyFromUtcInstant(r.date, tz)));
 
   let presentDays = 0;
   let absentDays = 0;
@@ -383,8 +419,8 @@ const report = async (companyId, query) => {
     }
   }
 
-  const sa = DateTime.fromISO(startYmd, { zone: TZ }).toMillis();
-  const sb = DateTime.fromISO(endYmd, { zone: TZ }).toMillis();
+  const sa = DateTime.fromISO(startYmd, { zone: tz }).toMillis();
+  const sb = DateTime.fromISO(endYmd, { zone: tz }).toMillis();
   const totalDays = Math.floor((sb - sa) / 86400000) + 1;
 
   return {
@@ -399,17 +435,14 @@ const report = async (companyId, query) => {
   };
 };
 
-/**
- * Admin-only: set today's attendance status for an employee (Pacific calendar day).
- * Creates a row if none exists. PRESENT sets check-in time when missing; other statuses clear times.
- */
-const adminSetAttendanceToday = async (companyId, targetEmployeeId, status) => {
+const adminSetAttendanceToday = async (companyId, targetEmployeeId, status, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   if (!Object.values(ATTENDANCE_STATUS).includes(status)) {
     throw new ApiError(400, 'Invalid attendance status');
   }
 
-  const ymd = pstTodayYmd();
-  const dateDoc = dateDocFromPstYmd(ymd);
+  const ymd = todayYmd(tz);
+  const dateDoc = dateDocFromYmd(ymd, tz);
 
   const target = await User.findOne({
     _id: targetEmployeeId,
@@ -425,8 +458,7 @@ const adminSetAttendanceToday = async (companyId, targetEmployeeId, status) => {
     isDeleted: { $ne: true }
   });
 
-  const stampLine = (verb) =>
-    `Admin ${verb} ${status} — ${new Date().toISOString()}`;
+  const stampLine = (verb) => `Admin ${verb} ${status} — ${businessTime.utcNowIso()}`;
 
   if (!doc) {
     const base = {
@@ -438,7 +470,7 @@ const adminSetAttendanceToday = async (companyId, targetEmployeeId, status) => {
       notes: stampLine('set')
     };
     if (status === ATTENDANCE_STATUS.PRESENT) {
-      base.checkInTime = new Date();
+      base.checkInTime = businessTime.utcNow();
       base.checkOutTime = null;
     } else {
       base.checkInTime = null;
@@ -453,7 +485,7 @@ const adminSetAttendanceToday = async (companyId, targetEmployeeId, status) => {
 
   switch (status) {
     case ATTENDANCE_STATUS.PRESENT:
-      if (!doc.checkInTime) doc.checkInTime = new Date();
+      if (!doc.checkInTime) doc.checkInTime = businessTime.utcNow();
       doc.checkOutTime = null;
       break;
     case ATTENDANCE_STATUS.ABSENT:
@@ -472,13 +504,12 @@ const adminSetAttendanceToday = async (companyId, targetEmployeeId, status) => {
   return doc;
 };
 
-/** @deprecated use adminSetAttendanceToday(..., ABSENT) — kept for existing clients */
-const adminMarkAbsentToday = async (companyId, targetEmployeeId) => {
-  return adminSetAttendanceToday(companyId, targetEmployeeId, ATTENDANCE_STATUS.ABSENT);
+const adminMarkAbsentToday = async (companyId, targetEmployeeId, timeZone) => {
+  return adminSetAttendanceToday(companyId, targetEmployeeId, ATTENDANCE_STATUS.ABSENT, timeZone);
 };
 
-const monthlySummary = async (companyId, employeeId, monthStr, dailyAllowanceRate) => {
-  const stats = await getMonthStatsForPayroll(companyId, employeeId, monthStr, new Date());
+const monthlySummary = async (companyId, employeeId, monthStr, dailyAllowanceRate, timeZone) => {
+  const stats = await getMonthStatsForPayroll(companyId, employeeId, monthStr, businessTime.utcNow(), timeZone);
   const rate = Number(dailyAllowanceRate) || 0;
   const dailyAllowanceEarned = round2(stats.presentDays * rate + stats.halfDays * rate * 0.5);
 
@@ -492,20 +523,16 @@ const monthlySummary = async (companyId, employeeId, monthStr, dailyAllowanceRat
   };
 };
 
-/**
- * Visit execution: require attendance record with status PRESENT on the same Pacific calendar day as the visit.
- * @param {import('mongoose').Types.ObjectId|string} companyId
- * @param {import('mongoose').Types.ObjectId|string} employeeId
- * @param {Date|string} visitDateInput — Date or YYYY-MM-DD
- */
-const assertEmployeePresentForVisitDate = async (companyId, employeeId, visitDateInput) => {
+const assertEmployeePresentForVisitDate = async (companyId, employeeId, visitDateInput, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   let ymd;
   if (typeof visitDateInput === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(visitDateInput)) {
     ymd = visitDateInput;
   } else {
-    ymd = pstYmdFromJsDate(new Date(visitDateInput));
+    const js = visitDateInput instanceof Date ? visitDateInput : parseJsDateFromBody(visitDateInput);
+    ymd = businessTime.businessDayKeyFromUtcInstant(js, tz);
   }
-  const dateDoc = dateDocFromPstYmd(ymd);
+  const dateDoc = dateDocFromYmd(ymd, tz);
   const rec = await Attendance.findOne({
     companyId,
     employeeId,
@@ -520,11 +547,12 @@ const assertEmployeePresentForVisitDate = async (companyId, employeeId, visitDat
 
 module.exports = {
   assertEmployeePresentForVisitDate,
-  monthBounds: (monthStr) => {
-    const ymds = pstMonthYmds(monthStr);
+  monthBounds: (monthStr, timeZone) => {
+    const tz = businessTime.requireCompanyIanaZone(timeZone);
+    const ymds = businessTime.businessMonthYmds(monthStr, tz);
     if (!ymds.length) throw new ApiError(400, 'Invalid month (use YYYY-MM)');
-    const start = dateDocFromPstYmd(ymds[0]);
-    const end = dateDocFromPstYmd(ymds[ymds.length - 1]);
+    const start = dateDocFromYmd(ymds[0], tz);
+    const end = dateDocFromYmd(ymds[ymds.length - 1], tz);
     return { start, end, totalDays: ymds.length, year: +monthStr.slice(0, 4), month: +monthStr.slice(5, 7) };
   },
   getMonthStatsForPayroll,
@@ -537,6 +565,8 @@ module.exports = {
   adminMarkAbsentToday,
   report,
   monthlySummary,
-  runAutoCheckoutPst,
+  runAutoCheckoutPst: runAutoCheckoutTick,
+  runAutoCheckoutTick,
+  runAutoCheckoutForCompanyDay,
   round2
 };

@@ -28,7 +28,7 @@ router.get('/', checkPermission('users.view'), asyncHandler(async (req, res) => 
       filter.userId = new mongoose.Types.ObjectId(createdByRaw);
     }
   }
-  applyDateFieldRangeFromQuery(filter, req.query, 'timestamp');
+  applyDateFieldRangeFromQuery(filter, req.query, 'timestamp', req.context.timeZone);
   if (searchTerm) {
     const rx = escapeRegex(searchTerm);
     filter.$or = [

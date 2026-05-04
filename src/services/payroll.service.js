@@ -13,6 +13,8 @@ const auditService = require('./audit.service');
 const salaryStructureService = require('./salaryStructure.service');
 const attendanceService = require('./attendance.service');
 const { generatePayslipPdf } = require('../utils/payslipPdf');
+const { DateTime } = require('luxon');
+const businessTime = require('../utils/businessTime');
 const {
   escapeRegex,
   qScalar,
@@ -25,11 +27,12 @@ const lineAmount = (basic, item) => {
   return roundPKR((basic * item.value) / 100);
 };
 
-const sumMedicalRepSalesForMonth = async (companyId, employeeId, monthStr) => {
+const sumMedicalRepSalesForMonth = async (companyId, employeeId, monthStr, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   const [Y, M] = monthStr.split('-').map(Number);
   if (!Y || !M || M < 1 || M > 12) return 0;
-  const start = new Date(Date.UTC(Y, M - 1, 1, 0, 0, 0, 0));
-  const end = new Date(Date.UTC(Y, M, 1) - 1);
+  const start = DateTime.fromObject({ year: Y, month: M, day: 1 }, { zone: tz }).startOf('month').toUTC().toJSDate();
+  const end = DateTime.fromObject({ year: Y, month: M, day: 1 }, { zone: tz }).endOf('month').toUTC().toJSDate();
 
   const agg = await Order.aggregate([
     {
@@ -139,7 +142,8 @@ const buildManual = (data) => {
   };
 };
 
-const previewPayroll = async (companyId, body) => {
+const previewPayroll = async (companyId, body, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   const { employeeId, month } = body;
   const employee = await User.findOne({ _id: employeeId, companyId });
   if (!employee) throw new ApiError(404, 'Employee not found');
@@ -156,13 +160,20 @@ const previewPayroll = async (companyId, body) => {
     throw new ApiError(400, 'No active salary structure. Pass manual: true with baseSalary, bonus, deductions or create a salary structure.');
   }
 
-  const salesTotal = await sumMedicalRepSalesForMonth(companyId, employeeId, month);
-  const attendanceStats = await attendanceService.getMonthStatsForPayroll(companyId, employeeId, month, new Date());
+  const salesTotal = await sumMedicalRepSalesForMonth(companyId, employeeId, month, tz);
+  const attendanceStats = await attendanceService.getMonthStatsForPayroll(
+    companyId,
+    employeeId,
+    month,
+    businessTime.utcNow(),
+    tz
+  );
   const calc = buildFromStructure(structure, salesTotal, attendanceStats);
   return { ...calc, salaryStructureId: structure._id, employee, structure };
 };
 
-const applyPayrollListFilters = (filter, query) => {
+const applyPayrollListFilters = (filter, query, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   if (query.employeeId) filter.employeeId = query.employeeId;
   if (query.status) filter.status = query.status;
 
@@ -180,24 +191,18 @@ const applyPayrollListFilters = (filter, query) => {
     filter.month = { $regex: rx, $options: 'i' };
   }
 
-  applyCreatedAtRangeFromQuery(filter, query);
+  applyCreatedAtRangeFromQuery(filter, query, tz);
   applyCreatedByFromQuery(filter, query);
 
   if (query.paidOnFrom || query.paidOnTo) {
-    filter.paidOn = {};
-    if (query.paidOnFrom) filter.paidOn.$gte = new Date(query.paidOnFrom);
-    if (query.paidOnTo) {
-      const t = new Date(query.paidOnTo);
-      t.setUTCHours(23, 59, 59, 999);
-      filter.paidOn.$lte = t;
-    }
+    businessTime.applyOptionalUtcRange(filter, 'paidOn', query.paidOnFrom, query.paidOnTo, tz);
   }
 };
 
-const list = async (companyId, query) => {
+const list = async (companyId, query, timeZone) => {
   const { page, limit, skip, sort } = parsePagination(query);
   const filter = { companyId };
-  applyPayrollListFilters(filter, query);
+  applyPayrollListFilters(filter, query, timeZone);
 
   const [docs, total] = await Promise.all([
     Payroll.find(filter).populate('employeeId', 'name email role').sort(sort).skip(skip).limit(limit),
@@ -206,7 +211,8 @@ const list = async (companyId, query) => {
   return { docs, total, page, limit };
 };
 
-const create = async (companyId, data, reqUser) => {
+const create = async (companyId, data, reqUser, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
   const employee = await User.findOne({ _id: data.employeeId, companyId });
   if (!employee) throw new ApiError(404, 'Employee not found');
 
@@ -261,12 +267,13 @@ const create = async (companyId, data, reqUser) => {
     );
   }
 
-  const salesTotal = await sumMedicalRepSalesForMonth(companyId, data.employeeId, data.month);
+  const salesTotal = await sumMedicalRepSalesForMonth(companyId, data.employeeId, data.month, tz);
   const attendanceStats = await attendanceService.getMonthStatsForPayroll(
     companyId,
     data.employeeId,
     data.month,
-    new Date()
+    businessTime.utcNow(),
+    tz
   );
   const built = buildFromStructure(structure, salesTotal, attendanceStats);
 

@@ -55,6 +55,8 @@ const orderSchema = new mongoose.Schema(
     totalBonusQuantity: { type: Number, default: 0 },
     /** casting × (paid + bonus) per line, summed — inventory cost snapshot at order time */
     totalCastingCost: { type: Number, default: 0 },
+    /** Business date of the order; legacy documents may omit (use createdAt as fallback). */
+    orderDate: { type: Date, default: Date.now },
     notes: { type: String }
   },
   { timestamps: true }

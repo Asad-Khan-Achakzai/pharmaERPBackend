@@ -12,12 +12,12 @@ const {
   applyCreatedByFromQuery
 } = require('../utils/listQuery');
 
-const list = async (companyId, query) => {
+const list = async (companyId, query, timeZone = "UTC") => {
   const { page, limit, skip, sort, search } = parsePagination(query);
   const searchTerm = qScalar(search);
   const filter = { companyId };
   if (query.category) filter.category = query.category;
-  applyDateFieldRangeFromQuery(filter, query, 'date');
+  applyDateFieldRangeFromQuery(filter, query, 'date', timeZone);
   if (searchTerm) {
     const rx = escapeRegex(searchTerm);
     filter.$or = [
