@@ -120,6 +120,20 @@ const PLAN_ITEM_STATUS = {
   MISSED: 'MISSED'
 };
 
+/** Derived per calendar day for a rep (plan execution UI). */
+const DAY_EXECUTION_STATE = {
+  NOT_STARTED: 'NOT_STARTED',
+  IN_PROGRESS: 'IN_PROGRESS',
+  COMPLETED: 'COMPLETED'
+};
+
+/** Why a visit was logged off-plan (audit / deviation analytics). */
+const UNPLANNED_VISIT_REASON = {
+  EMERGENCY: 'EMERGENCY',
+  AVAILABLE_UNEXPECTEDLY: 'AVAILABLE_UNEXPECTEDLY',
+  OTHER: 'OTHER'
+};
+
 /** Doctor investment / commitment tracking (TP-based achieved sales) */
 const DOCTOR_ACTIVITY_STATUS = {
   ACTIVE: 'ACTIVE',
@@ -207,6 +221,8 @@ module.exports = {
   WEEKLY_PLAN_STATUS,
   PLAN_ITEM_TYPE,
   PLAN_ITEM_STATUS,
+  DAY_EXECUTION_STATE,
+  UNPLANNED_VISIT_REASON,
   DOCTOR_ACTIVITY_STATUS,
   PURCHASE_ORDER_STATUS,
   GOODS_RECEIPT_NOTE_STATUS,

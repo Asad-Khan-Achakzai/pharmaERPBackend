@@ -18,6 +18,13 @@ const visitLogSchema = new mongoose.Schema(
     },
     notes: { type: String, trim: true, maxlength: 2000 },
     orderTaken: { type: Boolean, default: false },
+    /** Products discussed during visit (MRep execution). */
+    productsDiscussed: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
+    primaryProductId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
+    /** Quick quantity (e.g. rep +/-); optional note string still in samplesGiven. */
+    samplesQty: { type: Number, min: 0, default: null },
+    samplesGiven: { type: String, trim: true, maxlength: 500 },
+    followUpDate: { type: Date, default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   },
   { timestamps: true }

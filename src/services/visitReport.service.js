@@ -47,7 +47,20 @@ const visitSummary = async (companyId, query) => {
   };
   if (employeeId) visitMatch.employeeId = new mongoose.Types.ObjectId(employeeId);
 
-  const unplannedVisits = await VisitLog.countDocuments(visitMatch);
+  const unplannedMatch = {
+    companyId: new mongoose.Types.ObjectId(companyId),
+    date: { $gte: start, $lte: endDayStart },
+    isUnplanned: true,
+    status: PLAN_ITEM_STATUS.VISITED,
+    isDeleted: { $ne: true }
+  };
+  if (employeeId) unplannedMatch.employeeId = new mongoose.Types.ObjectId(employeeId);
+
+  const unplannedPlanItems = await PlanItem.countDocuments(unplannedMatch);
+
+  const legacyOrphanLogs = await VisitLog.countDocuments(visitMatch);
+
+  const unplannedVisits = unplannedPlanItems + legacyOrphanLogs;
 
   return {
     weekStart: ws,
@@ -109,7 +122,20 @@ const visitByEmployee = async (companyId, query) => {
     }
   ]);
 
-  const unplannedByEmp = await VisitLog.aggregate([
+  const unplannedByEmp = await PlanItem.aggregate([
+    {
+      $match: {
+        companyId: new mongoose.Types.ObjectId(companyId),
+        date: { $gte: start, $lte: endDayStart },
+        isUnplanned: true,
+        status: PLAN_ITEM_STATUS.VISITED,
+        isDeleted: { $ne: true }
+      }
+    },
+    { $group: { _id: '$employeeId', unplanned: { $sum: 1 } } }
+  ]);
+
+  const legacyUnplannedByEmp = await VisitLog.aggregate([
     {
       $match: {
         companyId: new mongoose.Types.ObjectId(companyId),
@@ -121,12 +147,22 @@ const visitByEmployee = async (companyId, query) => {
     { $group: { _id: '$employeeId', unplanned: { $sum: 1 } } }
   ]);
 
+  const unplannedMap = new Map();
+  for (const row of [...unplannedByEmp, ...legacyUnplannedByEmp]) {
+    const k = String(row._id);
+    unplannedMap.set(k, (unplannedMap.get(k) || 0) + row.unplanned);
+  }
+  const unplannedByEmployee = [...unplannedMap.entries()].map(([empId, count]) => ({
+    _id: empId,
+    unplanned: count
+  }));
+
   return {
     weekStart: ws,
     weekEnd: we,
     perDay,
     doctorCoverage,
-    unplannedByEmployee: unplannedByEmp
+    unplannedByEmployee
   };
 };
 

@@ -11,7 +11,7 @@ const listToday = asyncHandler(async (req, res) => {
       throw new ApiError(403, 'Only administrators can view another employee\'s plan items');
     }
   }
-  const data = await planItemService.listTodayPending(
+  const data = await planItemService.buildTodayExecution(
     req.companyId,
     targetId,
     req.query.date,
@@ -32,8 +32,19 @@ const markVisit = asyncHandler(async (req, res) => {
 });
 
 const update = asyncHandler(async (req, res) => {
-  const data = await planItemService.updateByAdmin(req.companyId, req.params.id, req.body, req.user);
+  const data = await planItemService.updateByAdmin(
+    req.companyId,
+    req.params.id,
+    req.body,
+    req.user,
+    req.context.timeZone
+  );
   ApiResponse.success(res, data, 'Plan item updated');
 });
 
-module.exports = { listToday, markVisit, update };
+const reorder = asyncHandler(async (req, res) => {
+  const data = await planItemService.reorderForDay(req.companyId, req.body, req.user, req.context.timeZone);
+  ApiResponse.success(res, data, 'Visit order updated');
+});
+
+module.exports = { listToday, markVisit, update, reorder };

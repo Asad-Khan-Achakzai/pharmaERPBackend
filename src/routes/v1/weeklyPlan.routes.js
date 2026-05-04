@@ -13,6 +13,7 @@ router.get('/', checkPermission('weeklyPlans.view'), c.list);
 router.post('/', checkPermission('weeklyPlans.create'), validate(createWeeklyPlanSchema), c.create);
 router.get('/rep/:id', checkPermission('weeklyPlans.view'), c.getByRep);
 router.post('/:id/plan-items', checkPermission('weeklyPlans.edit'), validate(bulkPlanItemsSchema), c.bulkPlanItems);
+router.post('/:id/copy-previous-week', checkPermission('weeklyPlans.edit'), c.copyPreviousWeek);
 router.get('/:id', checkPermission('weeklyPlans.view'), c.getById);
 router.put('/:id', checkPermission('weeklyPlans.edit'), validate(updateWeeklyPlanSchema), c.update);
 

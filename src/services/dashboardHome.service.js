@@ -49,21 +49,16 @@ const getHome = async (companyId, user, query = {}, timeZone) => {
     tasks.push(() => reportService.dashboard(companyId, dashOpts));
     labels.push('kpis');
   } else {
-    tasks.push(() =>
-      reportService.dashboard(companyId, {
-        ...dashOpts,
-        restrictToRepId: repId
-      })
-    );
+    tasks.push(() => Promise.resolve(null));
     labels.push('kpis');
   }
 
   if (weekly) {
-    tasks.push(() => planItemService.listTodayPending(companyId, repId, undefined, tz));
-    labels.push('pendingPlanItems');
+    tasks.push(() => planItemService.buildTodayExecution(companyId, repId, undefined, tz));
+    labels.push('todayExecution');
   } else {
-    tasks.push(() => Promise.resolve([]));
-    labels.push('pendingPlanItems');
+    tasks.push(() => Promise.resolve(null));
+    labels.push('todayExecution');
   }
 
   if (canTargets) {
@@ -112,7 +107,7 @@ const getHome = async (companyId, user, query = {}, timeZone) => {
       byLabel[key] = s.value;
     } else {
       warnings.push({ section: key, message: s.reason?.message || 'failed' });
-      byLabel[key] = key === 'pendingPlanItems' ? [] : null;
+      byLabel[key] = null;
     }
   });
 
@@ -126,6 +121,12 @@ const getHome = async (companyId, user, query = {}, timeZone) => {
 
   const mode = resolveMode(user);
 
+  const todayExec = byLabel.todayExecution;
+  const pendingPlanItems =
+    todayExec && Array.isArray(todayExec.items)
+      ? todayExec.items.filter((i) => i && i.status === 'PENDING')
+      : [];
+
   return {
     mode,
     features: {
@@ -134,9 +135,10 @@ const getHome = async (companyId, user, query = {}, timeZone) => {
     },
     kpis: byLabel.kpis,
     today: {
-      /** Alias: same as pendingPlanItems for clients that expect `visits` */
-      visits: byLabel.pendingPlanItems || [],
-      pendingPlanItems: byLabel.pendingPlanItems || []
+      execution: todayExec || null,
+      /** Pending-only list for legacy clients */
+      visits: pendingPlanItems,
+      pendingPlanItems
     },
     targets: {
       currentMonth: targetCurrent,
