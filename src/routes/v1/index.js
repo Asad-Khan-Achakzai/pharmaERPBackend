@@ -9,6 +9,7 @@ const distributorRoutes = require('./distributor.routes');
 const inventoryRoutes = require('./inventory.routes');
 const pharmacyRoutes = require('./pharmacy.routes');
 const doctorRoutes = require('./doctor.routes');
+const doctorImportRoutes = require('./doctorImport.routes');
 const doctorActivityRoutes = require('./doctorActivity.routes');
 const orderRoutes = require('./order.routes');
 const paymentRoutes = require('./payment.routes');
@@ -40,6 +41,9 @@ router.use('/products', productRoutes);
 router.use('/distributors', distributorRoutes);
 router.use('/inventory', inventoryRoutes);
 router.use('/pharmacies', pharmacyRoutes);
+// Mount /doctors/import BEFORE /doctors so the existing `/:id` route in doctorRoutes
+// doesn't try to resolve "import" as an ObjectId.
+router.use('/doctors/import', doctorImportRoutes);
 router.use('/doctors', doctorRoutes);
 router.use('/doctor-activities', doctorActivityRoutes);
 router.use('/orders', orderRoutes);

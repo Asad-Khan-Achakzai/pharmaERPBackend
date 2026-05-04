@@ -65,7 +65,8 @@ const summarizeExecutionCounts = (items) => {
   const visited = list.filter((i) => i.status === PLAN_ITEM_STATUS.VISITED).length;
   const missed = list.filter((i) => i.status === PLAN_ITEM_STATUS.MISSED).length;
   const pending = list.filter((i) => i.status === PLAN_ITEM_STATUS.PENDING).length;
-  const progressPercent = total ? Math.round(((visited + missed) / total) * 100) : 0;
+  /** Progress = real coverage (visited/total). Missed is a deviation, NOT progress. */
+  const progressPercent = total ? Math.round((visited / total) * 100) : 0;
   return { total, visited, missed, pending, progressPercent };
 };
 
