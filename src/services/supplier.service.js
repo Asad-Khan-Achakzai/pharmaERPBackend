@@ -29,7 +29,7 @@ const PAYMENT_WARN_THRESHOLD = Number(process.env.SUPPLIER_PAYMENT_WARN_PKR) || 
 
 const oid = (id) => new mongoose.Types.ObjectId(id);
 
-const list = async (companyId, query = {}) => {
+const list = async (companyId, query = {}, timeZone = 'UTC') => {
   const { page, limit, skip, sort, search } = parsePagination(query);
   const searchTerm = qScalar(search);
   const filter = { companyId, isDeleted: { $ne: true } };
