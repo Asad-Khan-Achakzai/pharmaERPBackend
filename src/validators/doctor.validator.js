@@ -47,7 +47,12 @@ const doctorBodyFields = {
   grade: Joi.string().trim().allow('').max(64),
   pmdcRegistration: Joi.string().trim().allow('').max(200),
   designation: Joi.string().trim().allow('').max(200),
-  patientCount: Joi.number().integer().min(0).allow(null)
+  patientCount: Joi.number().integer().min(0).allow(null),
+  /** MRep assignment fields (Phase 1). All optional. */
+  territoryId: Joi.string().hex().length(24).allow(null, ''),
+  assignedRepId: Joi.string().hex().length(24).allow(null, ''),
+  monthlyVisitTarget: Joi.number().integer().min(0).max(31).allow(null),
+  tier: Joi.string().trim().allow('', null).max(16)
 };
 
 const createDoctorSchema = Joi.object({
@@ -61,7 +66,15 @@ const updateDoctorSchema = Joi.object({
   isActive: Joi.boolean()
 }).min(1);
 
+/** Focused payload for PATCH /doctors/:id/assign — only assignment fields are accepted. */
+const assignDoctorSchema = Joi.object({
+  territoryId: Joi.string().hex().length(24).allow(null, ''),
+  assignedRepId: Joi.string().hex().length(24).allow(null, ''),
+  monthlyVisitTarget: Joi.number().integer().min(0).max(31).allow(null),
+  tier: Joi.string().trim().allow('', null).max(16)
+}).min(1);
+
 module.exports = {
   createPharmacySchema, updatePharmacySchema,
-  createDoctorSchema, updateDoctorSchema
+  createDoctorSchema, updateDoctorSchema, assignDoctorSchema
 };

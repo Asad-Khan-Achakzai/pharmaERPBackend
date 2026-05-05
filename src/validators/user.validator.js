@@ -15,7 +15,11 @@ const createUserSchema = Joi.object({
   phone: Joi.string().trim().allow(''),
   /** Ignored when roleId is set (server uses role.permissions only). */
   permissions: Joi.array().items(Joi.string().valid(...ALL_PERMISSIONS)).default([]),
-  isActive: Joi.boolean().default(true)
+  isActive: Joi.boolean().default(true),
+  /** MRep hierarchy & territory (Phase 0). All optional. */
+  managerId: Joi.string().hex().length(24).allow(null, ''),
+  territoryId: Joi.string().hex().length(24).allow(null, ''),
+  employeeCode: Joi.string().trim().allow('', null).max(64)
 }).custom((obj, helpers) => {
   const hasRoleId = obj.roleId && String(obj.roleId).length === 24;
   if (!hasRoleId && !obj.role) {
@@ -32,11 +36,28 @@ const updateUserSchema = Joi.object({
   roleId: Joi.string().hex().length(24).allow(null, ''),
   role: Joi.string().valid(...TENANT_ROLES),
   permissions: Joi.array().items(Joi.string().valid(...ALL_PERMISSIONS)),
-  isActive: Joi.boolean()
+  isActive: Joi.boolean(),
+  managerId: Joi.string().hex().length(24).allow(null, ''),
+  territoryId: Joi.string().hex().length(24).allow(null, ''),
+  employeeCode: Joi.string().trim().allow('', null).max(64)
 }).min(1);
 
 const updateUserStatusSchema = Joi.object({
   isActive: Joi.boolean().required()
 });
 
-module.exports = { createUserSchema, updateUserSchema, updateUserStatusSchema };
+const updateUserManagerSchema = Joi.object({
+  managerId: Joi.string().hex().length(24).allow(null, '').required()
+});
+
+const updateUserTerritorySchema = Joi.object({
+  territoryId: Joi.string().hex().length(24).allow(null, '').required()
+});
+
+module.exports = {
+  createUserSchema,
+  updateUserSchema,
+  updateUserStatusSchema,
+  updateUserManagerSchema,
+  updateUserTerritorySchema
+};

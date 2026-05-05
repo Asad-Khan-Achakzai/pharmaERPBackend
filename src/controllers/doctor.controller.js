@@ -33,4 +33,9 @@ const remove = asyncHandler(async (req, res) => {
   ApiResponse.success(res, null, 'Doctor deactivated');
 });
 
-module.exports = { lookup, list, create, getById, update, remove };
+const assign = asyncHandler(async (req, res) => {
+  const doctor = await doctorService.assign(req.companyId, req.params.id, req.body, req.user);
+  ApiResponse.success(res, doctor, 'Doctor assignment updated');
+});
+
+module.exports = { lookup, list, create, getById, update, remove, assign };

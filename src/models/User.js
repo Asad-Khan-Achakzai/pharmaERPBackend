@@ -22,7 +22,16 @@ const userSchema = new mongoose.Schema(
     isActive: { type: Boolean, default: true },
     refreshToken: { type: String, select: false },
     lastLoginAt: { type: Date },
-    lastLoginIP: { type: String }
+    lastLoginIP: { type: String },
+    /**
+     * MRep hierarchy (Phase 0). Self-reference; null = top of tree (reports to admin/no one).
+     * Cycle prevention is enforced in user.service when set.
+     */
+    managerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+    /** Brick-level territory the user covers; managers may use it for area/zone — see Territory model. */
+    territoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Territory', default: null, index: true },
+    /** HR identifier (free-text, e.g. "EMP-1023"). Optional. */
+    employeeCode: { type: String, trim: true, maxlength: 64, default: null }
   },
   { timestamps: true }
 );
@@ -30,6 +39,8 @@ const userSchema = new mongoose.Schema(
 /** Globally unique email — one login identity across all tenants (fixes multi-tenant login ambiguity). */
 userSchema.index({ email: 1 }, { unique: true });
 userSchema.index({ companyId: 1, role: 1, isActive: 1 });
+userSchema.index({ companyId: 1, managerId: 1, isActive: 1 });
+userSchema.index({ companyId: 1, territoryId: 1, isActive: 1 });
 
 userSchema.pre('save', async function (next) {
   if (this.isModified('email') && this.email) {

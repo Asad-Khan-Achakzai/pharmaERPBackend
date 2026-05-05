@@ -33,4 +33,35 @@ const setStatus = asyncHandler(async (req, res) => {
   ApiResponse.success(res, user, user.isActive ? 'User activated successfully' : 'User deactivated successfully');
 });
 
-module.exports = { assignable, list, create, getById, update, setStatus };
+const team = asyncHandler(async (req, res) => {
+  const data = await userService.listTeam(req.companyId, req.user, req.query);
+  ApiResponse.success(res, data, 'Team');
+});
+
+const reports = asyncHandler(async (req, res) => {
+  const data = await userService.listDirectReports(req.companyId, req.params.id);
+  ApiResponse.success(res, data, 'Direct reports');
+});
+
+const setManager = asyncHandler(async (req, res) => {
+  const user = await userService.setManager(req.companyId, req.params.id, req.body, req.user);
+  ApiResponse.success(res, user, 'Manager updated');
+});
+
+const setTerritory = asyncHandler(async (req, res) => {
+  const user = await userService.setTerritory(req.companyId, req.params.id, req.body, req.user);
+  ApiResponse.success(res, user, 'Territory updated');
+});
+
+module.exports = {
+  assignable,
+  list,
+  create,
+  getById,
+  update,
+  setStatus,
+  team,
+  reports,
+  setManager,
+  setTerritory
+};

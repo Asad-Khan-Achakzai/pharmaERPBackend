@@ -25,13 +25,29 @@ const doctorSchema = new mongoose.Schema(
     /** PMDC # / duplicate / SMART (single free-text field per tenant practice). */
     pmdcRegistration: { type: String, trim: true, maxlength: 200 },
     designation: { type: String, trim: true, maxlength: 200 },
-    patientCount: { type: Number, min: 0, default: null }
+    patientCount: { type: Number, min: 0, default: null },
+    /**
+     * MRep territory (Phase 0). Brick-level Territory ref. Legacy free-text `zone` / `doctorBrick`
+     * remain populated and are read-only fallback when this is null.
+     */
+    territoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Territory', default: null, index: true },
+    /**
+     * Optional override: pin this doctor to a specific rep regardless of territory.
+     * Default ownership is inferred from territoryId + active rep on that brick.
+     */
+    assignedRepId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+    /** Numeric monthly visit target (replaces free-text `frequency` over time). */
+    monthlyVisitTarget: { type: Number, min: 0, max: 31, default: null },
+    /** Optional doctor tier ('A' | 'B' | 'C' …); coexists with legacy `grade`. */
+    tier: { type: String, trim: true, maxlength: 16, default: null }
   },
   { timestamps: true }
 );
 
 doctorSchema.index({ companyId: 1, pharmacyId: 1 });
 doctorSchema.index({ companyId: 1, isActive: 1 });
+doctorSchema.index({ companyId: 1, territoryId: 1, isActive: 1 });
+doctorSchema.index({ companyId: 1, assignedRepId: 1, isActive: 1 });
 
 doctorSchema.plugin(softDeletePlugin);
 

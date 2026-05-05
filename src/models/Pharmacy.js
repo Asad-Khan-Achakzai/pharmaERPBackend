@@ -15,13 +15,16 @@ const pharmacySchema = new mongoose.Schema(
       buyQty: { type: Number, default: 0 },
       getQty: { type: Number, default: 0 }
     },
-    isActive: { type: Boolean, default: true }
+    isActive: { type: Boolean, default: true },
+    /** Brick-level Territory ref (MRep). Optional — legacy pharmacies leave this null. */
+    territoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Territory', default: null, index: true }
   },
   { timestamps: true }
 );
 
 pharmacySchema.index({ companyId: 1, isActive: 1 });
 pharmacySchema.index({ companyId: 1, name: 1 });
+pharmacySchema.index({ companyId: 1, territoryId: 1, isActive: 1 });
 
 pharmacySchema.plugin(softDeletePlugin);
 

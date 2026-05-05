@@ -8,7 +8,9 @@ const {
   ADMIN_ACCESS,
   ROLES_MANAGE,
   DEFAULT_ADMIN_CODE,
-  DEFAULT_MEDICAL_REP_CODE
+  DEFAULT_MEDICAL_REP_CODE,
+  DEFAULT_ASM_CODE,
+  DEFAULT_RM_CODE
 } = require('../constants/rbac');
 const { ROLES } = require('../constants/enums');
 const auditService = require('./audit.service');
@@ -58,6 +60,34 @@ const DEFAULT_MEDICAL_REP_PERMISSIONS = [
   'attendance.mark'
 ];
 
+/**
+ * MRep role defaults (Phase 0). ASM = MR + team visibility + plan approval; RM = ASM + manage.
+ * These are *defaults at seed time only*. Admins can edit them in the Roles UI afterward.
+ */
+const DEFAULT_ASM_PERMISSIONS = [
+  ...DEFAULT_MEDICAL_REP_PERMISSIONS,
+  'doctors.view',
+  'weeklyPlans.view',
+  'weeklyPlans.review',
+  'weeklyPlans.approve',
+  'team.view',
+  'team.viewAllReports',
+  'targets.view'
+];
+
+const DEFAULT_RM_PERMISSIONS = [
+  ...DEFAULT_ASM_PERMISSIONS,
+  'team.manage',
+  'territories.view',
+  'territories.manage',
+  'doctors.assign',
+  'doctors.edit',
+  'pharmacies.view',
+  'reports.view',
+  'targets.create',
+  'targets.edit'
+];
+
 const isValidPermission = (p) => ALL_PERMISSIONS.includes(p);
 
 const assertPermissions = (arr) => {
@@ -68,7 +98,8 @@ const assertPermissions = (arr) => {
 
 /**
  * Create default system roles for a new company. Idempotent when codes exist.
- * @returns {{ adminRole: import('mongoose').Document, medicalRole: import('mongoose').Document }}
+ * Existing callers depend on `{ adminRole, medicalRole }` — preserved as primary return.
+ * `asmRole` / `rmRole` are added (Phase 0) without breaking that contract.
  */
 const seedDefaultRolesForCompany = async (companyId, { createdBy = null } = {}) => {
   const cid = toCompanyObjectId(companyId);
@@ -95,7 +126,27 @@ const seedDefaultRolesForCompany = async (companyId, { createdBy = null } = {}) 
     });
   }
 
-  return { adminRole, medicalRole };
+  let asmRole = await Role.findOne({ companyId: cid, code: DEFAULT_ASM_CODE });
+  if (!asmRole) {
+    asmRole = await Role.create({
+      ...base,
+      name: 'Area Sales Manager',
+      code: DEFAULT_ASM_CODE,
+      permissions: [...DEFAULT_ASM_PERMISSIONS]
+    });
+  }
+
+  let rmRole = await Role.findOne({ companyId: cid, code: DEFAULT_RM_CODE });
+  if (!rmRole) {
+    rmRole = await Role.create({
+      ...base,
+      name: 'Regional Manager',
+      code: DEFAULT_RM_CODE,
+      permissions: [...DEFAULT_RM_PERMISSIONS]
+    });
+  }
+
+  return { adminRole, medicalRole, asmRole, rmRole };
 };
 
 const list = async (companyId, query, timeZone = "UTC") => {
@@ -263,5 +314,7 @@ module.exports = {
   create,
   update,
   remove,
-  DEFAULT_MEDICAL_REP_PERMISSIONS
+  DEFAULT_MEDICAL_REP_PERMISSIONS,
+  DEFAULT_ASM_PERMISSIONS,
+  DEFAULT_RM_PERMISSIONS
 };

@@ -134,6 +134,20 @@ const UNPLANNED_VISIT_REASON = {
   OTHER: 'OTHER'
 };
 
+/** MRep 3-level org territory tree (single collection, self-referencing). */
+const TERRITORY_KIND = {
+  ZONE: 'ZONE',
+  AREA: 'AREA',
+  BRICK: 'BRICK'
+};
+
+/** Allowed parent kind for each TERRITORY_KIND (BRICK→AREA, AREA→ZONE, ZONE→null). */
+const TERRITORY_PARENT_KIND = {
+  ZONE: null,
+  AREA: TERRITORY_KIND.ZONE,
+  BRICK: TERRITORY_KIND.AREA
+};
+
 /** Doctor investment / commitment tracking (TP-based achieved sales) */
 const DOCTOR_ACTIVITY_STATUS = {
   ACTIVE: 'ACTIVE',
@@ -223,6 +237,8 @@ module.exports = {
   PLAN_ITEM_STATUS,
   DAY_EXECUTION_STATE,
   UNPLANNED_VISIT_REASON,
+  TERRITORY_KIND,
+  TERRITORY_PARENT_KIND,
   DOCTOR_ACTIVITY_STATUS,
   PURCHASE_ORDER_STATUS,
   GOODS_RECEIPT_NOTE_STATUS,
