@@ -57,7 +57,9 @@ const DEFAULT_MEDICAL_REP_PERMISSIONS = [
   'ledger.view',
   'reports.view',
   'attendance.view',
-  'attendance.mark'
+  'attendance.mark',
+  'weeklyPlans.view',
+  'weeklyPlans.markVisit'
 ];
 
 /**

@@ -3,11 +3,20 @@ const ApiResponse = require('../utils/ApiResponse');
 const ApiError = require('../utils/ApiError');
 const asyncHandler = require('../middleware/asyncHandler');
 const { userHasPermission } = require('../utils/effectivePermissions');
+const { resolveSubtreeUserIds } = require('../utils/teamScope');
 
 const listToday = asyncHandler(async (req, res) => {
   let targetId = req.query.employeeId || req.user.userId;
   if (String(targetId) !== String(req.user.userId)) {
-    if (!userHasPermission(req.user, 'admin.access')) {
+    if (userHasPermission(req.user, 'admin.access')) {
+      /* ok */
+    } else if (userHasPermission(req.user, 'team.viewAllReports')) {
+      const subtree = await resolveSubtreeUserIds(req.companyId, req.user.userId, { includeSelf: true });
+      const ok = subtree.some((id) => String(id) === String(targetId));
+      if (!ok) {
+        throw new ApiError(403, 'You can only view plan items for yourself or your team');
+      }
+    } else {
       throw new ApiError(403, 'Only administrators can view another employee\'s plan items');
     }
   }
@@ -26,7 +35,8 @@ const markVisit = asyncHandler(async (req, res) => {
     req.params.id,
     req.body,
     req.user,
-    req.context.timeZone
+    req.context.timeZone,
+    req.context.company
   );
   ApiResponse.success(res, data, 'Visit recorded');
 });

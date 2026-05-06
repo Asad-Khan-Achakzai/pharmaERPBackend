@@ -102,6 +102,7 @@ const LARGE_CUSTOM = [
     'orders.create',
     'payments.view',
     'attendance.mark',
+    'weeklyPlans.view',
     'weeklyPlans.markVisit'
   ])
 ];

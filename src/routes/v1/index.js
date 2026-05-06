@@ -32,6 +32,7 @@ const auditLogRoutes = require('./auditLog.routes');
 const superAdminRoutes = require('./superAdmin.routes');
 const platformRoutes = require('./platform.routes');
 const territoryRoutes = require('./territory.routes');
+const territoryImportRoutes = require('./territoryImport.routes');
 
 router.use('/auth', authRoutes);
 router.use('/super-admin', superAdminRoutes);
@@ -65,6 +66,7 @@ router.use('/dashboard', dashboardRoutes);
 router.use('/suppliers', supplierRoutes);
 router.use('/procurement', procurementRoutes);
 router.use('/audit-logs', auditLogRoutes);
+router.use('/territories/import', territoryImportRoutes);
 router.use('/territories', territoryRoutes);
 
 module.exports = router;

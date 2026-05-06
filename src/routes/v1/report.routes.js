@@ -4,10 +4,16 @@ const router = express.Router();
 const c = require('../../controllers/report.controller');
 const { authenticate } = require('../../middleware/auth');
 const { companyScope } = require('../../middleware/companyScope');
-const { checkPermission } = require('../../middleware/checkPermission');
+const { checkPermission, checkPermissionAny } = require('../../middleware/checkPermission');
 const { validate, validateQuery } = require('../../middleware/validate');
 const { visitSummaryQuerySchema, visitByEmployeeQuerySchema } = require('../../validators/planItem.validator');
 const { dashboardQuerySchema } = require('../../validators/reportDashboard.validator');
+const mrepC = require('../../controllers/mrepReport.controller');
+const {
+  mrepMonthlyOverviewQuerySchema,
+  mrepDoctorCoverageQuerySchema,
+  mrepTerritoryCoverageQuerySchema
+} = require('../../validators/mrepReport.validator');
 
 const cashOpeningSchema = Joi.object({
   cashOpeningBalance: Joi.number().required()
@@ -54,5 +60,25 @@ router.get('/revenue', checkPermission('reports.view'), c.profitRevenue);
 router.get('/costs', checkPermission('reports.view'), c.profitCosts);
 router.get('/product-profitability', checkPermission('reports.view'), c.profitProductProfitability);
 router.get('/trends', checkPermission('reports.view'), c.profitTrends);
+
+/** MRep field KPIs & coverage (Phase 3 — self, team subtree, or explicit rep when allowed). */
+router.get(
+  '/mrep/monthly-overview',
+  checkPermissionAny('weeklyPlans.view', 'weeklyPlans.markVisit', 'team.viewAllReports', 'admin.access'),
+  validateQuery(mrepMonthlyOverviewQuerySchema),
+  mrepC.monthlyOverview
+);
+router.get(
+  '/mrep/doctor-coverage',
+  checkPermissionAny('weeklyPlans.view', 'weeklyPlans.markVisit', 'team.viewAllReports', 'admin.access'),
+  validateQuery(mrepDoctorCoverageQuerySchema),
+  mrepC.doctorCoverage
+);
+router.get(
+  '/mrep/territory-coverage',
+  checkPermissionAny('territories.view', 'team.viewAllReports', 'admin.access'),
+  validateQuery(mrepTerritoryCoverageQuerySchema),
+  mrepC.territoryCoverage
+);
 
 module.exports = router;

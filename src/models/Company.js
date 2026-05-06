@@ -21,6 +21,10 @@ const companySchema = new mongoose.Schema(
      * affects only future plans.
      */
     weeklyPlanApprovalRequired: { type: Boolean, default: false },
+    /**
+     * When true, reps cannot mark a visit out of planned sequence (same effect as env STRICT_VISIT_SEQUENCE=1).
+     */
+    strictVisitSequence: { type: Boolean, default: false },
     /** Single canonical IANA timezone for business calendar (reports, plans, attendance anchors). Required at creation — no implicit UTC. */
     timeZone: {
       type: String,

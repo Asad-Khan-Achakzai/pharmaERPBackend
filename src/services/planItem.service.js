@@ -11,6 +11,7 @@ const businessTime = require('../utils/businessTime');
 const planExecution = require('../utils/planExecution.util');
 const attendanceService = require('./attendance.service');
 const auditService = require('./audit.service');
+const coverageService = require('./coverage.service');
 const env = require('../config/env');
 
 const normalizePlanItemDate = (input, timeZone) => {
@@ -94,6 +95,24 @@ const buildTodayExecution = async (companyId, employeeId, dateYmd, timeZone) => 
   const unplannedCompletedCount = visitedItems.filter((i) => i.isUnplanned).length;
   const coveragePercent = summary.total ? Math.round((summary.visited / summary.total) * 100) : 0;
 
+  let coverageHints = [];
+  let coverageAlert = null;
+  try {
+    coverageHints = await coverageService.coverageHintsForExecutionDay(companyId, employeeId, ymd, tz, {
+      maxHints: 12
+    });
+    const behind = coverageHints.filter((h) => !h.onTrack && h.remaining > 0);
+    if (behind.length) {
+      coverageAlert = {
+        severity: 'info',
+        message: `${behind.length} doctor(s) on today’s route are below monthly visit target`,
+        count: behind.length
+      };
+    }
+  } catch (_e) {
+    /* Never break execution payload */
+  }
+
   return {
     date: ymd,
     summary,
@@ -107,6 +126,8 @@ const buildTodayExecution = async (companyId, employeeId, dateYmd, timeZone) => 
       unplannedCompletedCount,
       dayComplete: dayExecutionState === DAY_EXECUTION_STATE.COMPLETED
     },
+    coverageHints,
+    coverageAlert,
     items
   };
 };
@@ -259,7 +280,7 @@ const firstPendingIdForDay = async (companyId, employeeId, dateDoc, session) => 
   return doc ? String(doc._id) : null;
 };
 
-const markVisit = async (companyId, planItemId, body, reqUser, timeZone) => {
+const markVisit = async (companyId, planItemId, body, reqUser, timeZone, companyDoc = null) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -280,7 +301,9 @@ const markVisit = async (companyId, planItemId, body, reqUser, timeZone) => {
 
     const nextId = await firstPendingIdForDay(companyId, reqUser.userId, item.date, session);
     const isOutOfOrder = Boolean(nextId && String(planItemId) !== nextId);
-    const strictSeq = String(env.STRICT_VISIT_SEQUENCE || '0') === '1';
+    const strictSeq =
+      Boolean(companyDoc && companyDoc.strictVisitSequence === true) ||
+      String(env.STRICT_VISIT_SEQUENCE || '0') === '1';
 
     if (isOutOfOrder) {
       if (strictSeq) {

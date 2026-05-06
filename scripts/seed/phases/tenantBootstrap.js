@@ -3,8 +3,9 @@ const Company = require('../../../src/models/Company');
 const User = require('../../../src/models/User');
 const Role = require('../../../src/models/Role');
 const UserCompanyAccess = require('../../../src/models/UserCompanyAccess');
-const { ROLES, USER_TYPES } = require('../../../src/constants/enums');
+const { ROLES, USER_TYPES, TERRITORY_KIND } = require('../../../src/constants/enums');
 const { seedDefaultRolesForCompany } = require('../../../src/services/role.service');
+const territoryService = require('../../../src/services/territory.service');
 const { LARGE_CUSTOM, MEDIUM_CUSTOM, SMALL_CUSTOM } = require('../lib/roleDefinitions');
 const {
   DEFAULT_SUPER_ADMIN_EMAIL,
@@ -188,6 +189,31 @@ async function seedTenantGraph() {
       phone: `+92-300-101${t.index}${t.index}${t.index}`,
       permissions: []
     });
+
+    if (t.key === 'aurora') {
+      const auditUser = { userId: admin._id };
+      const z = await territoryService.create(
+        c._id,
+        { name: 'Demo North Zone', kind: TERRITORY_KIND.ZONE, parentId: null, isActive: true },
+        auditUser
+      );
+      const a = await territoryService.create(
+        c._id,
+        { name: 'Demo Metro Area', kind: TERRITORY_KIND.AREA, parentId: z._id, isActive: true },
+        auditUser
+      );
+      await territoryService.create(
+        c._id,
+        {
+          name: 'Demo Brick 01',
+          kind: TERRITORY_KIND.BRICK,
+          parentId: a._id,
+          code: 'DEMO-B01',
+          isActive: true
+        },
+        auditUser
+      );
+    }
 
     const plan = extraUserRows(t, adminRole._id, medicalRole._id, customRoles);
 
