@@ -84,7 +84,7 @@ const applyAssignmentRefs = async (companyId, payload) => {
   }
 };
 
-const list = async (companyId, query, timeZone = "UTC") => {
+const list = async (companyId, query, timeZone = "UTC", opts = {}) => {
   const { page, limit, skip, sort, search } = parsePagination(query);
   const searchTerm = qScalar(search);
   const filter = { companyId };
@@ -95,6 +95,19 @@ const list = async (companyId, query, timeZone = "UTC") => {
   }
   if (query.assignedRepId && mongoose.Types.ObjectId.isValid(query.assignedRepId)) {
     filter.assignedRepId = new mongoose.Types.ObjectId(query.assignedRepId);
+  }
+  /**
+   * Manager team scope (Phase 2A): when `opts.scopedUserIds` is an array, only return
+   * doctors explicitly assigned to a user in the subtree. Doctors with no `assignedRepId`
+   * are intentionally excluded — managers should treat unassigned doctors as a separate
+   * "Unassigned" view (filterable via `?assignedRepId=null` later if needed).
+   */
+  if (Array.isArray(opts.scopedUserIds)) {
+    if (opts.scopedUserIds.length === 0) {
+      // Empty subtree -> empty result, but stay consistent with normal pagination shape.
+      return { docs: [], total: 0, page, limit };
+    }
+    filter.assignedRepId = { $in: opts.scopedUserIds };
   }
   if (searchTerm) {
     const rx = escapeRegex(searchTerm);

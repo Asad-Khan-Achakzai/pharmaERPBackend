@@ -23,6 +23,16 @@ const weeklyPlanSchema = new mongoose.Schema(
     distributorVisits: [visitSchema],
     notes: { type: String, trim: true, maxlength: 2000 },
     status: { type: String, enum: Object.values(WEEKLY_PLAN_STATUS), default: WEEKLY_PLAN_STATUS.DRAFT },
+    /**
+     * Manager approval workflow (Phase 2B). Defaults to false; set from
+     * Company.weeklyPlanApprovalRequired at create time. Per-plan flag so a company can
+     * toggle the policy without rewriting in-flight plans.
+     */
+    approvalRequired: { type: Boolean, default: false },
+    submittedAt: { type: Date, default: null },
+    approvedAt: { type: Date, default: null },
+    approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    rejectedReason: { type: String, trim: true, maxlength: 1000, default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   },
@@ -30,6 +40,8 @@ const weeklyPlanSchema = new mongoose.Schema(
 );
 
 weeklyPlanSchema.index({ companyId: 1, medicalRepId: 1, weekStartDate: -1 });
+/** Manager dashboards filter by status (e.g. "pending approval"). */
+weeklyPlanSchema.index({ companyId: 1, status: 1, submittedAt: -1 });
 
 weeklyPlanSchema.plugin(softDeletePlugin);
 

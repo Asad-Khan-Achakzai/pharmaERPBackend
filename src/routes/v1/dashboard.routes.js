@@ -9,5 +9,6 @@ const { dashboardQuerySchema } = require('../../validators/reportDashboard.valid
 const router = express.Router();
 router.use(authenticate, companyScope);
 router.get('/home', checkPermission('dashboard.view'), validateQuery(dashboardQuerySchema), c.home);
+router.get('/team-summary', checkPermission('team.view'), c.teamSummary);
 
 module.exports = router;

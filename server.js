@@ -4,6 +4,7 @@ const env = require('./src/config/env');
 const logger = require('./src/utils/logger');
 const { startAttendanceAutoCheckoutJob } = require('./src/jobs/attendanceAutoCheckout.job');
 const { startPlanItemsMissedJob } = require('./src/jobs/planItemsMissed.job');
+const { seedMrepRolesForAllCompanies } = require('./src/jobs/seedMrepRoles.bootstrap');
 
 const startServer = async () => {
   await connectDB();
@@ -11,6 +12,8 @@ const startServer = async () => {
   if (env.NODE_ENV !== 'test') {
     startAttendanceAutoCheckoutJob();
     startPlanItemsMissedJob();
+    /** Idempotent — ensures every company has DEFAULT_ASM + DEFAULT_RM seeded. */
+    void seedMrepRolesForAllCompanies();
   }
 
   app.listen(env.PORT, () => {

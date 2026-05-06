@@ -26,7 +26,9 @@ const createWeeklyPlanSchema = Joi.object({
   notes: Joi.string().trim().allow(''),
   doctorVisits: Joi.array().items(Joi.object({ entityId: Joi.string().required(), planned: Joi.boolean().default(true), completed: Joi.boolean().default(false), notes: Joi.string().allow('') })),
   distributorVisits: Joi.array().items(Joi.object({ entityId: Joi.string().required(), planned: Joi.boolean().default(true), completed: Joi.boolean().default(false), notes: Joi.string().allow('') })),
-  status: Joi.string().valid('DRAFT', 'ACTIVE', 'COMPLETED', 'SUBMITTED', 'REVIEWED')
+  status: Joi.string().valid('DRAFT', 'ACTIVE', 'COMPLETED', 'SUBMITTED', 'REVIEWED'),
+  /** Phase 2B — explicit override; otherwise inherited from Company.weeklyPlanApprovalRequired. */
+  approvalRequired: Joi.boolean()
 });
 
 const updateWeeklyPlanSchema = Joi.object({

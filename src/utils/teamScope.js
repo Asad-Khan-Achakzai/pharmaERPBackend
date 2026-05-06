@@ -59,4 +59,32 @@ const assertNoCycle = async (companyId, userId, newManagerId) => {
   }
 };
 
-module.exports = { resolveSubtreeUserIds, assertNoCycle };
+/**
+ * Request-level helper for the `?scope=team` query parameter (Phase 2A).
+ *
+ * Returns one of three shapes the caller can fold into a Mongo filter:
+ *   - `null`            → no scope filter (caller passed no `scope`, or passed `scope=all` and
+ *                          has admin.access). Existing behaviour is preserved byte-for-byte.
+ *   - `ObjectId[]`      → filter `<userField> ∈ [...]`. Includes the caller themselves so an RM
+ *                          who personally owns rows still sees them.
+ *
+ * Throws 403 when `?scope=team` is requested by a user without `team.viewAllReports`
+ * (or `admin.access`, which always satisfies). Throws 400 for unknown `scope` values.
+ */
+const resolveTeamScopeForRequest = async (req) => {
+  const ApiError = require('./ApiError');
+  const raw = req.query?.scope;
+  if (raw === undefined || raw === null || raw === '' || raw === 'self') return null;
+  if (raw === 'all') return null;
+  if (raw !== 'team') {
+    throw new ApiError(400, `Unsupported scope value "${raw}". Use one of: self | team | all.`);
+  }
+  const perms = req.user?.permissions || [];
+  const allowed = perms.includes('team.viewAllReports') || perms.includes('admin.access');
+  if (!allowed) {
+    throw new ApiError(403, 'scope=team requires team.viewAllReports permission');
+  }
+  return resolveSubtreeUserIds(req.companyId, req.user.userId, { includeSelf: true });
+};
+
+module.exports = { resolveSubtreeUserIds, assertNoCycle, resolveTeamScopeForRequest };

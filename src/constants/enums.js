@@ -101,11 +101,14 @@ const ATTENDANCE_MARKED_BY = {
 
 const WEEKLY_PLAN_STATUS = {
   DRAFT: 'DRAFT',
+  /**
+   * Manager approval workflow (Phase 2B). Only used when Company.weeklyPlanApprovalRequired = true.
+   * Rep submits → manager approves (→ ACTIVE) or rejects (→ DRAFT with rejectedReason set).
+   */
+  SUBMITTED: 'SUBMITTED',
   ACTIVE: 'ACTIVE',
   COMPLETED: 'COMPLETED',
   /** @deprecated legacy workflow — retained for existing rows */
-  SUBMITTED: 'SUBMITTED',
-  /** @deprecated legacy workflow */
   REVIEWED: 'REVIEWED'
 };
 

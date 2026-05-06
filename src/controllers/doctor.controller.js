@@ -2,6 +2,7 @@ const doctorService = require('../services/doctor.service');
 const lookupService = require('../services/lookup.service');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../middleware/asyncHandler');
+const { resolveTeamScopeForRequest } = require('../utils/teamScope');
 
 const lookup = asyncHandler(async (req, res) => {
   const data = await lookupService.doctors(req.companyId, req.query);
@@ -9,7 +10,8 @@ const lookup = asyncHandler(async (req, res) => {
 });
 
 const list = asyncHandler(async (req, res) => {
-  const result = await doctorService.list(req.companyId, req.query, req.context.timeZone);
+  const scopedUserIds = await resolveTeamScopeForRequest(req);
+  const result = await doctorService.list(req.companyId, req.query, req.context.timeZone, { scopedUserIds });
   ApiResponse.paginated(res, result);
 });
 

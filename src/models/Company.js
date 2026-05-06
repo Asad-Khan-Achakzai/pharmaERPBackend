@@ -15,6 +15,12 @@ const companySchema = new mongoose.Schema(
     currency: { type: String, default: 'PKR' },
     /** Starting bank/cash position for implied cash balance (collections + settlements − outflows) */
     cashOpeningBalance: { type: Number, default: 0 },
+    /**
+     * Per-tenant feature flag (Phase 2B). When true, weekly plans require manager approval
+     * before they go ACTIVE. New plans inherit this flag at creation; flipping it later
+     * affects only future plans.
+     */
+    weeklyPlanApprovalRequired: { type: Boolean, default: false },
     /** Single canonical IANA timezone for business calendar (reports, plans, attendance anchors). Required at creation — no implicit UTC. */
     timeZone: {
       type: String,

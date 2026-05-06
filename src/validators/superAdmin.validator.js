@@ -10,6 +10,7 @@ const createCompanySchema = Joi.object({
   email: Joi.string().email().trim().lowercase().allow('', null),
   currency: Joi.string().trim().default('PKR'),
   timeZone: Joi.string().trim().allow('', null),
+  weeklyPlanApprovalRequired: Joi.boolean(),
   isActive: Joi.boolean().default(true)
 });
 
@@ -23,6 +24,7 @@ const updateCompanySchema = Joi.object({
   email: Joi.string().email().trim().lowercase().allow('', null),
   currency: Joi.string().trim(),
   timeZone: Joi.string().trim().allow('', null),
+  weeklyPlanApprovalRequired: Joi.boolean(),
   isActive: Joi.boolean()
 })
   .min(1)

@@ -1,5 +1,8 @@
+const mongoose = require('mongoose');
 const WeeklyPlan = require('../models/WeeklyPlan');
 const PlanItem = require('../models/PlanItem');
+const Company = require('../models/Company');
+const User = require('../models/User');
 const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const auditService = require('./audit.service');
@@ -8,9 +11,10 @@ const { escapeRegex, qScalar, applyCreatedAtRangeFromQuery, applyCreatedByFromQu
 const businessTime = require('../utils/businessTime');
 const planExecution = require('../utils/planExecution.util');
 const { DateTime } = require('luxon');
-const { PLAN_ITEM_STATUS } = require('../constants/enums');
+const { PLAN_ITEM_STATUS, WEEKLY_PLAN_STATUS } = require('../constants/enums');
+const { resolveSubtreeUserIds } = require('../utils/teamScope');
 
-const list = async (companyId, query, timeZone = 'UTC') => {
+const list = async (companyId, query, timeZone = 'UTC', opts = {}) => {
   const { page, limit, skip, sort, search } = parsePagination(query);
   const searchTerm = qScalar(search);
   const filter = { companyId };
@@ -22,6 +26,13 @@ const list = async (companyId, query, timeZone = 'UTC') => {
   }
   applyCreatedAtRangeFromQuery(filter, query, timeZone);
   applyCreatedByFromQuery(filter, query);
+  /** Manager team scope (Phase 2A) — see doctor.service for the parallel implementation. */
+  if (Array.isArray(opts.scopedUserIds)) {
+    if (opts.scopedUserIds.length === 0) return { docs: [], total: 0, page, limit };
+    filter.medicalRepId = filter.medicalRepId
+      ? { $in: opts.scopedUserIds.filter((id) => String(id) === String(filter.medicalRepId)) }
+      : { $in: opts.scopedUserIds };
+  }
   const [docs, total] = await Promise.all([
     WeeklyPlan.find(filter).populate('medicalRepId', 'name').sort(sort).skip(skip).limit(limit),
     WeeklyPlan.countDocuments(filter)
@@ -44,8 +55,21 @@ const list = async (companyId, query, timeZone = 'UTC') => {
 };
 
 const create = async (companyId, data, reqUser) => {
+  /**
+   * Phase 2B: inherit `approvalRequired` from the company flag if the caller didn't pass one.
+   * Per-plan storage means flipping the company flag later doesn't mutate in-flight plans.
+   */
+  let approvalRequired = data.approvalRequired;
+  if (approvalRequired === undefined || approvalRequired === null) {
+    const company = await Company.findOne({ _id: companyId, isDeleted: { $ne: true } })
+      .select('weeklyPlanApprovalRequired')
+      .lean();
+    approvalRequired = !!(company && company.weeklyPlanApprovalRequired);
+  }
+
   const plan = await WeeklyPlan.create({
     ...data,
+    approvalRequired,
     companyId,
     medicalRepId: data.medicalRepId || reqUser.userId,
     createdBy: reqUser.userId
@@ -204,4 +228,177 @@ const copyPreviousWeekIntoPlan = async (companyId, targetPlanId, reqUser, timeZo
   return planItemService.listByPlan(companyId, target._id);
 };
 
-module.exports = { list, create, update, getByRep, getById, copyPreviousWeekIntoPlan };
+/* ============================================================================
+ * Phase 2B — Approval workflow
+ * ============================================================================ */
+
+/**
+ * Confirm the caller is allowed to act as the manager for this plan's rep:
+ *   - SUPER_ADMIN / admin.access bypass
+ *   - or the rep is in the caller's reporting subtree (via User.managerId)
+ *
+ * Throws 403 otherwise. Returns the plan it loaded so the caller doesn't re-query.
+ */
+const assertCallerCanManagePlan = async (companyId, planId, reqUser, action = 'review') => {
+  const plan = await WeeklyPlan.findOne({ _id: planId, companyId, isDeleted: { $ne: true } });
+  if (!plan) throw new ApiError(404, 'Weekly plan not found');
+  const isAdmin = (reqUser?.permissions || []).includes('admin.access');
+  if (isAdmin) return plan;
+
+  const repId = plan.medicalRepId;
+  if (String(repId) === String(reqUser.userId)) {
+    /** Rep cannot review/approve their own plan. */
+    throw new ApiError(403, `Cannot ${action} your own plan`);
+  }
+  const subtree = await resolveSubtreeUserIds(companyId, reqUser.userId, { includeSelf: false });
+  const inTree = subtree.some((id) => String(id) === String(repId));
+  if (!inTree) {
+    throw new ApiError(403, 'You can only ' + action + ' plans of users reporting to you');
+  }
+  return plan;
+};
+
+/**
+ * PATCH-style: submit a DRAFT plan for manager approval. Allowed actors:
+ *   - The plan owner (rep)
+ *   - Anyone managing the plan owner (subtree containing the rep) — common for ASMs
+ *     who maintain plans on behalf of their MRs
+ *   - admin.access bypass
+ */
+const submit = async (companyId, planId, reqUser) => {
+  const plan = await WeeklyPlan.findOne({ _id: planId, companyId, isDeleted: { $ne: true } });
+  if (!plan) throw new ApiError(404, 'Weekly plan not found');
+
+  const isAdmin = (reqUser?.permissions || []).includes('admin.access');
+  const isOwner = String(plan.medicalRepId) === String(reqUser.userId);
+  let isManagerOfOwner = false;
+  if (!isAdmin && !isOwner) {
+    const subtree = await resolveSubtreeUserIds(companyId, reqUser.userId, { includeSelf: false });
+    isManagerOfOwner = subtree.some((id) => String(id) === String(plan.medicalRepId));
+  }
+  if (!(isAdmin || isOwner || isManagerOfOwner)) {
+    throw new ApiError(403, 'Only the plan owner or their manager can submit it for approval');
+  }
+  if (!plan.approvalRequired) {
+    throw new ApiError(400, 'This plan does not require approval. Save it as ACTIVE directly.');
+  }
+  if (plan.status !== WEEKLY_PLAN_STATUS.DRAFT) {
+    throw new ApiError(400, `Plan cannot be submitted from status ${plan.status}`);
+  }
+  const itemCount = await PlanItem.countDocuments({
+    weeklyPlanId: plan._id,
+    companyId,
+    isDeleted: { $ne: true }
+  });
+  if (itemCount === 0) {
+    throw new ApiError(400, 'Cannot submit an empty plan — add at least one plan item first');
+  }
+
+  const before = plan.toObject();
+  plan.status = WEEKLY_PLAN_STATUS.SUBMITTED;
+  plan.submittedAt = new Date();
+  plan.rejectedReason = null;
+  plan.updatedBy = reqUser.userId;
+  await plan.save();
+
+  await auditService.log({
+    companyId,
+    userId: reqUser.userId,
+    action: 'weeklyPlan.submit',
+    entityType: 'WeeklyPlan',
+    entityId: plan._id,
+    changes: { before, after: plan.toObject() }
+  });
+  return plan;
+};
+
+const approve = async (companyId, planId, reqUser) => {
+  const plan = await assertCallerCanManagePlan(companyId, planId, reqUser, 'approve');
+  if (plan.status !== WEEKLY_PLAN_STATUS.SUBMITTED) {
+    throw new ApiError(400, `Plan must be SUBMITTED to approve (current: ${plan.status})`);
+  }
+  const before = plan.toObject();
+  plan.status = WEEKLY_PLAN_STATUS.ACTIVE;
+  plan.approvedAt = new Date();
+  plan.approvedBy = reqUser.userId;
+  plan.rejectedReason = null;
+  plan.updatedBy = reqUser.userId;
+  await plan.save();
+  await auditService.log({
+    companyId,
+    userId: reqUser.userId,
+    action: 'weeklyPlan.approve',
+    entityType: 'WeeklyPlan',
+    entityId: plan._id,
+    changes: { before, after: plan.toObject() }
+  });
+  return plan;
+};
+
+const reject = async (companyId, planId, { reason } = {}, reqUser) => {
+  if (!reason || !String(reason).trim()) {
+    throw new ApiError(400, 'A rejection reason is required');
+  }
+  const plan = await assertCallerCanManagePlan(companyId, planId, reqUser, 'reject');
+  if (plan.status !== WEEKLY_PLAN_STATUS.SUBMITTED) {
+    throw new ApiError(400, `Plan must be SUBMITTED to reject (current: ${plan.status})`);
+  }
+  const before = plan.toObject();
+  /** Reject sends the plan back to DRAFT so the rep can fix and re-submit. */
+  plan.status = WEEKLY_PLAN_STATUS.DRAFT;
+  plan.rejectedReason = String(reason).trim().slice(0, 1000);
+  plan.submittedAt = null;
+  plan.approvedAt = null;
+  plan.approvedBy = null;
+  plan.updatedBy = reqUser.userId;
+  await plan.save();
+  await auditService.log({
+    companyId,
+    userId: reqUser.userId,
+    action: 'weeklyPlan.reject',
+    entityType: 'WeeklyPlan',
+    entityId: plan._id,
+    changes: { before, after: plan.toObject() }
+  });
+  return plan;
+};
+
+/**
+ * Manager helper: list plans pending approval in the caller's subtree.
+ * Used by the dashboard "team summary" widget and the manager's review queue.
+ */
+const pendingApprovals = async (companyId, reqUser) => {
+  const isAdmin = (reqUser?.permissions || []).includes('admin.access');
+  let userFilter;
+  if (isAdmin) {
+    userFilter = undefined;
+  } else {
+    const subtree = await resolveSubtreeUserIds(companyId, reqUser.userId, { includeSelf: false });
+    if (!subtree.length) return [];
+    userFilter = { $in: subtree };
+  }
+  const filter = {
+    companyId,
+    status: WEEKLY_PLAN_STATUS.SUBMITTED,
+    isDeleted: { $ne: true }
+  };
+  if (userFilter) filter.medicalRepId = userFilter;
+  return WeeklyPlan.find(filter)
+    .populate('medicalRepId', 'name email')
+    .sort({ submittedAt: -1, weekStartDate: -1 })
+    .limit(50)
+    .lean();
+};
+
+module.exports = {
+  list,
+  create,
+  update,
+  getByRep,
+  getById,
+  copyPreviousWeekIntoPlan,
+  submit,
+  approve,
+  reject,
+  pendingApprovals
+};
