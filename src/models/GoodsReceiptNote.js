@@ -17,6 +17,9 @@ const goodsReceiptNoteSchema = new mongoose.Schema(
       index: true
     },
     postedAt: { type: Date, default: null },
+    reversedAt: { type: Date, default: null },
+    reversedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    reversalReason: { type: String, trim: true, maxlength: 4000 },
     /** Lump shipping for this receipt (PKR); not included in supplier payable, only in landed inventory cost */
     totalShippingCost: { type: Number, default: 0, min: 0 },
     notes: { type: String, trim: true, maxlength: 4000 },

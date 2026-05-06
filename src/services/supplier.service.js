@@ -173,6 +173,82 @@ const recordPurchaseFromStockTransfer = async (
 };
 
 /**
+ * Posted purchase return — reduces supplier payable; idempotent per PurchaseReturn (retry-safe).
+ */
+const recordPurchaseReturnPosted = async ({ session, companyId, supplierId, purchaseReturnId, amount, notes }, reqUser) => {
+  await getById(companyId, supplierId);
+
+  const existing = await SupplierLedger.findOne({
+    companyId: oid(companyId),
+    referenceType: SUPPLIER_LEDGER_REFERENCE_TYPE.PURCHASE_RETURN,
+    referenceId: purchaseReturnId,
+    type: SUPPLIER_LEDGER_TYPE.PURCHASE_RETURN
+  }).session(session || null);
+
+  if (existing) return existing;
+
+  const a = roundPKR(amount);
+  if (a <= 0) return null;
+
+  const [row] = await SupplierLedger.create(
+    [
+      {
+        companyId: oid(companyId),
+        supplierId: oid(supplierId),
+        type: SUPPLIER_LEDGER_TYPE.PURCHASE_RETURN,
+        amount: a,
+        referenceType: SUPPLIER_LEDGER_REFERENCE_TYPE.PURCHASE_RETURN,
+        referenceId: purchaseReturnId,
+        date: new Date(),
+        notes: notes || 'Purchase return posted',
+        createdBy: reqUser.userId
+      }
+    ],
+    session ? { session } : {}
+  );
+  return row;
+};
+
+/**
+ * Full posted GRN reversal — decreases payable by original GRN PURCHASE amount; idempotent per GRN.
+ */
+const recordGrnReversalPosted = async ({ session, companyId, supplierId, grnId, amount, notes }, reqUser) => {
+  await getById(companyId, supplierId);
+
+  const existing = await SupplierLedger.findOne({
+    companyId: oid(companyId),
+    referenceType: SUPPLIER_LEDGER_REFERENCE_TYPE.GOODS_RECEIPT_NOTE_REVERSAL,
+    referenceId: grnId,
+    type: SUPPLIER_LEDGER_TYPE.ADJUSTMENT,
+    adjustmentEffect: SUPPLIER_LEDGER_ADJUSTMENT_EFFECT.DECREASE_PAYABLE
+  }).session(session || null);
+
+  if (existing) return existing;
+
+  const a = roundPKR(amount);
+  if (a <= 0) return null;
+
+  const [row] = await SupplierLedger.create(
+    [
+      {
+        companyId: oid(companyId),
+        supplierId: oid(supplierId),
+        type: SUPPLIER_LEDGER_TYPE.ADJUSTMENT,
+        adjustmentEffect: SUPPLIER_LEDGER_ADJUSTMENT_EFFECT.DECREASE_PAYABLE,
+        amount: a,
+        referenceType: SUPPLIER_LEDGER_REFERENCE_TYPE.GOODS_RECEIPT_NOTE_REVERSAL,
+        referenceId: grnId,
+        date: new Date(),
+        notes: notes || 'Goods receipt note reversed',
+        createdBy: reqUser.userId
+      }
+    ],
+    session ? { session } : {}
+  );
+  return row;
+};
+
+/**
  * PURCHASE liability from posted procurement GRN — idempotent per GRN (retry-safe).
  */
 const recordPurchaseFromGrn = async ({ session, companyId, supplierId, grnId, amount, notes }, reqUser) => {
@@ -315,7 +391,7 @@ const recordPayment = async (companyId, supplierId, body, reqUser) => {
 
 /**
  * Full supplier ledger with running balance (chronological by date).
- * Balance rule: openingBalance + sum(PURCHASE) − sum(PAYMENT) up to each row.
+ * Balance rule: openingBalance + sum(PURCHASE) − sum(PAYMENT) − sum(PURCHASE_RETURN) + adjustments up to each row.
  */
 const listLedger = async (companyId, supplierId, query = {}) => {
   const s = await Supplier.findOne({ _id: supplierId, companyId, isDeleted: { $ne: true } }).lean();
@@ -330,8 +406,9 @@ const listLedger = async (companyId, supplierId, query = {}) => {
   let balance = openingBalance;
   const entries = allRaw.map((row) => {
     if (row.type === SUPPLIER_LEDGER_TYPE.PURCHASE) balance = roundPKR(balance + row.amount);
-    else if (row.type === SUPPLIER_LEDGER_TYPE.PAYMENT) balance = roundPKR(balance - row.amount);
-    else if (row.type === SUPPLIER_LEDGER_TYPE.ADJUSTMENT && row.adjustmentEffect) {
+    else if (row.type === SUPPLIER_LEDGER_TYPE.PAYMENT || row.type === SUPPLIER_LEDGER_TYPE.PURCHASE_RETURN) {
+      balance = roundPKR(balance - row.amount);
+    } else if (row.type === SUPPLIER_LEDGER_TYPE.ADJUSTMENT && row.adjustmentEffect) {
       if (row.adjustmentEffect === SUPPLIER_LEDGER_ADJUSTMENT_EFFECT.INCREASE_PAYABLE) {
         balance = roundPKR(balance + row.amount);
       } else if (row.adjustmentEffect === SUPPLIER_LEDGER_ADJUSTMENT_EFFECT.DECREASE_PAYABLE) {
@@ -351,6 +428,9 @@ const listLedger = async (companyId, supplierId, query = {}) => {
 
   const pur = allRaw.filter((r) => r.type === SUPPLIER_LEDGER_TYPE.PURCHASE).reduce((sum, r) => sum + r.amount, 0);
   const pay = allRaw.filter((r) => r.type === SUPPLIER_LEDGER_TYPE.PAYMENT).reduce((sum, r) => sum + r.amount, 0);
+  const purRet = allRaw
+    .filter((r) => r.type === SUPPLIER_LEDGER_TYPE.PURCHASE_RETURN)
+    .reduce((sum, r) => sum + r.amount, 0);
   const adjUp = allRaw
     .filter(
       (r) =>
@@ -375,10 +455,11 @@ const listLedger = async (companyId, supplierId, query = {}) => {
     summary: {
       totalPurchase: roundPKR(pur),
       totalPayment: roundPKR(pay),
+      totalPurchaseReturn: roundPKR(purRet),
       totalAdjustmentIncrease: roundPKR(adjUp),
       totalAdjustmentDecrease: roundPKR(adjDn),
       netAdjustment: roundPKR(adjUp - adjDn),
-      closingBalance: roundPKR(openingBalance + pur - pay + adjUp - adjDn)
+      closingBalance: roundPKR(openingBalance + pur - pay - purRet + adjUp - adjDn)
     }
   };
 };
@@ -396,12 +477,14 @@ const balanceForSupplier = async (companyId, supplierId) => {
 
   let pur = 0;
   let pay = 0;
+  let purRet = 0;
   let adjUp = 0;
   let adjDn = 0;
   for (const row of rows) {
     const a = roundPKR(row.amount || 0);
     if (row.type === SUPPLIER_LEDGER_TYPE.PURCHASE) pur = roundPKR(pur + a);
     else if (row.type === SUPPLIER_LEDGER_TYPE.PAYMENT) pay = roundPKR(pay + a);
+    else if (row.type === SUPPLIER_LEDGER_TYPE.PURCHASE_RETURN) purRet = roundPKR(purRet + a);
     else if (row.type === SUPPLIER_LEDGER_TYPE.ADJUSTMENT && row.adjustmentEffect === SUPPLIER_LEDGER_ADJUSTMENT_EFFECT.INCREASE_PAYABLE) {
       adjUp = roundPKR(adjUp + a);
     } else if (row.type === SUPPLIER_LEDGER_TYPE.ADJUSTMENT && row.adjustmentEffect === SUPPLIER_LEDGER_ADJUSTMENT_EFFECT.DECREASE_PAYABLE) {
@@ -410,7 +493,7 @@ const balanceForSupplier = async (companyId, supplierId) => {
   }
 
   const opening = roundPKR(s.openingBalance || 0);
-  const payable = roundPKR(opening + pur + adjUp - adjDn - pay);
+  const payable = roundPKR(opening + pur + adjUp - adjDn - pay - purRet);
 
   const lastPay = await SupplierLedger.findOne({
     companyId: oid(companyId),
@@ -428,6 +511,7 @@ const balanceForSupplier = async (companyId, supplierId) => {
     openingBalance: opening,
     totalPurchase: roundPKR(pur),
     totalPayment: roundPKR(pay),
+    totalPurchaseReturn: roundPKR(purRet),
     totalAdjustmentIncrease: roundPKR(adjUp),
     totalAdjustmentDecrease: roundPKR(adjDn),
     netAdjustment: roundPKR(adjUp - adjDn),
@@ -438,7 +522,7 @@ const balanceForSupplier = async (companyId, supplierId) => {
     lastPaymentDate: lastPay?.date || null,
     lastPaymentAmount: lastPay ? roundPKR(lastPay.amount) : null,
     note:
-      'Payable = opening + PURCHASE + adjustments(increase − decrease) − PAYMENT; GRNs use procurement purchase amounts; invoices may post mismatch adjustments.'
+      'Payable = opening + PURCHASE + adjustments(increase − decrease) − PAYMENT − PURCHASE_RETURN; GRNs use procurement purchase amounts; invoices may post mismatch adjustments.'
   };
 };
 
@@ -631,6 +715,9 @@ const supplierBalances = async (companyId) => {
         purchaseAmt: {
           $cond: [{ $eq: ['$type', SUPPLIER_LEDGER_TYPE.PURCHASE] }, '$amount', 0]
         },
+        purchaseReturnAmt: {
+          $cond: [{ $eq: ['$type', SUPPLIER_LEDGER_TYPE.PURCHASE_RETURN] }, '$amount', 0]
+        },
         paymentAmt: {
           $cond: [{ $eq: ['$type', SUPPLIER_LEDGER_TYPE.PAYMENT] }, '$amount', 0]
         },
@@ -665,6 +752,7 @@ const supplierBalances = async (companyId) => {
         _id: '$supplierId',
         totalPurchase: { $sum: '$purchaseAmt' },
         totalPayment: { $sum: '$paymentAmt' },
+        totalPurchaseReturn: { $sum: '$purchaseReturnAmt' },
         totalAdjustmentIncrease: { $sum: '$adjustmentIncrease' },
         totalAdjustmentDecrease: { $sum: '$adjustmentDecrease' }
       }
@@ -679,6 +767,7 @@ const supplierBalances = async (companyId) => {
       openingBalance: roundPKR(s.openingBalance || 0),
       totalPurchase: 0,
       totalPayment: 0,
+      totalPurchaseReturn: 0,
       totalAdjustmentIncrease: 0,
       totalAdjustmentDecrease: 0,
       isActive: s.isActive
@@ -691,6 +780,7 @@ const supplierBalances = async (companyId) => {
     if (!entry) continue;
     entry.totalPurchase = roundPKR(row.totalPurchase);
     entry.totalPayment = roundPKR(row.totalPayment);
+    entry.totalPurchaseReturn = roundPKR(row.totalPurchaseReturn || 0);
     entry.totalAdjustmentIncrease = roundPKR(row.totalAdjustmentIncrease || 0);
     entry.totalAdjustmentDecrease = roundPKR(row.totalAdjustmentDecrease || 0);
   }
@@ -698,7 +788,12 @@ const supplierBalances = async (companyId) => {
   const rows = Array.from(bySupplier.values()).map((r) => ({
     ...r,
     payable: roundPKR(
-      r.openingBalance + r.totalPurchase + r.totalAdjustmentIncrease - r.totalAdjustmentDecrease - r.totalPayment
+      r.openingBalance +
+        r.totalPurchase +
+        r.totalAdjustmentIncrease -
+        r.totalAdjustmentDecrease -
+        r.totalPayment -
+        r.totalPurchaseReturn
     )
   }));
   rows.sort((a, b) => b.payable - a.payable);
@@ -713,7 +808,7 @@ const supplierBalances = async (companyId) => {
       totalSupplierPayable,
       totalNetPayable,
       help:
-        'Payable = openingBalance + PURCHASE + adj(increase) − adj(decrease) − PAYMENT; includes procurement mismatch adjustments.'
+        'Payable = openingBalance + PURCHASE + adj(increase) − adj(decrease) − PAYMENT − PURCHASE_RETURN; includes procurement mismatch adjustments.'
     }
   };
 };
@@ -726,6 +821,8 @@ module.exports = {
   remove,
   recordPurchaseFromStockTransfer,
   recordPurchaseFromGrn,
+  recordPurchaseReturnPosted,
+  recordGrnReversalPosted,
   recordManualPurchase,
   recordPayment,
   listLedger,

@@ -171,7 +171,9 @@ const PURCHASE_ORDER_STATUS = {
 const GOODS_RECEIPT_NOTE_STATUS = {
   DRAFT: 'DRAFT',
   POSTED: 'POSTED',
-  CANCELLED: 'CANCELLED'
+  CANCELLED: 'CANCELLED',
+  /** Full document reversal (admin); original GRN rows unchanged. */
+  REVERSED: 'REVERSED'
 };
 
 const SUPPLIER_INVOICE_STATUS = {
@@ -186,7 +188,9 @@ const SUPPLIER_INVOICE_STATUS = {
 const SUPPLIER_LEDGER_TYPE = {
   PURCHASE: 'PURCHASE',
   PAYMENT: 'PAYMENT',
-  ADJUSTMENT: 'ADJUSTMENT'
+  ADJUSTMENT: 'ADJUSTMENT',
+  /** Posted purchase return — reduces supplier payable (same running-balance effect as PAYMENT). */
+  PURCHASE_RETURN: 'PURCHASE_RETURN'
 };
 
 /** When type === ADJUSTMENT: whether payable goes up (like purchase) or down (like payment). */
@@ -203,7 +207,17 @@ const SUPPLIER_LEDGER_REFERENCE_TYPE = {
   /** Optional link to supplier invoice document */
   SUPPLIER_INVOICE: 'SUPPLIER_INVOICE',
   /** Invoice vs GRN / other procurement adjustments */
-  PROCUREMENT_ADJUSTMENT: 'PROCUREMENT_ADJUSTMENT'
+  PROCUREMENT_ADJUSTMENT: 'PROCUREMENT_ADJUSTMENT',
+  /** Idempotent link to posted PurchaseReturn document */
+  PURCHASE_RETURN: 'PURCHASE_RETURN',
+  /** Full posted GRN reversal — liability offset row (ADJUSTMENT DECREASE) */
+  GOODS_RECEIPT_NOTE_REVERSAL: 'GOODS_RECEIPT_NOTE_REVERSAL'
+};
+
+/** Purchase return document lifecycle */
+const PURCHASE_RETURN_STATUS = {
+  DRAFT: 'DRAFT',
+  POSTED: 'POSTED'
 };
 
 /** Recorded on SupplierLedger rows where type === PAYMENT (audit / voucher) */
@@ -250,5 +264,6 @@ module.exports = {
   SUPPLIER_LEDGER_ADJUSTMENT_EFFECT,
   SUPPLIER_LEDGER_REFERENCE_TYPE,
   SUPPLIER_PAYMENT_METHOD,
-  SUPPLIER_PAYMENT_VERIFICATION
+  SUPPLIER_PAYMENT_VERIFICATION,
+  PURCHASE_RETURN_STATUS
 };

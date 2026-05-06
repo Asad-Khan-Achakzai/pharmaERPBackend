@@ -99,6 +99,45 @@ const listSupplierInvoicesQuerySchema = Joi.object({
   status: Joi.string().trim()
 });
 
+const purchaseReturnLineSchema = Joi.object({
+  goodsReceiptLineId: Joi.string().trim().required(),
+  qtyReturned: Joi.number().positive().required(),
+  notes: Joi.string().trim().allow('', null)
+});
+
+const createPurchaseReturnSchema = Joi.object({
+  grnId: Joi.string().trim().required(),
+  notes: Joi.string().trim().allow('', null),
+  reason: Joi.string().trim().allow('', null),
+  lines: Joi.array().items(purchaseReturnLineSchema).min(1).required()
+});
+
+const updatePurchaseReturnSchema = Joi.object({
+  notes: Joi.string().trim().allow('', null),
+  reason: Joi.string().trim().allow('', null),
+  lines: Joi.array().items(purchaseReturnLineSchema).min(1).required()
+});
+
+const postPurchaseReturnSchema = Joi.object({
+  reason: Joi.string().trim().allow('', null)
+});
+
+const reverseGrnSchema = Joi.object({
+  reason: Joi.string().trim().allow('', null).max(4000)
+});
+
+const cancelPurchaseOrderSchema = Joi.object({
+  reason: Joi.string().trim().allow('', null).max(4000)
+});
+
+const listPurchaseReturnsQuerySchema = Joi.object({
+  page: Joi.number().integer().min(1),
+  limit: Joi.number().integer().min(1),
+  sortBy: Joi.string(),
+  sortOrder: Joi.string().valid('asc', 'desc'),
+  grnId: Joi.string().trim()
+});
+
 module.exports = {
   createPurchaseOrderSchema,
   updatePurchaseOrderSchema,
@@ -108,5 +147,11 @@ module.exports = {
   listGoodsReceiptNotesQuerySchema,
   createSupplierInvoiceSchema,
   updateSupplierInvoiceSchema,
-  listSupplierInvoicesQuerySchema
+  listSupplierInvoicesQuerySchema,
+  createPurchaseReturnSchema,
+  updatePurchaseReturnSchema,
+  postPurchaseReturnSchema,
+  reverseGrnSchema,
+  cancelPurchaseOrderSchema,
+  listPurchaseReturnsQuerySchema
 };

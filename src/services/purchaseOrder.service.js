@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const PurchaseOrder = require('../models/PurchaseOrder');
 const PurchaseOrderLine = require('../models/PurchaseOrderLine');
+const GoodsReceiptNote = require('../models/GoodsReceiptNote');
 const Supplier = require('../models/Supplier');
 const Product = require('../models/Product');
 const ApiError = require('../utils/ApiError');
@@ -210,10 +211,53 @@ const approve = async (companyId, id, reqUser) => {
   return full;
 };
 
+/**
+ * Cancel PO only when no goods receipt notes exist for this order (any status).
+ */
+const cancel = async (companyId, id, body, reqUser) => {
+  const po = await PurchaseOrder.findOne({ _id: id, companyId, isDeleted: { $ne: true } });
+  if (!po) throw new ApiError(404, 'Purchase order not found');
+  if (po.status === PURCHASE_ORDER_STATUS.CANCELLED) {
+    throw new ApiError(400, 'Purchase order is already cancelled');
+  }
+  if (![PURCHASE_ORDER_STATUS.DRAFT, PURCHASE_ORDER_STATUS.APPROVED].includes(po.status)) {
+    throw new ApiError(400, 'Only draft or approved purchase orders can be cancelled');
+  }
+
+  const grnCount = await GoodsReceiptNote.countDocuments({
+    purchaseOrderId: po._id,
+    companyId: oid(companyId),
+    isDeleted: { $ne: true }
+  });
+  if (grnCount > 0) {
+    throw new ApiError(
+      409,
+      'Cannot cancel: goods receipt notes exist. Use a purchase return to correct posted receipts, or contact an administrator.'
+    );
+  }
+
+  po.status = PURCHASE_ORDER_STATUS.CANCELLED;
+  await po.save();
+
+  const full = await getById(companyId, po._id);
+  await auditService.log({
+    companyId,
+    userId: reqUser.userId,
+    action: 'procurement.po.cancel',
+    entityType: 'PurchaseOrder',
+    entityId: po._id,
+    changes: {
+      after: { status: po.status, reason: body?.reason || null, grnCount }
+    }
+  });
+  return full;
+};
+
 module.exports = {
   list,
   getById,
   create,
   updateById,
-  approve
+  approve,
+  cancel
 };

@@ -101,6 +101,10 @@ const loadProductsForTransfer = async (companyId, items) => {
   return productMap;
 };
 
+/**
+ * Stock IN (GRN post, transfers): existing weighted-average behavior — unchanged when operationType omitted or IN.
+ * Stock OUT (purchase return, GRN reversal): reduce quantity; reduce extended value using cost basis per unit (GRN line landed cost).
+ */
 const mergeIntoDestination = async ({
   session,
   companyId,
@@ -108,8 +112,43 @@ const mergeIntoDestination = async ({
   productId,
   quantity,
   newCostPerUnit,
-  reqUser
+  reqUser,
+  operationType
 }) => {
+  const op = operationType === 'OUT' ? 'OUT' : 'IN';
+
+  if (op === 'OUT') {
+    const qty = Number(quantity);
+    if (!Number.isFinite(qty) || qty <= 0) throw new ApiError(400, 'OUT movement requires positive quantity');
+
+    const inv = await DistributorInventory.findOne({ companyId, distributorId, productId }).session(session);
+    if (!inv || inv.quantity < qty - 1e-9) {
+      throw new ApiError(400, 'Insufficient stock for this outbound movement');
+    }
+
+    const basis = roundPKR(Number(newCostPerUnit));
+    if (!Number.isFinite(basis) || basis < 0) throw new ApiError(400, 'Cost basis must be non-negative');
+
+    const valueOut = roundPKR(qty * basis);
+    const totalValBefore = roundPKR(inv.quantity * inv.avgCostPerUnit);
+    let totalValAfter = roundPKR(totalValBefore - valueOut);
+    if (totalValAfter < 0) totalValAfter = 0;
+
+    inv.quantity -= qty;
+    if (inv.quantity < 0) inv.quantity = 0;
+
+    if (inv.quantity > 0) {
+      inv.avgCostPerUnit = roundPKR(totalValAfter / inv.quantity);
+    } else {
+      inv.avgCostPerUnit = 0;
+    }
+
+    inv.lastUpdated = new Date();
+    inv.updatedBy = reqUser.userId;
+    await inv.save({ session });
+    return;
+  }
+
   let inv = await DistributorInventory.findOne(
     { companyId, distributorId, productId }
   ).session(session);

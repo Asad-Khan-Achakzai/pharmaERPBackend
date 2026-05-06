@@ -27,4 +27,9 @@ const approve = asyncHandler(async (req, res) => {
   ApiResponse.success(res, data, 'Purchase order approved');
 });
 
-module.exports = { list, getById, create, update, approve };
+const cancel = asyncHandler(async (req, res) => {
+  const data = await purchaseOrderService.cancel(req.companyId, req.params.id, req.body, req.user);
+  ApiResponse.success(res, data, 'Purchase order cancelled');
+});
+
+module.exports = { list, getById, create, update, approve, cancel };

@@ -426,5 +426,6 @@ module.exports = {
   getById,
   create,
   updateById,
-  post
+  post,
+  recomputePoStatus
 };

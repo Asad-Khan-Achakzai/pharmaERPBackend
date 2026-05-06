@@ -27,6 +27,7 @@ const supplierLedgerSchema = new mongoose.Schema(
     /**
      * PURCHASE: payable up (GRN posted — reference GOODS_RECEIPT_NOTE).
      * PAYMENT: payable down — optional paymentAllocations for invoice matching.
+     * PURCHASE_RETURN: payable down (posted purchase return — reference PURCHASE_RETURN).
      * ADJUSTMENT: invoice vs GRN mismatch — use adjustmentEffect + referenceType PROCUREMENT_ADJUSTMENT / SUPPLIER_INVOICE.
      */
     adjustmentEffect: {

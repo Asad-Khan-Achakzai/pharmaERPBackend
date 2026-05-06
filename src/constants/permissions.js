@@ -19,7 +19,7 @@ const PERMISSIONS = {
   reports:      ['view'],
   suppliers:    ['view', 'manage'],
   /** SAP-style PO / GRN; liability on SupplierLedger only when GRN is posted — see procurement.routes */
-  procurement:  ['view', 'create', 'approve', 'receive', 'invoicePost'],
+  procurement:  ['view', 'create', 'approve', 'receive', 'invoicePost', 'return', 'grnReverse', 'cancelPo'],
   users:        ['view', 'create', 'edit', 'delete'],
   /**
    * MRep team hierarchy.

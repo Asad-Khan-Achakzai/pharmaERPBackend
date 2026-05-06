@@ -8,6 +8,8 @@ const purchaseOrderLineSchema = new mongoose.Schema(
     productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
     orderedQty: { type: Number, required: true, min: 0 },
     receivedQty: { type: Number, default: 0, min: 0 },
+    /** Qty returned to supplier via posted purchase returns (does not change receivedQty). */
+    returnedQtyToSupplier: { type: Number, default: 0, min: 0 },
     /** Expected unit price (PKR); actual cost comes from GRN lines */
     unitPrice: { type: Number, default: 0, min: 0 },
     notes: { type: String, trim: true, maxlength: 2000 }
