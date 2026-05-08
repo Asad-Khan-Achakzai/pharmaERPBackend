@@ -25,6 +25,8 @@ const formatUserForClient = async (userId, options = {}) => {
     .populate('companyId')
     .populate('activeCompanyId')
     .populate('roleId', 'name code isSystem permissions')
+    .populate('territoryId', 'name code kind materializedPath')
+    .populate('coverageTerritoryIds', 'name code kind materializedPath')
     .lean();
   if (!user) return null;
 

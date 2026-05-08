@@ -8,6 +8,7 @@ const { parsePagination } = require('../utils/pagination');
 const { escapeRegex, qScalar, applyCreatedAtRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
 const auditService = require('./audit.service');
 const mrepOwnership = require('./mrepOwnership.service');
+
 const doctorOwnershipAudit = require('./doctorOwnershipAudit.service');
 
 const toObjectIdOrNull = (v) => {
@@ -92,8 +93,19 @@ const list = async (companyId, query, timeZone = "UTC", opts = {}) => {
   const filter = { companyId };
   if (query.isActive !== undefined) filter.isActive = query.isActive === 'true';
   if (query.pharmacyId) filter.pharmacyId = query.pharmacyId;
-  if (query.territoryId && mongoose.Types.ObjectId.isValid(query.territoryId)) {
-    filter.territoryId = new mongoose.Types.ObjectId(query.territoryId);
+
+  let territoryFilter = null;
+  if (query.underTerritoryId && mongoose.Types.ObjectId.isValid(query.underTerritoryId)) {
+    const brickIds = await mrepOwnership.brickIdsForTerritoryNode(companyId, query.underTerritoryId);
+    if (!brickIds.length) {
+      return { docs: [], total: 0, page, limit };
+    }
+    territoryFilter = { $in: brickIds };
+  } else if (query.territoryId && mongoose.Types.ObjectId.isValid(query.territoryId)) {
+    territoryFilter = new mongoose.Types.ObjectId(query.territoryId);
+  }
+  if (territoryFilter !== null) {
+    filter.territoryId = territoryFilter;
   }
   if (query.assignedRepId && mongoose.Types.ObjectId.isValid(query.assignedRepId)) {
     filter.assignedRepId = new mongoose.Types.ObjectId(query.assignedRepId);

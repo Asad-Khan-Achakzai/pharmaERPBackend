@@ -11,6 +11,11 @@ const coverageService = require('./coverage.service');
 const mrepKpiService = require('./mrepKpi.service');
 const businessTime = require('../utils/businessTime');
 
+const {
+  buildAllowedTerritoryIdSet,
+  assertTerritoryCompareParentAccess
+} = require('../utils/territoryCompareScope.util');
+
 const assertCanViewRep = async (companyId, viewerUserId, repId, permissions) => {
   if (String(viewerUserId) === String(repId)) return;
   if (Array.isArray(permissions) && permissions.includes('admin.access')) return;
@@ -154,13 +159,16 @@ const trends = async (
   return { metricsVersion: 'mrepTrendsV1', months, points };
 };
 
-const territoryCompare = async (companyId, parentTerritoryId, yyyyMm, timeZone) => {
+const territoryCompare = async (companyId, parentTerritoryId, yyyyMm, timeZone, viewerUserId, permissions) => {
   const cid = new mongoose.Types.ObjectId(String(companyId));
   const pid = new mongoose.Types.ObjectId(String(parentTerritoryId));
   const parent = await Territory.findOne({ _id: pid, companyId: cid, isDeleted: { $ne: true } })
     .select('name kind')
     .lean();
   if (!parent) throw new ApiError(404, 'Territory not found');
+
+  const scopeCtx = await buildAllowedTerritoryIdSet(companyId, viewerUserId, permissions);
+  await assertTerritoryCompareParentAccess(companyId, parentTerritoryId, scopeCtx);
 
   const children = await Territory.find({
     companyId: cid,
@@ -173,6 +181,9 @@ const territoryCompare = async (companyId, parentTerritoryId, yyyyMm, timeZone) 
 
   const rows = [];
   for (const ch of children) {
+    if (!scopeCtx.bypass && scopeCtx.ids && !scopeCtx.ids.has(String(ch._id))) {
+      continue;
+    }
     const cov = await coverageService.territoryCoverageMonth(companyId, ch._id, yyyyMm, timeZone);
     rows.push({
       territoryId: String(ch._id),

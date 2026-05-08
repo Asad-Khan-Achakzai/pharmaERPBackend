@@ -88,7 +88,14 @@ const territoryCompare = asyncHandler(async (req, res) => {
   const tz = req.context.timeZone;
   const month = String(req.query.month);
   const parentId = String(req.query.parentTerritoryId);
-  const data = await mrepReportService.territoryCompare(req.companyId, parentId, month, tz);
+  const data = await mrepReportService.territoryCompare(
+    req.companyId,
+    parentId,
+    month,
+    tz,
+    req.user.userId,
+    req.user.permissions
+  );
   ApiResponse.success(res, data);
 });
 
