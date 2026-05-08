@@ -418,7 +418,7 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC') => {
 
     const month = getBusinessMonthKey(businessDate, tz);
     await MedRepTarget.updateOne(
-      { companyId, medicalRepId: order.medicalRepId, month },
+      { companyId, medicalRepId: order.medicalRepId, month, isDeleted: { $ne: true } },
       { $inc: { achievedSales: totalAmount, achievedPacks: totalPacks } },
       { session }
     );
@@ -577,7 +577,7 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
 
     const month = getBusinessMonthKey(returnRecord.returnedAt, tz);
     await MedRepTarget.updateOne(
-      { companyId, medicalRepId: order.medicalRepId, month },
+      { companyId, medicalRepId: order.medicalRepId, month, isDeleted: { $ne: true } },
       { $inc: { achievedSales: -totalAmount, achievedPacks: -totalPacks } },
       { session }
     );
