@@ -71,6 +71,8 @@ const assertNoCycle = async (companyId, userId, newManagerId) => {
  * Throws 403 when `?scope=team` is requested by a user without `team.viewAllReports`
  * (or `admin.access`, which always satisfies). Throws 400 for unknown `scope` values.
  */
+const { userHasPermission } = require('./effectivePermissions');
+
 const resolveTeamScopeForRequest = async (req) => {
   const ApiError = require('./ApiError');
   const raw = req.query?.scope;
@@ -79,8 +81,7 @@ const resolveTeamScopeForRequest = async (req) => {
   if (raw !== 'team') {
     throw new ApiError(400, `Unsupported scope value "${raw}". Use one of: self | team | all.`);
   }
-  const perms = req.user?.permissions || [];
-  const allowed = perms.includes('team.viewAllReports') || perms.includes('admin.access');
+  const allowed = userHasPermission(req.user, 'team.viewAllReports');
   if (!allowed) {
     throw new ApiError(403, 'scope=team requires team.viewAllReports permission');
   }

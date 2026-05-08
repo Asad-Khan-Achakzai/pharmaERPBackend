@@ -71,6 +71,7 @@ const companyScope = asyncHandler(async (req, _res, next) => {
     activeCompanyId: userDoc.activeCompanyId || null,
     role: userDoc.role,
     roleId: userDoc.roleId || null,
+    roleCode: roleDoc && roleDoc.code != null ? String(roleDoc.code) : null,
     permissions,
     name: userDoc.name,
     email: userDoc.email

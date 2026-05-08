@@ -8,6 +8,7 @@ const {
   DEFAULT_MEDICAL_REP_CODE,
   DEFAULT_ADMIN_CODE
 } = require('../constants/rbac');
+const { ROLES } = require('../constants/enums');
 
 const idsFromMaterializedPath = (path) => {
   const s = String(path || '').trim();
@@ -72,8 +73,12 @@ async function buildAllowedTerritoryIdSet(companyId, viewerUserId, permissions) 
   }
 
   const viewer = await User.findById(viewerUserId)
+    .select('role roleId')
     .populate('roleId', 'code')
-      .lean();
+    .lean();
+  if (viewer && viewer.role === ROLES.ADMIN) {
+    return { bypass: true, ids: null };
+  }
   if (viewer && viewer.roleId && viewer.roleId.code === DEFAULT_ADMIN_CODE) {
     return { bypass: true, ids: null };
   }

@@ -7,6 +7,7 @@ const User = require('../models/User');
 const Territory = require('../models/Territory');
 const ApiError = require('../utils/ApiError');
 const { resolveSubtreeUserIds } = require('../utils/teamScope');
+const { userHasPermission, userHasTenantWideAccess } = require('../utils/effectivePermissions');
 const coverageService = require('./coverage.service');
 const mrepKpiService = require('./mrepKpi.service');
 const businessTime = require('../utils/businessTime');
@@ -16,30 +17,48 @@ const {
   assertTerritoryCompareParentAccess
 } = require('../utils/territoryCompareScope.util');
 
-const assertCanViewRep = async (companyId, viewerUserId, repId, permissions) => {
+const assertCanViewRep = async (companyId, viewerUser, repId) => {
+  const viewerUserId = viewerUser.userId;
   if (String(viewerUserId) === String(repId)) return;
-  if (Array.isArray(permissions) && permissions.includes('admin.access')) return;
+
+  if (userHasTenantWideAccess(viewerUser)) {
+    const rep = await User.findOne({ _id: repId, companyId }).select('_id').lean();
+    if (!rep) throw new ApiError(404, 'Representative not found');
+    return;
+  }
+
   const subtree = await resolveSubtreeUserIds(companyId, viewerUserId, { includeSelf: true });
   const ok = subtree.some((id) => String(id) === String(repId));
   if (!ok) throw new ApiError(403, 'You cannot view this representative’s performance data');
 };
 
-const resolveOverviewRepIds = async (companyId, viewerUserId, permissions, explicitRepId) => {
+const resolveOverviewRepIds = async (companyId, viewerUser, explicitRepId) => {
+  const viewerUserId = viewerUser.userId;
   if (explicitRepId) {
-    await assertCanViewRep(companyId, viewerUserId, explicitRepId, permissions);
+    await assertCanViewRep(companyId, viewerUser, explicitRepId);
     return [new mongoose.Types.ObjectId(String(explicitRepId))];
   }
-  if (Array.isArray(permissions) && (permissions.includes('admin.access') || permissions.includes('team.viewAllReports'))) {
+
+  if (userHasTenantWideAccess(viewerUser)) {
+    const docs = await User.find({ companyId, isDeleted: { $ne: true } })
+      .select('_id')
+      .sort({ name: 1 })
+      .lean();
+    return docs.map((d) => d._id);
+  }
+
+  if (userHasPermission(viewerUser, 'team.viewAllReports')) {
     const subtree = await resolveSubtreeUserIds(companyId, viewerUserId, { includeSelf: true });
     return subtree.length ? subtree : [new mongoose.Types.ObjectId(String(viewerUserId))];
   }
+
   return [new mongoose.Types.ObjectId(String(viewerUserId))];
 };
 
 const BATCH = 8;
 
-const monthlyOverview = async (companyId, viewerUserId, permissions, yyyyMm, timeZone, { repId: explicitRepId } = {}) => {
-  const repOids = await resolveOverviewRepIds(companyId, viewerUserId, permissions, explicitRepId);
+const monthlyOverview = async (companyId, viewerUser, yyyyMm, timeZone, { repId: explicitRepId } = {}) => {
+  const repOids = await resolveOverviewRepIds(companyId, viewerUser, explicitRepId);
   const users = await User.find({
     _id: { $in: repOids },
     companyId,
@@ -69,8 +88,8 @@ const monthlyOverview = async (companyId, viewerUserId, permissions, yyyyMm, tim
   };
 };
 
-const doctorCoverageForRep = async (companyId, viewerUserId, permissions, repId, yyyyMm, timeZone) => {
-  await assertCanViewRep(companyId, viewerUserId, repId, permissions);
+const doctorCoverageForRep = async (companyId, viewerUser, repId, yyyyMm, timeZone) => {
+  await assertCanViewRep(companyId, viewerUser, repId);
   return coverageService.coverageForRepMonth(companyId, repId, yyyyMm, timeZone);
 };
 
@@ -78,15 +97,8 @@ const territoryCoverage = async (companyId, territoryId, yyyyMm, timeZone) => {
   return coverageService.territoryCoverageMonth(companyId, territoryId, yyyyMm, timeZone);
 };
 
-const deviationSummary = async (
-  companyId,
-  viewerUserId,
-  permissions,
-  yyyyMm,
-  timeZone,
-  { repId: explicitRepId } = {}
-) => {
-  const repOids = await resolveOverviewRepIds(companyId, viewerUserId, permissions, explicitRepId);
+const deviationSummary = async (companyId, viewerUser, yyyyMm, timeZone, { repId: explicitRepId } = {}) => {
+  const repOids = await resolveOverviewRepIds(companyId, viewerUser, explicitRepId);
   const users = await User.find({
     _id: { $in: repOids },
     companyId,
@@ -112,8 +124,8 @@ const deviationSummary = async (
   return { month: yyyyMm, metricsVersion: 'planExecutionV1', reps };
 };
 
-const rankings = async (companyId, viewerUserId, permissions, yyyyMm, timeZone, { repId: explicitRepId } = {}) => {
-  const data = await monthlyOverview(companyId, viewerUserId, permissions, yyyyMm, timeZone, {
+const rankings = async (companyId, viewerUser, yyyyMm, timeZone, { repId: explicitRepId } = {}) => {
+  const data = await monthlyOverview(companyId, viewerUser, yyyyMm, timeZone, {
     repId: explicitRepId
   });
   const rankingsRows = data.reps
@@ -134,14 +146,7 @@ const rankings = async (companyId, viewerUserId, permissions, yyyyMm, timeZone, 
   return { month: yyyyMm, metricsVersion: 'mrepRankingsV1', rankings: rankingsRows };
 };
 
-const trends = async (
-  companyId,
-  viewerUserId,
-  permissions,
-  monthsCount,
-  timeZone,
-  { repId: explicitRepId } = {}
-) => {
+const trends = async (companyId, viewerUser, monthsCount, timeZone, { repId: explicitRepId } = {}) => {
   const zone = businessTime.requireCompanyIanaZone(timeZone);
   const now = DateTime.now().setZone(zone);
   const n = Math.min(24, Math.max(1, Number(monthsCount) || 6));
@@ -151,7 +156,7 @@ const trends = async (
   }
   const points = [];
   for (const m of months) {
-    const overview = await monthlyOverview(companyId, viewerUserId, permissions, m, timeZone, {
+    const overview = await monthlyOverview(companyId, viewerUser, m, timeZone, {
       repId: explicitRepId
     });
     points.push({ month: m, reps: overview.reps });

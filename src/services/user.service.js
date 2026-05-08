@@ -11,6 +11,7 @@ const { ADMIN_ACCESS } = require('../constants/rbac');
 const auditService = require('./audit.service');
 const mrepOwnership = require('./mrepOwnership.service');
 const { resolveSubtreeUserIds, assertNoCycle } = require('../utils/teamScope');
+const { userHasTenantWideAccess } = require('../utils/effectivePermissions');
 const { validateReportingHierarchy } = require('../utils/userReportingHierarchy.util');
 const { validateTerritoryAnchorForRole } = require('../utils/userTerritoryAnchor.util');
 
@@ -403,34 +404,51 @@ const setStatus = async (companyId, id, { isActive }, reqUser) => {
 };
 
 /**
- * GET /users/team — returns active users in caller's reporting subtree (descendants only).
- * If `permissions` includes `team.viewAllReports` AND the caller is a top-of-tree manager
- * (no manager set), they implicitly see their whole org. Admins (`admin.access`) bypass this
- * and can request `?managerId=` for any user.
+ * GET /users/team — reporting subtree by default.
+ * - Tenant-wide operators only (SUPER_ADMIN in company, legacy ADMIN, DEFAULT_ADMIN role, `admin.access`):
+ *   without `?managerId=`, returns all users in the company. With `?managerId=`, returns that manager's subtree.
+ * - Everyone else (including `team.viewAllReports` roles such as Regional Manager): subtree of the target manager
+ *   (defaults to caller), same as before.
  */
 const listTeam = async (companyId, reqUser, query = {}) => {
-  const targetId =
-    query.managerId && mongoose.Types.ObjectId.isValid(query.managerId)
-      ? query.managerId
-      : reqUser.userId;
-  const subtreeIds = await resolveSubtreeUserIds(companyId, targetId, {
-    includeSelf: query.includeSelf === 'true' || query.includeSelf === true
-  });
-  if (!subtreeIds.length) return { docs: [], total: 0 };
+  const hasManagerFilter = query.managerId && mongoose.Types.ObjectId.isValid(query.managerId);
 
-  const filter = { _id: { $in: subtreeIds }, companyId };
+  const wholeCompany = !hasManagerFilter && userHasTenantWideAccess(reqUser);
+
+  const baseFilter = { companyId };
   if (query.isActive === 'true' || query.isActive === 'false') {
-    filter.isActive = query.isActive === 'true';
+    baseFilter.isActive = query.isActive === 'true';
   }
   const term = qScalar(query.search);
   if (term) {
     const rx = escapeRegex(term);
-    filter.$or = [
+    baseFilter.$or = [
       { name: { $regex: rx, $options: 'i' } },
       { email: { $regex: rx, $options: 'i' } },
       { employeeCode: { $regex: rx, $options: 'i' } }
     ];
   }
+
+  if (wholeCompany) {
+    const docs = await User.find(baseFilter)
+      .sort({ name: 1 })
+      .populate('roleId', 'name code')
+      .populate('managerId', 'name email')
+      .populate('territoryId', 'name code kind')
+      .populate('coverageTerritoryIds', 'name code kind')
+      .lean();
+    return { docs, total: docs.length };
+  }
+
+  const targetId = hasManagerFilter
+    ? new mongoose.Types.ObjectId(query.managerId)
+    : reqUser.userId;
+  const subtreeIds = await resolveSubtreeUserIds(companyId, targetId, {
+    includeSelf: query.includeSelf === 'true' || query.includeSelf === true
+  });
+  if (!subtreeIds.length) return { docs: [], total: 0 };
+
+  const filter = { ...baseFilter, _id: { $in: subtreeIds } };
   const docs = await User.find(filter)
     .sort({ name: 1 })
     .populate('roleId', 'name code')

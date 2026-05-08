@@ -10,8 +10,7 @@ const monthlyOverview = asyncHandler(async (req, res) => {
     q && /^\d{4}-\d{2}$/.test(q) ? q : businessTime.nowInBusinessTime(tz).toFormat('yyyy-MM');
   const data = await mrepReportService.monthlyOverview(
     req.companyId,
-    req.user.userId,
-    req.user.permissions,
+    req.user,
     month,
     tz,
     { repId: req.query.repId || null }
@@ -25,8 +24,7 @@ const doctorCoverage = asyncHandler(async (req, res) => {
   const repId = String(req.query.repId);
   const data = await mrepReportService.doctorCoverageForRep(
     req.companyId,
-    req.user.userId,
-    req.user.permissions,
+    req.user,
     repId,
     month,
     tz
@@ -47,8 +45,7 @@ const deviationSummary = asyncHandler(async (req, res) => {
   const month = String(req.query.month);
   const data = await mrepReportService.deviationSummary(
     req.companyId,
-    req.user.userId,
-    req.user.permissions,
+    req.user,
     month,
     tz,
     { repId: req.query.repId || null }
@@ -61,8 +58,7 @@ const rankings = asyncHandler(async (req, res) => {
   const month = String(req.query.month);
   const data = await mrepReportService.rankings(
     req.companyId,
-    req.user.userId,
-    req.user.permissions,
+    req.user,
     month,
     tz,
     { repId: req.query.repId || null }
@@ -75,8 +71,7 @@ const trends = asyncHandler(async (req, res) => {
   const months = req.query.months != null ? Number(req.query.months) : 6;
   const data = await mrepReportService.trends(
     req.companyId,
-    req.user.userId,
-    req.user.permissions,
+    req.user,
     months,
     tz,
     { repId: req.query.repId || null }
