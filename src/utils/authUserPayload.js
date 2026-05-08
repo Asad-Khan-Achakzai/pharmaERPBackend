@@ -65,6 +65,20 @@ const formatUserForClient = async (userId, options = {}) => {
     resolvedRole
   };
 
+  if (companyIdForRole) {
+    const tc = await Company.findById(companyIdForRole)
+      .select('weeklyPlanApprovalRequired strictVisitSequence mrepMultiTerritory mrepOwnershipAudit')
+      .lean();
+    if (tc) {
+      out.tenantCompanyFlags = {
+        weeklyPlanApprovalRequired: !!tc.weeklyPlanApprovalRequired,
+        strictVisitSequence: !!tc.strictVisitSequence,
+        mrepMultiTerritory: !!tc.mrepMultiTerritory,
+        mrepOwnershipAudit: !!tc.mrepOwnershipAudit
+      };
+    }
+  }
+
   if (userType === USER_TYPES.PLATFORM && includeAllowedCompanies) {
     const ids = await getPlatformAllowedCompanyIds(user);
     const companies = await Company.find({ _id: { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) } })

@@ -6,12 +6,12 @@ const mongoose = require('mongoose');
 const { DateTime } = require('luxon');
 const Doctor = require('../models/Doctor');
 const Territory = require('../models/Territory');
-const User = require('../models/User');
 const VisitLog = require('../models/VisitLog');
 const PlanItem = require('../models/PlanItem');
 const businessTime = require('../utils/businessTime');
-const { TERRITORY_KIND, PLAN_ITEM_TYPE } = require('../constants/enums');
+const { TERRITORY_KIND, PLAN_ITEM_TYPE, PLAN_ITEM_STATUS } = require('../constants/enums');
 const { escapeRegex } = require('../utils/listQuery');
+const mrepOwnership = require('./mrepOwnership.service');
 
 const monthBoundsUtc = (yyyyMm, tz) => {
   const zone = businessTime.requireCompanyIanaZone(tz);
@@ -47,53 +47,8 @@ async function brickIdsUnderTerritoryPrefix(companyId, materializedPathPrefix) {
   return bricks.map((b) => b._id);
 }
 
-/**
- * Filter for doctors owned by a rep (for queries).
- * @returns {object|null} Mongo filter, or null if rep not found
- */
-const ownedDoctorsFilter = async (companyId, repId) => {
-  const cid = new mongoose.Types.ObjectId(String(companyId));
-  const rid = new mongoose.Types.ObjectId(String(repId));
-
-  const rep = await User.findOne({ _id: rid, companyId: cid, isDeleted: { $ne: true } })
-    .select('territoryId')
-    .lean();
-  if (!rep) return null;
-
-  const orClauses = [{ assignedRepId: rid }];
-  const unassigned = {
-    $or: [{ assignedRepId: null }, { assignedRepId: { $exists: false } }]
-  };
-
-  if (rep.territoryId) {
-    const t = await Territory.findOne({ _id: rep.territoryId, companyId: cid, isDeleted: { $ne: true } })
-      .select('kind materializedPath')
-      .lean();
-    if (t) {
-      if (t.kind === TERRITORY_KIND.BRICK) {
-        orClauses.push({ ...unassigned, territoryId: t._id });
-      } else if (t.materializedPath) {
-        const brickIds = await brickIdsUnderTerritoryPrefix(cid, t.materializedPath);
-        if (brickIds.length) {
-          orClauses.push({ ...unassigned, territoryId: { $in: brickIds } });
-        }
-      }
-    }
-  }
-
-  return {
-    companyId: cid,
-    isDeleted: { $ne: true },
-    isActive: true,
-    $or: orClauses
-  };
-};
-
-const listOwnedDoctors = async (companyId, repId) => {
-  const filter = await ownedDoctorsFilter(companyId, repId);
-  if (!filter) return [];
-  return Doctor.find(filter).select('_id name monthlyVisitTarget territoryId assignedRepId').lean();
-};
+const ownedDoctorsFilter = mrepOwnership.ownedDoctorsFilter;
+const listOwnedDoctors = mrepOwnership.listOwnedDoctors;
 
 const visitCountsForDoctorsInMonth = async (companyId, repId, doctorIds, yyyyMm, tz) => {
   if (!doctorIds.length) return new Map();
@@ -121,6 +76,32 @@ const visitCountsForDoctorsInMonth = async (companyId, repId, doctorIds, yyyyMm,
   return map;
 };
 
+const routeMissedCountsForDoctorsInMonth = async (companyId, repId, doctorIds, yyyyMm, tz) => {
+  if (!doctorIds.length) return new Map();
+  const { startDoc, endDoc } = planItemDateBoundsForMonth(yyyyMm, tz);
+  const cid = new mongoose.Types.ObjectId(String(companyId));
+  const rid = new mongoose.Types.ObjectId(String(repId));
+  const dids = doctorIds.map((id) => new mongoose.Types.ObjectId(String(id)));
+
+  const rows = await PlanItem.aggregate([
+    {
+      $match: {
+        companyId: cid,
+        employeeId: rid,
+        doctorId: { $in: dids },
+        date: { $gte: startDoc, $lte: endDoc },
+        type: PLAN_ITEM_TYPE.DOCTOR_VISIT,
+        status: PLAN_ITEM_STATUS.MISSED,
+        isDeleted: { $ne: true }
+      }
+    },
+    { $group: { _id: '$doctorId', n: { $sum: 1 } } }
+  ]);
+  const map = new Map();
+  for (const r of rows) map.set(String(r._id), r.n);
+  return map;
+};
+
 const bandForCounts = (target, count) => {
   if (target == null || target <= 0) return 'none';
   if (count >= target) return 'green';
@@ -131,7 +112,10 @@ const bandForCounts = (target, count) => {
 const coverageForRepMonth = async (companyId, repId, yyyyMm, tz) => {
   const doctors = await listOwnedDoctors(companyId, repId);
   const ids = doctors.map((d) => d._id);
-  const counts = await visitCountsForDoctorsInMonth(companyId, repId, ids, yyyyMm, tz);
+  const [counts, missedRoute] = await Promise.all([
+    visitCountsForDoctorsInMonth(companyId, repId, ids, yyyyMm, tz),
+    routeMissedCountsForDoctorsInMonth(companyId, repId, ids, yyyyMm, tz)
+  ]);
 
   let withTarget = 0;
   let metOrExceeded = 0;
@@ -149,6 +133,7 @@ const coverageForRepMonth = async (companyId, repId, yyyyMm, tz) => {
       if (count >= target) metOrExceeded += 1;
     }
     const gap = target != null ? Math.max(0, target - count) : null;
+    const own = mrepOwnership.ownershipForRepCoverageRow(d, repId);
     return {
       doctorId: tid,
       doctorName: d.name,
@@ -156,7 +141,12 @@ const coverageForRepMonth = async (companyId, repId, yyyyMm, tz) => {
       actualVisits: count,
       gap,
       lastVisitedAt,
-      band: bandForCounts(target, count)
+      band: bandForCounts(target, count),
+      ownershipKind: own.kind,
+      ownershipLabel: own.label,
+      coverageStatus: mrepOwnership.coverageBandLabel(target, count),
+      routeMissedCount: missedRoute.get(tid) || 0,
+      metricsDefinition: 'coverageActualV1'
     };
   });
 
@@ -167,6 +157,7 @@ const coverageForRepMonth = async (companyId, repId, yyyyMm, tz) => {
     repId: String(repId),
     coveragePercent,
     doctorsTracked: withTarget,
+    metricsDefinition: 'coverageActualV1',
     doctors: rows
   };
 };
@@ -236,6 +227,7 @@ const territoryCoverageMonth = async (companyId, territoryId, yyyyMm, tz) => {
       if (count >= target) metOrExceeded += 1;
     }
     const gap = target != null ? Math.max(0, target - count) : null;
+    const own = mrepOwnership.ownershipForTerritoryRollupRow(d);
     return {
       doctorId: tid,
       doctorName: d.name,
@@ -244,7 +236,11 @@ const territoryCoverageMonth = async (companyId, territoryId, yyyyMm, tz) => {
       gap,
       lastVisitedAt,
       band: bandForCounts(target, count),
-      assignedRepId: d.assignedRepId ? String(d.assignedRepId) : null
+      assignedRepId: d.assignedRepId ? String(d.assignedRepId) : null,
+      ownershipKind: own.kind,
+      ownershipLabel: own.label,
+      coverageStatus: mrepOwnership.coverageBandLabel(target, count),
+      metricsDefinition: 'coverageActualV1'
     };
   });
   const coveragePercent = withTarget > 0 ? Math.round((metOrExceeded / withTarget) * 100) : null;
@@ -253,6 +249,7 @@ const territoryCoverageMonth = async (companyId, territoryId, yyyyMm, tz) => {
     territoryId: String(territoryId),
     coveragePercent,
     doctorsTracked: withTarget,
+    metricsDefinition: 'coverageActualV1',
     doctors: rows
   };
 };

@@ -30,6 +30,11 @@ const userSchema = new mongoose.Schema(
     managerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
     /** Brick-level territory the user covers; managers may use it for area/zone — see Territory model. */
     territoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Territory', default: null, index: true },
+    /**
+     * Additional territories this user covers (requires `Company.mrepMultiTerritory`).
+     * Unioned with `territoryId` for doctor-ownership queries; primary remains `territoryId`.
+     */
+    coverageTerritoryIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Territory' }],
     /** HR identifier (free-text, e.g. "EMP-1023"). Optional. */
     employeeCode: { type: String, trim: true, maxlength: 64, default: null }
   },
@@ -41,6 +46,7 @@ userSchema.index({ email: 1 }, { unique: true });
 userSchema.index({ companyId: 1, role: 1, isActive: 1 });
 userSchema.index({ companyId: 1, managerId: 1, isActive: 1 });
 userSchema.index({ companyId: 1, territoryId: 1, isActive: 1 });
+userSchema.index({ companyId: 1, coverageTerritoryIds: 1 });
 
 userSchema.pre('save', async function (next) {
   if (this.isModified('email') && this.email) {

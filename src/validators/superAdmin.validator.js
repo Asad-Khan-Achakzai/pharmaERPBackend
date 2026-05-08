@@ -12,6 +12,8 @@ const createCompanySchema = Joi.object({
   timeZone: Joi.string().trim().allow('', null),
   weeklyPlanApprovalRequired: Joi.boolean(),
   strictVisitSequence: Joi.boolean(),
+  mrepMultiTerritory: Joi.boolean(),
+  mrepOwnershipAudit: Joi.boolean(),
   isActive: Joi.boolean().default(true)
 });
 
@@ -27,6 +29,8 @@ const updateCompanySchema = Joi.object({
   timeZone: Joi.string().trim().allow('', null),
   weeklyPlanApprovalRequired: Joi.boolean(),
   strictVisitSequence: Joi.boolean(),
+  mrepMultiTerritory: Joi.boolean(),
+  mrepOwnershipAudit: Joi.boolean(),
   isActive: Joi.boolean()
 })
   .min(1)

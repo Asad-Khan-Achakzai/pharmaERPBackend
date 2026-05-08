@@ -12,7 +12,11 @@ const mrepC = require('../../controllers/mrepReport.controller');
 const {
   mrepMonthlyOverviewQuerySchema,
   mrepDoctorCoverageQuerySchema,
-  mrepTerritoryCoverageQuerySchema
+  mrepTerritoryCoverageQuerySchema,
+  mrepDeviationSummaryQuerySchema,
+  mrepRankingsQuerySchema,
+  mrepTrendsQuerySchema,
+  mrepTerritoryCompareQuerySchema
 } = require('../../validators/mrepReport.validator');
 
 const cashOpeningSchema = Joi.object({
@@ -79,6 +83,30 @@ router.get(
   checkPermissionAny('territories.view', 'team.viewAllReports', 'admin.access'),
   validateQuery(mrepTerritoryCoverageQuerySchema),
   mrepC.territoryCoverage
+);
+router.get(
+  '/mrep/deviation-summary',
+  checkPermissionAny('weeklyPlans.view', 'weeklyPlans.markVisit', 'team.viewAllReports', 'admin.access'),
+  validateQuery(mrepDeviationSummaryQuerySchema),
+  mrepC.deviationSummary
+);
+router.get(
+  '/mrep/rankings',
+  checkPermissionAny('weeklyPlans.view', 'weeklyPlans.markVisit', 'team.viewAllReports', 'admin.access'),
+  validateQuery(mrepRankingsQuerySchema),
+  mrepC.rankings
+);
+router.get(
+  '/mrep/trends',
+  checkPermissionAny('weeklyPlans.view', 'weeklyPlans.markVisit', 'team.viewAllReports', 'admin.access'),
+  validateQuery(mrepTrendsQuerySchema),
+  mrepC.trends
+);
+router.get(
+  '/mrep/territory-compare',
+  checkPermissionAny('territories.view', 'team.viewAllReports', 'admin.access'),
+  validateQuery(mrepTerritoryCompareQuerySchema),
+  mrepC.territoryCompare
 );
 
 module.exports = router;

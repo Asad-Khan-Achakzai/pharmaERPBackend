@@ -9,6 +9,7 @@ const Doctor = require('../models/Doctor');
 const User = require('../models/User');
 const Supplier = require('../models/Supplier');
 const { escapeRegex, qScalar } = require('../utils/listQuery');
+const { ADMIN_ACCESS } = require('../constants/rbac');
 
 const LOOKUP_MAX = Math.min(100, Number(process.env.LOOKUP_MAX) || 100);
 
@@ -132,7 +133,8 @@ const assignableUsers = async (companyId, query = {}) => {
     ];
   }
   const rows = await User.find(filter)
-    .select('name email role')
+    .select('name email role roleId')
+    .populate('roleId', 'code name permissions')
     .sort({ name: 1 })
     .limit(limit)
     .lean();
@@ -140,7 +142,11 @@ const assignableUsers = async (companyId, query = {}) => {
     _id: u._id,
     name: u.name,
     email: u.email,
-    role: u.role
+    role: u.role,
+    roleCode: u.roleId?.code ?? null,
+    roleName: u.roleId?.name ?? null,
+    isAdminCapable:
+      Array.isArray(u.roleId?.permissions) && u.roleId.permissions.includes(ADMIN_ACCESS)
   }));
 };
 

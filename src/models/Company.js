@@ -25,6 +25,13 @@ const companySchema = new mongoose.Schema(
      * When true, reps cannot mark a visit out of planned sequence (same effect as env STRICT_VISIT_SEQUENCE=1).
      */
     strictVisitSequence: { type: Boolean, default: false },
+    /**
+     * When true, users may set `coverageTerritoryIds` (additional Zone/Area/Brick nodes).
+     * `territoryId` remains the primary node; ownership queries union primary + extras.
+     */
+    mrepMultiTerritory: { type: Boolean, default: false },
+    /** When true, doctor assignment changes append `DoctorOwnershipEvent` rows (additive audit). */
+    mrepOwnershipAudit: { type: Boolean, default: false },
     /** Single canonical IANA timezone for business calendar (reports, plans, attendance anchors). Required at creation — no implicit UTC. */
     timeZone: {
       type: String,

@@ -7,6 +7,8 @@ const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const { escapeRegex, qScalar, applyCreatedAtRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
 const auditService = require('./audit.service');
+const mrepOwnership = require('./mrepOwnership.service');
+const doctorOwnershipAudit = require('./doctorOwnershipAudit.service');
 
 const toObjectIdOrNull = (v) => {
   if (v == null || v === '') return null;
@@ -148,6 +150,13 @@ const create = async (companyId, data, reqUser) => {
   await applyAssignmentRefs(companyId, payload);
   const doctor = await Doctor.create({ ...payload, companyId, createdBy: reqUser.userId });
   await auditService.log({ companyId, userId: reqUser.userId, action: 'doctor.create', entityType: 'Doctor', entityId: doctor._id, changes: { after: doctor.toObject() } });
+  await doctorOwnershipAudit.recordAssignmentChanges({
+    companyId,
+    doctorId: doctor._id,
+    changedByUserId: reqUser.userId,
+    before: { territoryId: null, assignedRepId: null },
+    after: { territoryId: doctor.territoryId, assignedRepId: doctor.assignedRepId }
+  });
   return doctor;
 };
 
@@ -157,7 +166,9 @@ const getById = async (companyId, id) => {
     .populate('territoryId', 'name code kind materializedPath')
     .populate('assignedRepId', 'name email');
   if (!doctor) throw new ApiError(404, 'Doctor not found');
-  return doctor;
+  const o = doctor.toObject();
+  o.mrepOwnership = mrepOwnership.summarizeDoctorDocument(o);
+  return o;
 };
 
 const update = async (companyId, id, data, reqUser) => {
@@ -173,6 +184,13 @@ const update = async (companyId, id, data, reqUser) => {
   Object.assign(doctor, { ...patch, updatedBy: reqUser.userId });
   await doctor.save();
   await auditService.log({ companyId, userId: reqUser.userId, action: 'doctor.update', entityType: 'Doctor', entityId: doctor._id, changes: { before, after: doctor.toObject() } });
+  await doctorOwnershipAudit.recordAssignmentChanges({
+    companyId,
+    doctorId: doctor._id,
+    changedByUserId: reqUser.userId,
+    before: { territoryId: before.territoryId, assignedRepId: before.assignedRepId },
+    after: { territoryId: doctor.territoryId, assignedRepId: doctor.assignedRepId }
+  });
   return doctor;
 };
 
@@ -221,6 +239,13 @@ const assign = async (companyId, id, data, reqUser) => {
       }
     }
   });
+  await doctorOwnershipAudit.recordAssignmentChanges({
+    companyId,
+    doctorId: doctor._id,
+    changedByUserId: reqUser.userId,
+    before: { territoryId: before.territoryId, assignedRepId: before.assignedRepId },
+    after: { territoryId: doctor.territoryId, assignedRepId: doctor.assignedRepId }
+  });
   return doctor;
 };
 
@@ -232,4 +257,14 @@ const remove = async (companyId, id, reqUser) => {
   return doctor;
 };
 
-module.exports = { list, create, getById, update, remove, assign };
+const listOwnershipHistory = async (companyId, doctorId, query = {}) => {
+  if (!mongoose.Types.ObjectId.isValid(doctorId)) {
+    throw new ApiError(400, 'Invalid doctor id');
+  }
+  const doc = await Doctor.findOne({ _id: doctorId, companyId }).select('_id').lean();
+  if (!doc) throw new ApiError(404, 'Doctor not found');
+  const limit = query.limit != null ? Number(query.limit) : 50;
+  return doctorOwnershipAudit.listForDoctor(companyId, doctorId, { limit });
+};
+
+module.exports = { list, create, getById, update, remove, assign, listOwnershipHistory };

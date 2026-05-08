@@ -25,6 +25,11 @@ const getById = asyncHandler(async (req, res) => {
   ApiResponse.success(res, doctor);
 });
 
+const ownershipHistory = asyncHandler(async (req, res) => {
+  const data = await doctorService.listOwnershipHistory(req.companyId, req.params.id, req.query);
+  ApiResponse.success(res, data, 'OK');
+});
+
 const update = asyncHandler(async (req, res) => {
   const doctor = await doctorService.update(req.companyId, req.params.id, req.body, req.user);
   ApiResponse.success(res, doctor, 'Doctor updated');
@@ -40,4 +45,4 @@ const assign = asyncHandler(async (req, res) => {
   ApiResponse.success(res, doctor, 'Doctor assignment updated');
 });
 
-module.exports = { lookup, list, create, getById, update, remove, assign };
+module.exports = { lookup, list, create, getById, ownershipHistory, update, remove, assign };

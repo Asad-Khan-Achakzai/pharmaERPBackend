@@ -2,11 +2,14 @@
  * HTTP-facing MRep report orchestration (scope checks + batched rows).
  */
 const mongoose = require('mongoose');
+const { DateTime } = require('luxon');
 const User = require('../models/User');
+const Territory = require('../models/Territory');
 const ApiError = require('../utils/ApiError');
 const { resolveSubtreeUserIds } = require('../utils/teamScope');
 const coverageService = require('./coverage.service');
 const mrepKpiService = require('./mrepKpi.service');
+const businessTime = require('../utils/businessTime');
 
 const assertCanViewRep = async (companyId, viewerUserId, repId, permissions) => {
   if (String(viewerUserId) === String(repId)) return;
@@ -70,9 +73,133 @@ const territoryCoverage = async (companyId, territoryId, yyyyMm, timeZone) => {
   return coverageService.territoryCoverageMonth(companyId, territoryId, yyyyMm, timeZone);
 };
 
+const deviationSummary = async (
+  companyId,
+  viewerUserId,
+  permissions,
+  yyyyMm,
+  timeZone,
+  { repId: explicitRepId } = {}
+) => {
+  const repOids = await resolveOverviewRepIds(companyId, viewerUserId, permissions, explicitRepId);
+  const users = await User.find({
+    _id: { $in: repOids },
+    companyId,
+    isDeleted: { $ne: true }
+  })
+    .select('name email employeeCode')
+    .lean();
+  const byId = Object.fromEntries(users.map((u) => [String(u._id), u]));
+
+  const reps = await Promise.all(
+    repOids.map(async (oid) => {
+      const stats = await mrepKpiService.planItemExecutionStats(companyId, oid, yyyyMm, timeZone);
+      const rid = String(oid);
+      return {
+        repId: rid,
+        name: byId[rid]?.name ?? null,
+        email: byId[rid]?.email ?? null,
+        employeeCode: byId[rid]?.employeeCode ?? null,
+        planExecution: stats
+      };
+    })
+  );
+  return { month: yyyyMm, metricsVersion: 'planExecutionV1', reps };
+};
+
+const rankings = async (companyId, viewerUserId, permissions, yyyyMm, timeZone, { repId: explicitRepId } = {}) => {
+  const data = await monthlyOverview(companyId, viewerUserId, permissions, yyyyMm, timeZone, {
+    repId: explicitRepId
+  });
+  const rankingsRows = data.reps
+    .map((r) => ({
+      repId: r.repId,
+      name: r.name,
+      employeeCode: r.employeeCode,
+      coveragePercent: r.coverage?.coveragePercent ?? null,
+      visitCompletionPercent: r.planExecution?.visitCompletionPercent ?? null,
+      adherencePercent: r.planExecution?.adherencePercent ?? null,
+      unplannedRatio: r.planExecution?.unplannedRatio ?? null,
+      grossRevenue: r.ordersInPeriod?.grossRevenue ?? null
+    }))
+    .sort((a, b) => (Number(b.coveragePercent) || 0) - (Number(a.coveragePercent) || 0));
+  rankingsRows.forEach((row, idx) => {
+    row.rank = idx + 1;
+  });
+  return { month: yyyyMm, metricsVersion: 'mrepRankingsV1', rankings: rankingsRows };
+};
+
+const trends = async (
+  companyId,
+  viewerUserId,
+  permissions,
+  monthsCount,
+  timeZone,
+  { repId: explicitRepId } = {}
+) => {
+  const zone = businessTime.requireCompanyIanaZone(timeZone);
+  const now = DateTime.now().setZone(zone);
+  const n = Math.min(24, Math.max(1, Number(monthsCount) || 6));
+  const months = [];
+  for (let i = n - 1; i >= 0; i--) {
+    months.push(now.minus({ months: i }).toFormat('yyyy-MM'));
+  }
+  const points = [];
+  for (const m of months) {
+    const overview = await monthlyOverview(companyId, viewerUserId, permissions, m, timeZone, {
+      repId: explicitRepId
+    });
+    points.push({ month: m, reps: overview.reps });
+  }
+  return { metricsVersion: 'mrepTrendsV1', months, points };
+};
+
+const territoryCompare = async (companyId, parentTerritoryId, yyyyMm, timeZone) => {
+  const cid = new mongoose.Types.ObjectId(String(companyId));
+  const pid = new mongoose.Types.ObjectId(String(parentTerritoryId));
+  const parent = await Territory.findOne({ _id: pid, companyId: cid, isDeleted: { $ne: true } })
+    .select('name kind')
+    .lean();
+  if (!parent) throw new ApiError(404, 'Territory not found');
+
+  const children = await Territory.find({
+    companyId: cid,
+    parentId: pid,
+    isDeleted: { $ne: true }
+  })
+    .select('name code kind')
+    .sort({ name: 1 })
+    .lean();
+
+  const rows = [];
+  for (const ch of children) {
+    const cov = await coverageService.territoryCoverageMonth(companyId, ch._id, yyyyMm, timeZone);
+    rows.push({
+      territoryId: String(ch._id),
+      name: ch.name,
+      code: ch.code,
+      kind: ch.kind,
+      coveragePercent: cov.coveragePercent,
+      doctorsTracked: cov.doctorsTracked
+    });
+  }
+
+  return {
+    month: yyyyMm,
+    parentTerritoryId: String(parentTerritoryId),
+    parentName: parent.name,
+    metricsDefinition: 'coverageActualV1',
+    children: rows
+  };
+};
+
 module.exports = {
   monthlyOverview,
   doctorCoverageForRep,
   territoryCoverage,
-  assertCanViewRep
+  assertCanViewRep,
+  deviationSummary,
+  rankings,
+  trends,
+  territoryCompare
 };

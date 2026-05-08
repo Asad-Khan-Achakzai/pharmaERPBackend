@@ -6,6 +6,8 @@ const createOrderSchema = Joi.object({
   distributorId: Joi.string().required(),
   /** Assigned medical rep for the order; defaults to creator on server if omitted */
   medicalRepId: Joi.string().optional(),
+  /** Optional soft link to a field visit (same company) for analytics */
+  visitLogId: Joi.string().hex().length(24).allow(null, ''),
   items: Joi.array().items(
     Joi.object({
       productId: Joi.string().required(),
@@ -24,6 +26,7 @@ const updateOrderSchema = Joi.object({
   doctorId: Joi.string().allow(null, ''),
   distributorId: Joi.string(),
   medicalRepId: Joi.string().optional(),
+  visitLogId: Joi.string().hex().length(24).allow(null, ''),
   items: Joi.array().items(
     Joi.object({
       productId: Joi.string().required(),

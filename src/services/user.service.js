@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const User = require('../models/User');
 const Role = require('../models/Role');
 const Territory = require('../models/Territory');
+const Company = require('../models/Company');
 const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const { escapeRegex, qScalar, applyCreatedAtRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
@@ -10,6 +11,8 @@ const { ROLES } = require('../constants/enums');
 const { ADMIN_ACCESS } = require('../constants/rbac');
 const auditService = require('./audit.service');
 const { resolveSubtreeUserIds, assertNoCycle } = require('../utils/teamScope');
+const { validateReportingHierarchy } = require('../utils/userReportingHierarchy.util');
+const { validateTerritoryAnchorForRole } = require('../utils/userTerritoryAnchor.util');
 
 const normalizeEmail = (e) => (e == null || e === '' ? '' : String(e).toLowerCase().trim());
 
@@ -29,10 +32,54 @@ const resolveTerritoryRef = async (companyId, territoryId) => {
   const oid = toObjectIdOrNull(territoryId);
   if (!oid) return null;
   const t = await Territory.findOne({ _id: oid, companyId, isDeleted: { $ne: true } })
-    .select('_id')
+    .select('_id isActive')
     .lean();
   if (!t) throw new ApiError(404, 'Territory not found in this company');
+  if (t.isActive === false) {
+    throw new ApiError(400, 'Cannot assign an inactive territory');
+  }
   return oid;
+};
+
+/**
+ * @param {import('mongoose').Types.ObjectId|string|null|undefined} territoryId
+ */
+const assertTerritoryAnchorMatchesRole = async (companyId, roleId, territoryId) => {
+  if (!territoryId || !roleId) return;
+  const tid =
+    territoryId && typeof territoryId === 'object' && territoryId._id != null
+      ? territoryId._id
+      : territoryId;
+  if (!mongoose.Types.ObjectId.isValid(tid)) return;
+  const t = await Territory.findOne({
+    _id: tid,
+    companyId,
+    isDeleted: { $ne: true }
+  })
+    .select('kind')
+    .lean();
+  if (!t || !t.kind) return;
+  await validateTerritoryAnchorForRole(Role, roleId, t.kind);
+};
+
+const normalizeCoverageTerritoryIds = async (companyId, rawList, primaryTerritoryId) => {
+  if (!Array.isArray(rawList)) return [];
+  const ids = [
+    ...new Set(
+      rawList
+        .map((x) => (x == null || x === '' ? null : String(x).trim()))
+        .filter((s) => s && mongoose.Types.ObjectId.isValid(s))
+    )
+  ];
+  const primary = primaryTerritoryId ? String(primaryTerritoryId) : '';
+  const filtered = ids.filter((s) => s !== primary);
+  if (!filtered.length) return [];
+  const oids = filtered.map((s) => new mongoose.Types.ObjectId(s));
+  const found = await Territory.find({ _id: { $in: oids }, companyId, isDeleted: { $ne: true } })
+    .select('_id')
+    .lean();
+  if (found.length !== oids.length) throw new ApiError(400, 'One or more coverage territories are invalid');
+  return found.map((f) => f._id);
 };
 
 /**
@@ -100,8 +147,13 @@ const list = async (companyId, query, timeZone = "UTC") => {
       .skip(skip)
       .limit(limit)
       .populate('roleId', 'name code isSystem')
-      .populate('managerId', 'name email')
-      .populate('territoryId', 'name code kind'),
+      .populate({
+        path: 'managerId',
+        select: 'name email',
+        populate: { path: 'roleId', select: 'code name' }
+      })
+      .populate('territoryId', 'name code kind')
+      .populate('coverageTerritoryIds', 'name code kind'),
     User.countDocuments(filter)
   ]);
 
@@ -123,6 +175,7 @@ const create = async (companyId, data, reqUser) => {
   }
 
   const payload = await applyRoleIdToUserPayload(companyId, { ...data, email });
+  delete payload.coverageTerritoryIds;
 
   if (Object.prototype.hasOwnProperty.call(data, 'managerId')) {
     payload.managerId = await resolveManagerRef(companyId, data.managerId);
@@ -134,7 +187,23 @@ const create = async (companyId, data, reqUser) => {
     payload.employeeCode = data.employeeCode ? String(data.employeeCode).trim() : null;
   }
 
-  const user = await User.create({ ...payload, companyId, createdBy: reqUser.userId });
+  await validateReportingHierarchy(companyId, payload.roleId, payload.managerId ?? null);
+  await assertTerritoryAnchorMatchesRole(companyId, payload.roleId, payload.territoryId);
+
+  let extraCoverage;
+  if (Object.prototype.hasOwnProperty.call(data, 'coverageTerritoryIds')) {
+    const co = await Company.findById(companyId).select('mrepMultiTerritory').lean();
+    if (co && co.mrepMultiTerritory === true) {
+      extraCoverage = await normalizeCoverageTerritoryIds(companyId, data.coverageTerritoryIds, payload.territoryId);
+    }
+  }
+
+  const user = await User.create({
+    ...payload,
+    companyId,
+    createdBy: reqUser.userId,
+    ...(extraCoverage !== undefined ? { coverageTerritoryIds: extraCoverage } : {})
+  });
 
   await auditService.log({
     companyId,
@@ -151,8 +220,13 @@ const create = async (companyId, data, reqUser) => {
 const getById = async (companyId, id) => {
   const user = await User.findOne({ _id: id, companyId })
     .populate('roleId', 'name code isSystem permissions')
-    .populate('managerId', 'name email')
-    .populate('territoryId', 'name code kind');
+    .populate({
+      path: 'managerId',
+      select: 'name email',
+      populate: { path: 'roleId', select: 'code name' }
+    })
+    .populate('territoryId', 'name code kind')
+    .populate('coverageTerritoryIds', 'name code kind');
   if (!user) throw new ApiError(404, 'User not found');
   return user;
 };
@@ -182,6 +256,7 @@ const update = async (companyId, id, data, reqUser) => {
     toApply.email = normalizeEmail(data.email);
   }
   const payload = await applyRoleIdToUserPayload(companyId, toApply);
+  delete payload.coverageTerritoryIds;
   if (payload.password === '' || payload.password == null) {
     delete payload.password;
   }
@@ -196,6 +271,41 @@ const update = async (companyId, id, data, reqUser) => {
   }
   if (Object.prototype.hasOwnProperty.call(data, 'employeeCode')) {
     payload.employeeCode = data.employeeCode ? String(data.employeeCode).trim() : null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(data, 'managerId') || Object.prototype.hasOwnProperty.call(data, 'roleId')) {
+    const effectiveRoleId = payload.roleId != null ? payload.roleId : user.roleId;
+    const effectiveManagerId = Object.prototype.hasOwnProperty.call(data, 'managerId')
+      ? payload.managerId
+      : user.managerId;
+    await validateReportingHierarchy(companyId, effectiveRoleId, effectiveManagerId);
+  }
+
+  if (
+    Object.prototype.hasOwnProperty.call(data, 'territoryId') ||
+    Object.prototype.hasOwnProperty.call(data, 'roleId')
+  ) {
+    const effectiveRoleIdForTerritory = Object.prototype.hasOwnProperty.call(payload, 'roleId')
+      ? payload.roleId
+      : user.roleId;
+    const effectiveTerritoryIdForKind = Object.prototype.hasOwnProperty.call(data, 'territoryId')
+      ? payload.territoryId
+      : user.territoryId;
+    await assertTerritoryAnchorMatchesRole(companyId, effectiveRoleIdForTerritory, effectiveTerritoryIdForKind);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(data, 'coverageTerritoryIds')) {
+    const co = await Company.findById(companyId).select('mrepMultiTerritory').lean();
+    if (co && co.mrepMultiTerritory === true) {
+      const primary = Object.prototype.hasOwnProperty.call(payload, 'territoryId')
+        ? payload.territoryId
+        : user.territoryId;
+      payload.coverageTerritoryIds = await normalizeCoverageTerritoryIds(
+        companyId,
+        data.coverageTerritoryIds,
+        primary
+      );
+    }
   }
 
   Object.assign(user, { ...payload, updatedBy: reqUser.userId });
@@ -295,6 +405,7 @@ const listTeam = async (companyId, reqUser, query = {}) => {
     .populate('roleId', 'name code')
     .populate('managerId', 'name email')
     .populate('territoryId', 'name code kind')
+    .populate('coverageTerritoryIds', 'name code kind')
     .lean();
   return { docs, total: docs.length };
 };
@@ -308,6 +419,7 @@ const listDirectReports = async (companyId, id) => {
     .sort({ name: 1 })
     .populate('roleId', 'name code')
     .populate('territoryId', 'name code kind')
+    .populate('coverageTerritoryIds', 'name code kind')
     .lean();
   return { docs, total: docs.length };
 };
@@ -322,6 +434,7 @@ const setManager = async (companyId, id, { managerId }, reqUser) => {
   const before = { managerId: user.managerId };
   const next = await resolveManagerRef(companyId, managerId, { selfId: user._id });
   if (next) await assertNoCycle(companyId, user._id, next);
+  await validateReportingHierarchy(companyId, user.roleId, next);
   user.managerId = next;
   user.updatedBy = reqUser.userId;
   await user.save();
@@ -342,7 +455,9 @@ const setTerritory = async (companyId, id, { territoryId }, reqUser) => {
   const user = await User.findOne({ _id: id, companyId });
   if (!user) throw new ApiError(404, 'User not found');
   const before = { territoryId: user.territoryId };
-  user.territoryId = await resolveTerritoryRef(companyId, territoryId);
+  const nextTerritoryId = await resolveTerritoryRef(companyId, territoryId);
+  await assertTerritoryAnchorMatchesRole(companyId, user.roleId, nextTerritoryId);
+  user.territoryId = nextTerritoryId;
   user.updatedBy = reqUser.userId;
   await user.save();
 

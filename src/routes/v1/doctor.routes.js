@@ -11,6 +11,7 @@ router.use(authenticate, companyScope);
 router.get('/lookup', allowLookupAccess, c.lookup);
 router.get('/', checkPermission('doctors.view'), c.list);
 router.post('/', checkPermission('doctors.create'), validate(createDoctorSchema), c.create);
+router.get('/:id/ownership-history', checkPermission('doctors.view'), c.ownershipHistory);
 router.get('/:id', checkPermission('doctors.view'), c.getById);
 router.put('/:id', checkPermission('doctors.edit'), validate(updateDoctorSchema), c.update);
 /** MRep manager flow: change territory / rep / target / tier without full edit. */

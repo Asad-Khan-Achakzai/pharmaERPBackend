@@ -42,4 +42,62 @@ const territoryCoverage = asyncHandler(async (req, res) => {
   ApiResponse.success(res, data);
 });
 
-module.exports = { monthlyOverview, doctorCoverage, territoryCoverage };
+const deviationSummary = asyncHandler(async (req, res) => {
+  const tz = req.context.timeZone;
+  const month = String(req.query.month);
+  const data = await mrepReportService.deviationSummary(
+    req.companyId,
+    req.user.userId,
+    req.user.permissions,
+    month,
+    tz,
+    { repId: req.query.repId || null }
+  );
+  ApiResponse.success(res, data);
+});
+
+const rankings = asyncHandler(async (req, res) => {
+  const tz = req.context.timeZone;
+  const month = String(req.query.month);
+  const data = await mrepReportService.rankings(
+    req.companyId,
+    req.user.userId,
+    req.user.permissions,
+    month,
+    tz,
+    { repId: req.query.repId || null }
+  );
+  ApiResponse.success(res, data);
+});
+
+const trends = asyncHandler(async (req, res) => {
+  const tz = req.context.timeZone;
+  const months = req.query.months != null ? Number(req.query.months) : 6;
+  const data = await mrepReportService.trends(
+    req.companyId,
+    req.user.userId,
+    req.user.permissions,
+    months,
+    tz,
+    { repId: req.query.repId || null }
+  );
+  ApiResponse.success(res, data);
+});
+
+const territoryCompare = asyncHandler(async (req, res) => {
+  const tz = req.context.timeZone;
+  const month = String(req.query.month);
+  const parentId = String(req.query.parentTerritoryId);
+  const data = await mrepReportService.territoryCompare(req.companyId, parentId, month, tz);
+  ApiResponse.success(res, data);
+});
+
+module.exports = {
+  monthlyOverview,
+  doctorCoverage,
+  territoryCoverage,
+  deviationSummary,
+  rankings,
+  trends,
+  territoryCompare
+};

@@ -8,6 +8,7 @@ const MedRepTarget = require('../models/MedRepTarget');
 const Ledger = require('../models/Ledger');
 const Transaction = require('../models/Transaction');
 const Product = require('../models/Product');
+const VisitLog = require('../models/VisitLog');
 const Distributor = require('../models/Distributor');
 const Pharmacy = require('../models/Pharmacy');
 const User = require('../models/User');
@@ -27,6 +28,25 @@ const {
   applyCreatedAtRangeFromQuery,
   applyCreatedByFromQuery
 } = require('../utils/listQuery');
+
+const resolveVisitLogRef = async (companyId, visitLogId, { doctorId, medicalRepId }) => {
+  if (visitLogId == null || visitLogId === '') return null;
+  const v = await VisitLog.findOne({
+    _id: visitLogId,
+    companyId,
+    isDeleted: { $ne: true }
+  })
+    .select('_id doctorId employeeId')
+    .lean();
+  if (!v) throw new ApiError(404, 'Visit log not found');
+  if (doctorId && v.doctorId && String(v.doctorId) !== String(doctorId)) {
+    throw new ApiError(400, 'visitLogId does not match this order’s doctor');
+  }
+  if (medicalRepId && String(v.employeeId) !== String(medicalRepId)) {
+    throw new ApiError(400, 'visitLogId does not match this order’s medical rep');
+  }
+  return v._id;
+};
 
 const paidUnitsInDeliveryBatch = (orderItem, alreadyDelivered, physicalBatchQty) => {
   const paidCap = Number(orderItem.quantity) || 0;
@@ -138,12 +158,21 @@ const create = async (companyId, data, reqUser, _timeZone) => {
   const { items: itemsWithSnap, totals } = financialService.enrichOrderItemsWithFinancialSnapshot(items, distributor);
   const totalOrderedAmount = totals.totalAmount;
 
+  const visitLogOid =
+    data.visitLogId != null && String(data.visitLogId).trim() !== ''
+      ? await resolveVisitLogRef(companyId, data.visitLogId, {
+          doctorId: data.doctorId || null,
+          medicalRepId
+        })
+      : null;
+
   const createPayload = () => ({
     companyId,
     pharmacyId: data.pharmacyId,
     doctorId: data.doctorId || null,
     distributorId: data.distributorId,
     medicalRepId,
+    visitLogId: visitLogOid,
     items: itemsWithSnap,
     totalOrderedAmount,
     totalAmount: totals.totalAmount,
@@ -172,6 +201,7 @@ const getById = async (companyId, id) => {
     .populate('doctorId', 'name specialization')
     .populate('distributorId', 'name city discountOnTP commissionPercentOnTP')
     .populate('medicalRepId', 'name')
+    .populate('visitLogId', 'visitTime doctorId employeeId')
     .populate('items.productId', 'name composition mrp tp casting');
   if (!order) throw new ApiError(404, 'Order not found');
 
@@ -207,6 +237,15 @@ const update = async (companyId, id, data, reqUser) => {
     const rep = await User.findOne({ _id: data.medicalRepId, companyId, isActive: true });
     if (!rep) throw new ApiError(400, 'Selected user is not an active member of this company');
     order.medicalRepId = data.medicalRepId;
+  }
+  if (data.visitLogId !== undefined) {
+    const vid = data.visitLogId && String(data.visitLogId).trim() ? data.visitLogId : null;
+    order.visitLogId = vid
+      ? await resolveVisitLogRef(companyId, vid, {
+          doctorId: order.doctorId,
+          medicalRepId: order.medicalRepId
+        })
+      : null;
   }
   if (data.notes !== undefined) order.notes = data.notes;
 
