@@ -4,7 +4,12 @@ const { softDeletePlugin } = require('../plugins/softDelete');
 const deliveryItemSchema = new mongoose.Schema(
   {
     productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+    /** Physical packs shipped in this delivery (paid + bonus). */
     quantity: { type: Number, required: true },
+    /** Paid packs in this batch — drives TP×qty; legacy docs may omit (PDF treats all qty as paid). */
+    paidQuantity: { type: Number },
+    /** Bonus/free packs in this batch (omit on legacy rows — PDF infers from TP vs physical qty). */
+    bonusQuantity: { type: Number },
     avgCostAtTime: { type: Number },
     finalSellingPrice: { type: Number },
     profitPerUnit: { type: Number },

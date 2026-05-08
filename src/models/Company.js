@@ -10,6 +10,8 @@ const companySchema = new mongoose.Schema(
     state: { type: String, trim: true },
     country: { type: String, default: 'Pakistan' },
     phone: { type: String, trim: true },
+    /** Pakistan FBR National Tax Number — printed on delivery invoices. */
+    ntnNo: { type: String, trim: true, maxlength: 64 },
     email: { type: String, trim: true, lowercase: true },
     logo: { type: String },
     currency: { type: String, default: 'PKR' },

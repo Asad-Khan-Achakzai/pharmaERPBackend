@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const DeliveryRecord = require('../models/DeliveryRecord');
@@ -19,6 +21,7 @@ const { parsePagination } = require('../utils/pagination');
 const { ORDER_STATUS, LEDGER_TYPE, LEDGER_REFERENCE_TYPE, TRANSACTION_TYPE, LEDGER_ENTITY_TYPE } = require('../constants/enums');
 const auditService = require('./audit.service');
 const pdfService = require('./pdf.service');
+const logger = require('../utils/logger');
 const financialService = require('./financial.service');
 const { calculateBonus, normalizeBonusScheme, lineTotalQuantity } = require('../utils/bonus');
 const { utcNow, getBusinessMonthKey, requireCompanyIanaZone } = require('../utils/businessTime');
@@ -347,6 +350,8 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC') => {
       deliveryRecordItems.push({
         productId: dItem.productId,
         quantity: physicalQty,
+        paidQuantity: paidThisBatch,
+        bonusQuantity: physicalQty - paidThisBatch,
         avgCostAtTime,
         finalSellingPrice,
         profitPerUnit,
@@ -438,7 +443,13 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC') => {
     await session.commitTransaction();
 
     // Generate PDF async (non-blocking)
-    pdfService.generateInvoice(delivery._id).catch(() => {});
+    pdfService.generateInvoice(delivery._id).catch((err) => {
+      logger.error('Invoice PDF generation failed after delivery', {
+        deliveryId: String(delivery._id),
+        message: err?.message,
+        stack: err?.stack
+      });
+    });
 
     return delivery;
   } catch (error) {
@@ -634,4 +645,27 @@ const cancel = async (companyId, id, reqUser) => {
   return order;
 };
 
-module.exports = { list, create, getById, update, deliver, returnOrder, cancel };
+const ensureDeliveryInvoicePdfPath = async (companyId, orderId, deliveryId) => {
+  const delivery = await DeliveryRecord.findOne({
+    _id: deliveryId,
+    companyId,
+    orderId
+  }).select('invoiceNumber');
+  if (!delivery) throw new ApiError(404, 'Delivery not found');
+  if (!delivery.invoiceNumber) throw new ApiError(400, 'Delivery has no invoice number');
+  try {
+    await pdfService.generateInvoice(deliveryId);
+  } catch (err) {
+    logger.error('Invoice PDF generation failed on demand', {
+      deliveryId: String(deliveryId),
+      message: err?.message,
+      stack: err?.stack
+    });
+    throw new ApiError(500, err?.message || 'Invoice PDF could not be generated');
+  }
+  const absPath = path.resolve(pdfService.invoicePdfPath(delivery.invoiceNumber));
+  if (!fs.existsSync(absPath)) throw new ApiError(500, 'Invoice PDF file missing after generation');
+  return absPath;
+};
+
+module.exports = { list, create, getById, update, deliver, returnOrder, cancel, ensureDeliveryInvoicePdfPath };

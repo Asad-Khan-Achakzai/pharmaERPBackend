@@ -10,6 +10,7 @@ const { createOrderSchema, updateOrderSchema, deliverOrderSchema, returnOrderSch
 router.use(authenticate, companyScope);
 router.get('/', checkPermission('orders.view'), c.list);
 router.post('/', checkPermission('orders.create'), validate(createOrderSchema), c.create);
+router.get('/:orderId/deliveries/:deliveryId/invoice', checkPermission('orders.view'), c.downloadDeliveryInvoice);
 router.get('/:id', checkPermission('orders.view'), c.getById);
 router.put('/:id', checkPermission('orders.edit'), validate(updateOrderSchema), c.update);
 router.post('/:id/deliver', checkPermission('orders.deliver'), validate(deliverOrderSchema), c.deliver);

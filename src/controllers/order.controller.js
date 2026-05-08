@@ -1,3 +1,4 @@
+const path = require('path');
 const orderService = require('../services/order.service');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../middleware/asyncHandler');
@@ -37,4 +38,16 @@ const cancel = asyncHandler(async (req, res) => {
   ApiResponse.success(res, null, 'Order cancelled');
 });
 
-module.exports = { list, create, getById, update, deliver, returnOrder, cancel };
+const downloadDeliveryInvoice = asyncHandler(async (req, res) => {
+  const absPath = await orderService.ensureDeliveryInvoicePdfPath(
+    req.companyId,
+    req.params.orderId,
+    req.params.deliveryId
+  );
+  const filename = path.basename(absPath);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+  res.sendFile(absPath);
+});
+
+module.exports = { list, create, getById, update, deliver, returnOrder, cancel, downloadDeliveryInvoice };
