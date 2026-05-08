@@ -5,7 +5,6 @@
 const mongoose = require('mongoose');
 const Territory = require('../models/Territory');
 const User = require('../models/User');
-const Company = require('../models/Company');
 const Doctor = require('../models/Doctor');
 const { TERRITORY_KIND } = require('../constants/enums');
 const { escapeRegex } = require('../utils/listQuery');
@@ -24,10 +23,22 @@ async function brickIdsUnderTerritoryPrefix(companyId, materializedPathPrefix) {
   return bricks.map((b) => b._id);
 }
 
-async function brickIdsForTerritoryNode(companyId, territoryId) {
-  if (!territoryId) return [];
+/** Accept ObjectId, hex string, or populated doc `{ _id }` (read paths use populated refs). */
+function territoryRefToIdString(territoryRef) {
+  if (territoryRef == null || territoryRef === '') return null;
+  if (typeof territoryRef === 'object' && territoryRef._id != null) {
+    return String(territoryRef._id);
+  }
+  const s = String(territoryRef);
+  if (!mongoose.Types.ObjectId.isValid(s)) return null;
+  return s;
+}
+
+async function brickIdsForTerritoryNode(companyId, territoryRef) {
+  const idStr = territoryRefToIdString(territoryRef);
+  if (!idStr) return [];
   const cid = new mongoose.Types.ObjectId(String(companyId));
-  const tid = new mongoose.Types.ObjectId(String(territoryId));
+  const tid = new mongoose.Types.ObjectId(idStr);
   const t = await Territory.findOne({ _id: tid, companyId: cid, isDeleted: { $ne: true } })
     .select('kind materializedPath')
     .lean();
@@ -36,7 +47,7 @@ async function brickIdsForTerritoryNode(companyId, territoryId) {
   return brickIdsUnderTerritoryPrefix(cid, t.materializedPath);
 }
 
-async function unionBrickIdsForRep(companyId, repLean, multiTerritoryEnabled) {
+async function unionBrickIdsForRep(companyId, repLean) {
   const cid = new mongoose.Types.ObjectId(String(companyId));
   const set = new Set();
   const add = async (territoryRef) => {
@@ -46,7 +57,7 @@ async function unionBrickIdsForRep(companyId, repLean, multiTerritoryEnabled) {
   };
 
   await add(repLean.territoryId);
-  if (multiTerritoryEnabled && Array.isArray(repLean.coverageTerritoryIds) && repLean.coverageTerritoryIds.length) {
+  if (Array.isArray(repLean.coverageTerritoryIds) && repLean.coverageTerritoryIds.length) {
     for (const extra of repLean.coverageTerritoryIds) {
       await add(extra);
     }
@@ -63,16 +74,12 @@ const ownedDoctorsFilter = async (companyId, repId) => {
   const cid = new mongoose.Types.ObjectId(String(companyId));
   const rid = new mongoose.Types.ObjectId(String(repId));
 
-  const [rep, company] = await Promise.all([
-    User.findOne({ _id: rid, companyId: cid, isDeleted: { $ne: true } })
-      .select('territoryId coverageTerritoryIds')
-      .lean(),
-    Company.findById(cid).select('mrepMultiTerritory').lean()
-  ]);
+  const rep = await User.findOne({ _id: rid, companyId: cid, isDeleted: { $ne: true } })
+    .select('territoryId coverageTerritoryIds')
+    .lean();
   if (!rep) return null;
 
-  const multi = company && company.mrepMultiTerritory === true;
-  const brickIds = await unionBrickIdsForRep(cid, rep, multi);
+  const brickIds = await unionBrickIdsForRep(cid, rep);
 
   const orClauses = [{ assignedRepId: rid }];
   const unassigned = {
@@ -135,9 +142,36 @@ const coverageBandLabel = (target, count) => {
   return 'below_target';
 };
 
+/**
+ * Deduped brick count + sample labels for user details (read-side).
+ */
+async function effectiveBrickCoverageSummary(companyId, repLean) {
+  const cid = new mongoose.Types.ObjectId(String(companyId));
+  const brickIds = await unionBrickIdsForRep(cid, repLean);
+  const count = brickIds.length;
+  if (!count) {
+    return { brickCount: 0, previewBricks: [] };
+  }
+  const head = brickIds.slice(0, 24);
+  const rows = await Territory.find({
+    _id: { $in: head },
+    companyId: cid,
+    kind: TERRITORY_KIND.BRICK,
+    isDeleted: { $ne: true }
+  })
+    .select('name code')
+    .lean();
+  return {
+    brickCount: count,
+    previewBricks: rows.map((r) => ({ _id: r._id, name: r.name, code: r.code || null }))
+  };
+}
+
 module.exports = {
   brickIdsUnderTerritoryPrefix,
   brickIdsForTerritoryNode,
+  unionBrickIdsForRep,
+  effectiveBrickCoverageSummary,
   ownedDoctorsFilter,
   ownershipForRepCoverageRow,
   summarizeDoctorDocument,

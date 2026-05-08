@@ -2,14 +2,14 @@ const mongoose = require('mongoose');
 const User = require('../models/User');
 const Role = require('../models/Role');
 const Territory = require('../models/Territory');
-const Company = require('../models/Company');
 const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const { escapeRegex, qScalar, applyCreatedAtRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
 const { ALL_PERMISSIONS } = require('../constants/permissions');
-const { ROLES } = require('../constants/enums');
+const { ROLES, TERRITORY_KIND } = require('../constants/enums');
 const { ADMIN_ACCESS } = require('../constants/rbac');
 const auditService = require('./audit.service');
+const mrepOwnership = require('./mrepOwnership.service');
 const { resolveSubtreeUserIds, assertNoCycle } = require('../utils/teamScope');
 const { validateReportingHierarchy } = require('../utils/userReportingHierarchy.util');
 const { validateTerritoryAnchorForRole } = require('../utils/userTerritoryAnchor.util');
@@ -76,10 +76,34 @@ const normalizeCoverageTerritoryIds = async (companyId, rawList, primaryTerritor
   if (!filtered.length) return [];
   const oids = filtered.map((s) => new mongoose.Types.ObjectId(s));
   const found = await Territory.find({ _id: { $in: oids }, companyId, isDeleted: { $ne: true } })
-    .select('_id')
+    .select('_id kind')
     .lean();
   if (found.length !== oids.length) throw new ApiError(400, 'One or more coverage territories are invalid');
   return found.map((f) => f._id);
+};
+
+/**
+ * When anchor is a brick, extra coverage is normally explicit bricks only (new UX).
+ * Legacy rows may still store area/zone nodes in `coverageTerritoryIds`; those keep expanding via path.
+ */
+const inferTerritoryAssignmentLabel = (anchorPopulated, coveragePopulated) => {
+  const cov = Array.isArray(coveragePopulated) ? coveragePopulated.filter(Boolean) : [];
+  const coverageLen = cov.length;
+  const coverageAllBrick =
+    coverageLen > 0 && cov.every((c) => typeof c === 'object' && c && c.kind === TERRITORY_KIND.BRICK);
+  const anchor = anchorPopulated && typeof anchorPopulated === 'object' ? anchorPopulated : null;
+  if (!anchor || !anchor.kind) return { key: 'NONE', label: 'None' };
+  const k = anchor.kind;
+  if (k === TERRITORY_KIND.ZONE && coverageLen === 0) return { key: 'ENTIRE_ZONE', label: 'Entire Zone' };
+  if (k === TERRITORY_KIND.AREA && coverageLen === 0) return { key: 'ENTIRE_AREA', label: 'Entire Area' };
+  if (k === TERRITORY_KIND.BRICK && coverageLen === 0) return { key: 'SINGLE_BRICK', label: 'Single Brick' };
+  if (k === TERRITORY_KIND.BRICK && coverageLen > 0 && coverageAllBrick) {
+    return { key: 'CUSTOM_MULTI_BRICK', label: 'Custom Multi-Brick' };
+  }
+  if (coverageLen > 0) {
+    return { key: 'HIERARCHICAL_PLUS_EXTRA', label: 'Hierarchical + extra coverage' };
+  }
+  return { key: 'CUSTOM', label: 'Custom / legacy' };
 };
 
 /**
@@ -192,10 +216,7 @@ const create = async (companyId, data, reqUser) => {
 
   let extraCoverage;
   if (Object.prototype.hasOwnProperty.call(data, 'coverageTerritoryIds')) {
-    const co = await Company.findById(companyId).select('mrepMultiTerritory').lean();
-    if (co && co.mrepMultiTerritory === true) {
-      extraCoverage = await normalizeCoverageTerritoryIds(companyId, data.coverageTerritoryIds, payload.territoryId);
-    }
+    extraCoverage = await normalizeCoverageTerritoryIds(companyId, data.coverageTerritoryIds, payload.territoryId);
   }
 
   const user = await User.create({
@@ -228,7 +249,20 @@ const getById = async (companyId, id) => {
     .populate('territoryId', 'name code kind')
     .populate('coverageTerritoryIds', 'name code kind');
   if (!user) throw new ApiError(404, 'User not found');
-  return user;
+  const plain = user.toJSON();
+  const repLean = {
+    territoryId: user.territoryId,
+    coverageTerritoryIds: user.coverageTerritoryIds || []
+  };
+  const eff = await mrepOwnership.effectiveBrickCoverageSummary(companyId, repLean);
+  const typeInfo = inferTerritoryAssignmentLabel(user.territoryId, user.coverageTerritoryIds);
+  plain.territoryCoverageSummary = {
+    assignmentType: typeInfo.label,
+    assignmentTypeKey: typeInfo.key,
+    brickCount: eff.brickCount,
+    previewBricks: eff.previewBricks
+  };
+  return plain;
 };
 
 const update = async (companyId, id, data, reqUser) => {
@@ -295,17 +329,14 @@ const update = async (companyId, id, data, reqUser) => {
   }
 
   if (Object.prototype.hasOwnProperty.call(data, 'coverageTerritoryIds')) {
-    const co = await Company.findById(companyId).select('mrepMultiTerritory').lean();
-    if (co && co.mrepMultiTerritory === true) {
-      const primary = Object.prototype.hasOwnProperty.call(payload, 'territoryId')
-        ? payload.territoryId
-        : user.territoryId;
-      payload.coverageTerritoryIds = await normalizeCoverageTerritoryIds(
-        companyId,
-        data.coverageTerritoryIds,
-        primary
-      );
-    }
+    const primary = Object.prototype.hasOwnProperty.call(payload, 'territoryId')
+      ? payload.territoryId
+      : user.territoryId;
+    payload.coverageTerritoryIds = await normalizeCoverageTerritoryIds(
+      companyId,
+      data.coverageTerritoryIds,
+      primary
+    );
   }
 
   Object.assign(user, { ...payload, updatedBy: reqUser.userId });

@@ -10,7 +10,8 @@ const {
 } = require('../constants/rbac');
 
 const MR_ALLOWED = new Set([TERRITORY_KIND.BRICK, TERRITORY_KIND.AREA]);
-const ASM_ALLOWED = new Set([TERRITORY_KIND.AREA, TERRITORY_KIND.ZONE]);
+/** ASM: area/zone hierarchy or multi-brick (primary brick + explicit extras). */
+const ASM_ALLOWED = new Set([TERRITORY_KIND.BRICK, TERRITORY_KIND.AREA, TERRITORY_KIND.ZONE]);
 
 /**
  * Ensures territory anchor kind is allowed for the user's role.
