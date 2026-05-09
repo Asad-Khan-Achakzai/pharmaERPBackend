@@ -93,6 +93,9 @@ const list = async (companyId, query, timeZone = 'UTC') => {
   const statusUpper = statusParam ? String(statusParam).toUpperCase() : '';
   if (statusUpper === 'ALL') {
     /* show every status including CANCELLED */
+  } else if (statusUpper === 'RETURNS') {
+    /** Partial or full returns (used by financial workspace deep link) */
+    filter.status = { $in: [ORDER_STATUS.PARTIALLY_RETURNED, ORDER_STATUS.RETURNED] };
   } else if (statusParam && Object.values(ORDER_STATUS).includes(statusUpper)) {
     filter.status = statusUpper;
   } else {

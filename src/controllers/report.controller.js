@@ -1,4 +1,6 @@
 const reportService = require('../services/report.service');
+const pharmacyWorkspaceService = require('../services/pharmacyWorkspace.service');
+const { buildPdfBuffer } = require('../services/pharmacyStatementPdf.service');
 const profitManagementService = require('../services/profitManagement.service');
 const visitReportService = require('../services/visitReport.service');
 const supplierService = require('../services/supplier.service');
@@ -161,6 +163,31 @@ const profitTrends = asyncHandler(async (req, res) => {
   ApiResponse.success(res, await profitManagementService.trends(req.companyId, req.query, req.context.timeZone));
 });
 
+const pharmacyFinancialWorkspace = asyncHandler(async (req, res) => {
+  const data = await pharmacyWorkspaceService.pharmacyFinancialWorkspace(
+    req.companyId,
+    req.params.id,
+    req.query,
+    req.context.timeZone
+  );
+  if (!data) throw new ApiError(404, 'Pharmacy not found');
+  ApiResponse.success(res, data);
+});
+
+const pharmacyStatementPdf = asyncHandler(async (req, res) => {
+  const userName = req.user?.name || req.user?.email || '';
+  const buf = await buildPdfBuffer({
+    companyId: req.companyId,
+    pharmacyId: req.params.id,
+    query: req.query,
+    timeZone: req.context.timeZone,
+    generatedByName: userName
+  });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="pharmacy-statement-${req.params.id}.pdf"`);
+  res.send(buf);
+});
+
 const visitSummary = asyncHandler(async (req, res) => {
   ApiResponse.success(res, await visitReportService.visitSummary(req.companyId, req.query));
 });
@@ -183,6 +210,8 @@ module.exports = {
   cashFlow,
   pharmacyBalances,
   pharmacyBalanceDetail,
+  pharmacyFinancialWorkspace,
+  pharmacyStatementPdf,
   distributorBalances,
   distributorBalanceDetail,
   collectionsPeriod,

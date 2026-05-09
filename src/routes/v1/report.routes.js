@@ -43,6 +43,8 @@ router.get('/cash-flow', checkPermission('reports.view'), c.cashFlow);
 /** Financial position & period activity (collections, settlements, clearing). */
 router.get('/financial/overview', checkPermission('reports.view'), c.financialOverview);
 router.get('/financial/pharmacy-balances', checkPermission('reports.view'), c.pharmacyBalances);
+router.get('/financial/pharmacies/:id/workspace', checkPermission('reports.view'), c.pharmacyFinancialWorkspace);
+router.get('/financial/pharmacies/:id/statement.pdf', checkPermission('ledger.view'), c.pharmacyStatementPdf);
 router.get('/financial/pharmacies/:id/detail', checkPermission('reports.view'), c.pharmacyBalanceDetail);
 router.get('/financial/distributor-balances', checkPermission('reports.view'), c.distributorBalances);
 router.get('/financial/distributors/:id/detail', checkPermission('reports.view'), c.distributorBalanceDetail);

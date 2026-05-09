@@ -35,6 +35,7 @@ const supplierService = require('./supplier.service');
 const auditService = require('./audit.service');
 const ApiError = require('../utils/ApiError');
 const businessTime = require('../utils/businessTime');
+const { escapeRegex, qScalar } = require('../utils/listQuery');
 
 const objectId = (id) => new mongoose.Types.ObjectId(id);
 
@@ -681,11 +682,11 @@ const pharmacyBalances = async (companyId, query = {}) => {
   ]);
   const ledgerMap = new Map(ledgerAgg.map((x) => [x._id.toString(), x]));
 
-  const pharmFilter = { companyId: cid, isDeleted: nd };
-  if (query.pharmacyId) pharmFilter._id = objectId(query.pharmacyId);
+  const basePharmFilter = { companyId: cid, isDeleted: nd };
+  if (query.pharmacyId) basePharmFilter._id = objectId(query.pharmacyId);
 
-  const pharmacies = await Pharmacy.find(pharmFilter).select('name city phone isActive').lean();
-  const rows = pharmacies.map((p) => {
+  const allPharmacies = await Pharmacy.find(basePharmFilter).select('name city phone isActive').lean();
+  const mapRow = (p) => {
     const L = ledgerMap.get(p._id.toString()) || { totalDebit: 0, totalCredit: 0, outstanding: 0 };
     const o = roundPKR(L.outstanding);
     return {
@@ -700,17 +701,75 @@ const pharmacyBalances = async (companyId, query = {}) => {
       receivableFromPharmacy: roundPKR(Math.max(0, o)),
       advanceOrCreditFromPharmacy: roundPKR(Math.max(0, -o))
     };
-  });
-
-  rows.sort((a, b) => b.receivableFromPharmacy - a.receivableFromPharmacy);
+  };
+  const allRows = [...allPharmacies.map(mapRow)];
 
   const totals = {
-    totalOutstandingNet: roundPKR(rows.reduce((s, r) => s + r.outstanding, 0)),
-    totalReceivable: roundPKR(rows.reduce((s, r) => s + r.receivableFromPharmacy, 0)),
-    totalPharmacyCreditBalance: roundPKR(rows.reduce((s, r) => s + r.advanceOrCreditFromPharmacy, 0))
+    totalOutstandingNet: roundPKR(allRows.reduce((s, r) => s + r.outstanding, 0)),
+    totalReceivable: roundPKR(allRows.reduce((s, r) => s + r.receivableFromPharmacy, 0)),
+    totalPharmacyCreditBalance: roundPKR(allRows.reduce((s, r) => s + r.advanceOrCreditFromPharmacy, 0))
   };
 
-  return { rows, totals, help: 'Positive receivableFromPharmacy = pharmacy still owes on invoices. Negative outstanding = pharmacy has prepaid / credit.' };
+  const help =
+    'Positive receivableFromPharmacy = pharmacy still owes on invoices. Negative outstanding = pharmacy has prepaid / credit.';
+
+  const paginate =
+    qScalar(query.paginate) === 'true' ||
+    qScalar(query.search) !== '' ||
+    qScalar(query.hasBalanceOnly) === 'true' ||
+    qScalar(query.sortBy) !== '' ||
+    (query.page !== undefined && String(query.page) !== '') ||
+    (query.limit !== undefined && String(query.limit) !== '');
+
+  if (!paginate) {
+    const rows = allRows;
+    rows.sort((a, b) => b.receivableFromPharmacy - a.receivableFromPharmacy);
+    return { rows, totals, help };
+  }
+
+  const search = qScalar(query.search);
+  let listRows = allRows;
+  if (search) {
+    const rx = new RegExp(escapeRegex(search), 'i');
+    listRows = allRows.filter(
+      (r) => rx.test(r.name || '') || rx.test(r.city || '') || rx.test(r.phone || '')
+    );
+  }
+
+  if (qScalar(query.hasBalanceOnly) === 'true') {
+    listRows = listRows.filter((r) => r.receivableFromPharmacy > 0 || r.advanceOrCreditFromPharmacy > 0);
+  }
+
+  const sortBy = qScalar(query.sortBy) || 'receivableFromPharmacy';
+  const sortAsc = qScalar(query.sortOrder) === 'asc';
+  const sortMul = sortAsc ? 1 : -1;
+  listRows.sort((a, b) => {
+    if (sortBy === 'name' || sortBy === 'city' || sortBy === 'phone') {
+      const av = String(a[sortBy] || '').toLowerCase();
+      const bv = String(b[sortBy] || '').toLowerCase();
+      const cmp = av.localeCompare(bv);
+      return cmp * sortMul;
+    }
+    const av = Number(a[sortBy]) || 0;
+    const bv = Number(b[sortBy]) || 0;
+    if (av === bv) return String(a.name || '').localeCompare(String(b.name || ''));
+    return av > bv ? sortMul : -sortMul;
+  });
+
+  const page = Math.max(1, parseInt(qScalar(query.page) || '1', 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(qScalar(query.limit) || '25', 10) || 25));
+  const total = listRows.length;
+  const pages = Math.max(1, Math.ceil(total / limit));
+  const safePage = Math.min(page, pages);
+  const skip = (safePage - 1) * limit;
+  const rows = listRows.slice(skip, skip + limit);
+
+  return {
+    rows,
+    totals,
+    pagination: { total, page: safePage, limit, pages },
+    help
+  };
 };
 
 /** Ledger breakdown for one pharmacy (by reference type). */
