@@ -35,8 +35,10 @@ const userSchema = new mongoose.Schema(
      * Unioned with `territoryId` for doctor-ownership queries; primary remains `territoryId`.
      */
     coverageTerritoryIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Territory' }],
-    /** HR identifier (free-text, e.g. "EMP-1023"). Optional. */
-    employeeCode: { type: String, trim: true, maxlength: 64, default: null }
+    /** When set with until date, pending requests assigned to this user may be acted on by the delegate. */
+    attendanceApproveDelegateUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    /** Inclusive end of delegation (approvals invalidate after this instant). */
+    attendanceApproveDelegateUntil: { type: Date, default: null },
   },
   { timestamps: true }
 );
@@ -47,6 +49,7 @@ userSchema.index({ companyId: 1, role: 1, isActive: 1 });
 userSchema.index({ companyId: 1, managerId: 1, isActive: 1 });
 userSchema.index({ companyId: 1, territoryId: 1, isActive: 1 });
 userSchema.index({ companyId: 1, coverageTerritoryIds: 1 });
+userSchema.index({ companyId: 1, attendanceApproveDelegateUserId: 1, attendanceApproveDelegateUntil: 1 });
 
 userSchema.pre('save', async function (next) {
   if (this.isModified('email') && this.email) {

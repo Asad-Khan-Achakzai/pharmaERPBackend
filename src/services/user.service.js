@@ -308,6 +308,38 @@ const update = async (companyId, id, data, reqUser) => {
     payload.employeeCode = data.employeeCode ? String(data.employeeCode).trim() : null;
   }
 
+  if (Object.prototype.hasOwnProperty.call(data, 'attendanceApproveDelegateUserId')) {
+    const raw = data.attendanceApproveDelegateUserId;
+    if (raw == null || raw === '') {
+      payload.attendanceApproveDelegateUserId = null;
+      payload.attendanceApproveDelegateUntil = null;
+    } else {
+      const delId = mongoose.Types.ObjectId.isValid(String(raw)) ? String(raw) : null;
+      if (!delId) throw new ApiError(400, 'Invalid attendance delegate user id');
+      const delUser = await User.findOne({
+        _id: delId,
+        companyId,
+        isActive: true,
+        isDeleted: { $ne: true }
+      }).select('_id').lean();
+      if (!delUser) throw new ApiError(400, 'Delegate user not found or inactive');
+      if (String(delUser._id) === String(user._id)) {
+        throw new ApiError(400, 'Cannot delegate attendance approvals to yourself');
+      }
+      payload.attendanceApproveDelegateUserId = delUser._id;
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(data, 'attendanceApproveDelegateUntil')) {
+    const u = data.attendanceApproveDelegateUntil;
+    if (u == null || u === '') {
+      payload.attendanceApproveDelegateUntil = null;
+    } else {
+      const dt = u instanceof Date ? u : new Date(u);
+      if (Number.isNaN(dt.getTime())) throw new ApiError(400, 'Invalid attendanceApproveDelegateUntil');
+      payload.attendanceApproveDelegateUntil = dt;
+    }
+  }
+
   if (Object.prototype.hasOwnProperty.call(data, 'managerId') || Object.prototype.hasOwnProperty.call(data, 'roleId')) {
     const effectiveRoleId = payload.roleId != null ? payload.roleId : user.roleId;
     const effectiveManagerId = Object.prototype.hasOwnProperty.call(data, 'managerId')

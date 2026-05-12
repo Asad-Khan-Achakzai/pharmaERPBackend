@@ -1,7 +1,7 @@
 /**
  * Boot-time MRep role seeding (Phase 2).
  *
- * Iterates every existing (non-deleted) company and ensures the four default roles
+ * Iterates every existing (non-deleted) company and ensures default roles
  * (ADMIN, MEDICAL_REP, ASM, RM) are present. The role.service.seedDefaultRolesForCompany
  * call is idempotent — it does a `findOne` per code and only creates what's missing —
  * so this is safe to run on every startup.

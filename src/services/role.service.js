@@ -58,6 +58,7 @@ const DEFAULT_MEDICAL_REP_PERMISSIONS = [
   'reports.view',
   'attendance.view',
   'attendance.mark',
+  'attendance.request.create',
   'weeklyPlans.view',
   'weeklyPlans.markVisit'
 ];
@@ -74,7 +75,10 @@ const DEFAULT_ASM_PERMISSIONS = [
   'weeklyPlans.approve',
   'team.view',
   'team.viewAllReports',
-  'targets.view'
+  'targets.view',
+  'attendance.request.create',
+  'attendance.approve.direct',
+  'attendance.governance.view'
 ];
 
 const DEFAULT_RM_PERMISSIONS = [
@@ -87,7 +91,8 @@ const DEFAULT_RM_PERMISSIONS = [
   'pharmacies.view',
   'reports.view',
   'targets.create',
-  'targets.edit'
+  'targets.edit',
+  'attendance.approve.escalated'
 ];
 
 const isValidPermission = (p) => ALL_PERMISSIONS.includes(p);

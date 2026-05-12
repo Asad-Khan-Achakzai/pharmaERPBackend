@@ -15,7 +15,32 @@ const PERMISSIONS = {
   weeklyPlans:  ['view', 'create', 'edit', 'markVisit', 'review', 'approve'],
   expenses:     ['view', 'create', 'edit', 'delete'],
   payroll:      ['view', 'create', 'edit', 'pay'],
-  attendance:   ['view', 'mark'],
+  /**
+   * `request.create` — submit attendance regularization when company has approvals enabled.
+   * `approve.direct` / `approve.escalated` — matrix steps (admin.access still overrides).
+   * `approve` — umbrella: satisfies both direct and escalated approval route checks when granted.
+   * `viewTeam` — team attendance list/report (alias-style; often paired with `view`).
+   * `viewEscalations` — read attendance exception summaries / ops views without full matrix manage.
+   * `override` — correct attendance rows (admin tools) without full `admin.access`.
+   * `matrix.manage` — edit approval matrices / policies.
+   * `governance.view` — read attendance settings & monitoring summaries.
+   * `viewCompany` — optional custom role: company-wide attendance reads without admin.access.
+   * Company operators with `admin.access` already see the full tenant and act as attendance administrators.
+   */
+  attendance:   [
+    'view',
+    'mark',
+    'viewTeam',
+    'viewCompany',
+    'request.create',
+    'approve',
+    'approve.direct',
+    'approve.escalated',
+    'viewEscalations',
+    'override',
+    'matrix.manage',
+    'governance.view'
+  ],
   reports:      ['view'],
   suppliers:    ['view', 'manage'],
   /** SAP-style PO / GRN; liability on SupplierLedger only when GRN is posted — see procurement.routes */

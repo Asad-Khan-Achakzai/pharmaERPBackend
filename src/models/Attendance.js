@@ -1,5 +1,11 @@
 const mongoose = require('mongoose');
-const { ATTENDANCE_STATUS, ATTENDANCE_MARKED_BY } = require('../constants/enums');
+const {
+  ATTENDANCE_STATUS,
+  ATTENDANCE_MARKED_BY,
+  ATTENDANCE_CHECKIN_SOURCE,
+  ATTENDANCE_CHECKOUT_SOURCE,
+  LATE_CHECKIN_APPROVAL_STATUS
+} = require('../constants/enums');
 const { softDeletePlugin } = require('../plugins/softDelete');
 
 const attendanceSchema = new mongoose.Schema(
@@ -15,6 +21,29 @@ const attendanceSchema = new mongoose.Schema(
     },
     checkInTime: { type: Date },
     checkOutTime: { type: Date },
+    /** Provenance for audit (unset = legacy row before governance). */
+    checkInSource: {
+      type: String,
+      enum: Object.values(ATTENDANCE_CHECKIN_SOURCE)
+    },
+    checkOutSource: {
+      type: String,
+      enum: Object.values(ATTENDANCE_CHECKOUT_SOURCE)
+    },
+    lateMinutes: { type: Number, default: null },
+    workShiftId: { type: mongoose.Schema.Types.ObjectId, ref: 'WorkShift', default: null },
+    policyId: { type: mongoose.Schema.Types.ObjectId, ref: 'AttendancePolicy', default: null },
+    /** Open attendance workflow request, if any. */
+    activeRequestId: { type: mongoose.Schema.Types.ObjectId, ref: 'AttendanceRequest', default: null },
+    /**
+     * When strict late blocking is on and rep checks in late: time is stored immediately;
+     * manager must approve before check-out and before day counts as present.
+     */
+    lateCheckInApprovalStatus: {
+      type: String,
+      enum: Object.values(LATE_CHECKIN_APPROVAL_STATUS),
+      default: undefined
+    },
     markedBy: {
       type: String,
       enum: Object.values(ATTENDANCE_MARKED_BY),

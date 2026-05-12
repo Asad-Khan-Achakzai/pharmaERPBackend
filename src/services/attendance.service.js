@@ -3,13 +3,30 @@ const { DateTime } = require('luxon');
 const Attendance = require('../models/Attendance');
 const User = require('../models/User');
 const ApiError = require('../utils/ApiError');
-const { ATTENDANCE_STATUS, ATTENDANCE_MARKED_BY } = require('../constants/enums');
+const {
+  ATTENDANCE_STATUS,
+  ATTENDANCE_MARKED_BY,
+  ATTENDANCE_CHECKIN_SOURCE,
+  ATTENDANCE_CHECKOUT_SOURCE,
+  ATTENDANCE_REQUEST_TYPE,
+  LATE_CHECKIN_APPROVAL_STATUS
+} = require('../constants/enums');
 const businessTime = require('../utils/businessTime');
+const attendancePolicyService = require('./attendancePolicy.service');
+const attendanceAuditService = require('./attendanceAudit.service');
+const attendanceWorkflowService = require('./attendanceWorkflow.service');
 
 const round2 = (n) => Math.round(n * 100) / 100;
 
 /** Earliest check-in on the business calendar day (0 = any time that day). */
 const CHECK_IN_FROM_MINUTES = 0;
+
+/** Shown when shift end + optional post-end cutoff has passed (self-service check-in only). */
+const SHIFT_CHECKIN_CLOSED_USER_MESSAGE =
+  'Shift has ended. Check-in is no longer allowed for today. Please submit an attendance correction request or contact your manager.';
+
+const isLateCheckInPendingApproval = (rec) =>
+  rec && rec.lateCheckInApprovalStatus === LATE_CHECKIN_APPROVAL_STATUS.PENDING;
 
 const todayYmd = (tz) => businessTime.nowInBusinessTime(tz).toISODate();
 const dateDocFromYmd = (ymd, tz) => businessTime.businessDayStartUtc(ymd, tz);
@@ -33,7 +50,57 @@ const findTodayRecord = async (companyId, employeeId, timeZone) => {
   });
 };
 
-const checkIn = async (companyId, employeeId, timeZone) => {
+const previousBusinessYmd = (tz) =>
+  DateTime.now().setZone(businessTime.requireCompanyIanaZone(tz)).minus({ days: 1 }).toISODate();
+
+/**
+ * Previous calendar day still within overnight shift end window (e.g. before 02:00 after 18:00 start).
+ */
+const findOvernightOpenPreviousBusinessDay = async (companyId, employeeId, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const flags = await attendancePolicyService.getCompanyFlags(companyId);
+  if (!flags.attendancePoliciesEnabled) return null;
+
+  const ps = await attendancePolicyService.getEffectivePolicyAndShift(companyId, employeeId);
+  const shift = ps?.shift;
+  if (!shift) return null;
+
+  if (!attendancePolicyService.isOvernightShift(shift)) return null;
+
+  const mins = businessTime.businessMinutesSinceMidnight(tz);
+  if (mins > shift.endMinutes) return null;
+
+  const prevYmd = previousBusinessYmd(tz);
+  const prevDoc = dateDocFromYmd(prevYmd, tz);
+  const prev = await Attendance.findOne({
+    companyId,
+    employeeId,
+    date: prevDoc,
+    isDeleted: { $ne: true }
+  });
+  if (prev?.checkInTime && !prev.checkOutTime) return prev;
+  return null;
+};
+
+const resolveOpenAttendanceForCheckout = async (companyId, employeeId, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const ymd = todayYmd(tz);
+  const dateDoc = dateDocFromYmd(ymd, tz);
+  const today = await Attendance.findOne({
+    companyId,
+    employeeId,
+    date: dateDoc,
+    isDeleted: { $ne: true }
+  });
+  if (today?.checkInTime && !today.checkOutTime) return today;
+
+  const prevOpen = await findOvernightOpenPreviousBusinessDay(companyId, employeeId, tz);
+  if (prevOpen) return prevOpen;
+
+  return today;
+};
+
+const checkIn = async (companyId, employeeId, timeZone, body = {}) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   const user = await User.findOne({
     _id: employeeId,
@@ -58,30 +125,188 @@ const checkIn = async (companyId, employeeId, timeZone) => {
     isDeleted: { $ne: true }
   });
   if (existing?.checkInTime) {
+    if (isLateCheckInPendingApproval(existing)) {
+      throw new ApiError(
+        400,
+        'Your late check-in is waiting for manager approval. You will be able to check out after it is approved.'
+      );
+    }
     throw new ApiError(400, 'Already checked in today');
   }
 
+  const overnightOpen = await findOvernightOpenPreviousBusinessDay(companyId, employeeId, tz);
+  if (overnightOpen) {
+    throw new ApiError(400, 'Check out your previous shift before checking in again.');
+  }
+
   const now = businessTime.utcNow();
-  return Attendance.create({
-    companyId,
-    employeeId,
-    date: dateDoc,
-    status: ATTENDANCE_STATUS.PRESENT,
-    checkInTime: now,
-    markedBy: ATTENDANCE_MARKED_BY.SELF
-  });
+  const flags = await attendancePolicyService.getCompanyFlags(companyId);
+  let lateMinutes = null;
+  let workShiftId = null;
+  let policyId = null;
+
+  if (flags.attendancePoliciesEnabled) {
+    const ps = await attendancePolicyService.getEffectivePolicyAndShift(companyId, employeeId);
+    if (ps?.shift) {
+      if (attendancePolicyService.isSelfCheckInPastShiftClose(ymd, ps.shift, tz)) {
+        throw new ApiError(400, SHIFT_CHECKIN_CLOSED_USER_MESSAGE);
+      }
+      lateMinutes = attendancePolicyService.computeLateMinutes(mins, ps.shift);
+      workShiftId = ps.shift._id;
+      policyId = ps.policy?._id || null;
+    }
+  }
+
+  const wantsStrictLateWorkflow =
+    flags.attendancePoliciesEnabled &&
+    flags.strictLateBlocking &&
+    lateMinutes > 0 &&
+    !flags.allowCheckInWhenLate;
+
+  if (wantsStrictLateWorkflow) {
+    if (!flags.attendanceApprovalsEnabled) {
+      throw new ApiError(
+        400,
+        'Late check-in requires manager approval, but attendance approvals are not enabled for your company. Turn on approvals under attendance governance, or enable “Allow check-in when late”.'
+      );
+    }
+
+    const reasonRaw = body && body.reason != null ? String(body.reason).trim() : '';
+    const reason = reasonRaw || 'Late check-in — submitted for manager approval.';
+
+    let att = existing;
+    if (att) {
+      att.status = ATTENDANCE_STATUS.PRESENT;
+      att.checkInTime = now;
+      att.checkInSource = ATTENDANCE_CHECKIN_SOURCE.USER;
+      att.lateMinutes = lateMinutes;
+      att.workShiftId = workShiftId;
+      att.policyId = policyId;
+      att.markedBy = ATTENDANCE_MARKED_BY.SELF;
+      att.lateCheckInApprovalStatus = LATE_CHECKIN_APPROVAL_STATUS.PENDING;
+      await att.save();
+    } else {
+      att = await Attendance.create({
+        companyId,
+        employeeId,
+        date: dateDoc,
+        status: ATTENDANCE_STATUS.PRESENT,
+        checkInTime: now,
+        checkInSource: ATTENDANCE_CHECKIN_SOURCE.USER,
+        lateMinutes,
+        workShiftId,
+        policyId,
+        markedBy: ATTENDANCE_MARKED_BY.SELF,
+        lateCheckInApprovalStatus: LATE_CHECKIN_APPROVAL_STATUS.PENDING
+      });
+    }
+
+    if (flags.attendanceGovernanceEnabled) {
+      await attendanceAuditService.log({
+        companyId,
+        attendanceId: att._id,
+        actorUserId: employeeId,
+        source: 'USER',
+        action: 'CHECK_IN',
+        after: att.toObject(),
+        meta: { lateMinutes, lateCheckInApprovalStatus: LATE_CHECKIN_APPROVAL_STATUS.PENDING }
+      });
+    }
+
+    try {
+      await attendanceWorkflowService.submitRequest({
+        companyId,
+        requesterId: employeeId,
+        type: ATTENDANCE_REQUEST_TYPE.LATE_ARRIVAL,
+        reason,
+        attendanceId: att._id,
+        payload: { lateMinutes }
+      });
+    } catch (err) {
+      await Attendance.findOneAndUpdate(
+        { _id: att._id, companyId, employeeId },
+        {
+          $set: {
+            checkInTime: null,
+            status: ATTENDANCE_STATUS.ABSENT
+          },
+          $unset: {
+            checkInSource: 1,
+            lateMinutes: 1,
+            workShiftId: 1,
+            policyId: 1,
+            lateCheckInApprovalStatus: 1,
+            activeRequestId: 1
+          }
+        }
+      );
+      throw err;
+    }
+
+    return att;
+  }
+
+  let docToSave = existing;
+  if (docToSave) {
+    docToSave.status = ATTENDANCE_STATUS.PRESENT;
+    docToSave.checkInTime = now;
+    docToSave.checkInSource = ATTENDANCE_CHECKIN_SOURCE.USER;
+    docToSave.lateMinutes = lateMinutes;
+    docToSave.workShiftId = workShiftId;
+    docToSave.policyId = policyId;
+    docToSave.markedBy = ATTENDANCE_MARKED_BY.SELF;
+    docToSave.lateCheckInApprovalStatus = undefined;
+    await docToSave.save();
+  } else {
+    docToSave = await Attendance.create({
+      companyId,
+      employeeId,
+      date: dateDoc,
+      status: ATTENDANCE_STATUS.PRESENT,
+      checkInTime: now,
+      checkInSource: ATTENDANCE_CHECKIN_SOURCE.USER,
+      lateMinutes,
+      workShiftId,
+      policyId,
+      markedBy: ATTENDANCE_MARKED_BY.SELF
+    });
+  }
+
+  if (flags.attendanceGovernanceEnabled) {
+    await attendanceAuditService.log({
+      companyId,
+      attendanceId: docToSave._id,
+      actorUserId: employeeId,
+      source: 'USER',
+      action: 'CHECK_IN',
+      after: docToSave.toObject(),
+      meta: { lateMinutes }
+    });
+  }
+
+  if (lateMinutes > 0 && flags.autoRequestOnLateCheckIn && flags.attendanceApprovalsEnabled) {
+    try {
+      await attendanceWorkflowService.submitRequest({
+        companyId,
+        requesterId: employeeId,
+        type: ATTENDANCE_REQUEST_TYPE.LATE_ARRIVAL,
+        reason: 'Automated: late check-in recorded (pending acknowledgment).',
+        attendanceId: docToSave._id,
+        payload: {}
+      });
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      // eslint-disable-next-line no-console
+      console.error('[attendance] autoRequestOnLateCheckIn failed', { companyId, employeeId, msg });
+    }
+  }
+
+  return docToSave;
 };
 
 const checkOut = async (companyId, employeeId, timeZone) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
-  const ymd = todayYmd(tz);
-  const dateDoc = dateDocFromYmd(ymd, tz);
-  const rec = await Attendance.findOne({
-    companyId,
-    employeeId,
-    date: dateDoc,
-    isDeleted: { $ne: true }
-  });
+  const rec = await resolveOpenAttendanceForCheckout(companyId, employeeId, tz);
 
   if (!rec || !rec.checkInTime) {
     throw new ApiError(400, 'Check in before checking out');
@@ -89,9 +314,27 @@ const checkOut = async (companyId, employeeId, timeZone) => {
   if (rec.checkOutTime) {
     throw new ApiError(400, 'Already checked out');
   }
+  if (isLateCheckInPendingApproval(rec)) {
+    throw new ApiError(400, 'Check-out is unavailable until your late check-in is approved by your manager.');
+  }
 
+  const flags = await attendancePolicyService.getCompanyFlags(companyId);
+  const before = rec.toObject();
   rec.checkOutTime = businessTime.utcNow();
+  rec.checkOutSource = ATTENDANCE_CHECKOUT_SOURCE.USER;
   await rec.save();
+
+  if (flags.attendanceGovernanceEnabled) {
+    await attendanceAuditService.log({
+      companyId,
+      attendanceId: rec._id,
+      actorUserId: employeeId,
+      source: 'USER',
+      action: 'CHECK_OUT',
+      before,
+      after: rec.toObject()
+    });
+  }
   return rec;
 };
 
@@ -99,12 +342,29 @@ const markSelf = async (companyId, employeeId, body = {}, timeZone) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   const existing = await findTodayRecord(companyId, employeeId, tz);
   if (!existing) {
-    return checkIn(companyId, employeeId, tz);
+    return checkIn(companyId, employeeId, tz, body);
   }
   if (body.checkOutTime !== undefined) {
+    if (isLateCheckInPendingApproval(existing)) {
+      throw new ApiError(400, 'Check-out is unavailable until your late check-in is approved by your manager.');
+    }
+    const flags = await attendancePolicyService.getCompanyFlags(companyId);
+    const before = existing.toObject();
     existing.checkOutTime = parseJsDateFromBody(body.checkOutTime);
+    existing.checkOutSource = ATTENDANCE_CHECKOUT_SOURCE.USER;
     if (body.notes !== undefined) existing.notes = body.notes;
     await existing.save();
+    if (flags.attendanceGovernanceEnabled) {
+      await attendanceAuditService.log({
+        companyId,
+        attendanceId: existing._id,
+        actorUserId: employeeId,
+        source: 'USER',
+        action: 'CHECK_OUT_MARK',
+        before,
+        after: existing.toObject()
+      });
+    }
     return existing;
   }
   if (body.notes !== undefined) {
@@ -119,12 +379,18 @@ const getMeToday = async (companyId, employeeId, timeZone) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   const ymd = todayYmd(tz);
   const dateDoc = dateDocFromYmd(ymd, tz);
-  const doc = await Attendance.findOne({
+  const todayRec = await Attendance.findOne({
     companyId,
     employeeId,
     date: dateDoc,
     isDeleted: { $ne: true }
   });
+
+  let doc = todayRec;
+  if (!(todayRec?.checkInTime && !todayRec?.checkOutTime)) {
+    const prevOpen = await findOvernightOpenPreviousBusinessDay(companyId, employeeId, tz);
+    if (prevOpen) doc = prevOpen;
+  }
 
   const user = await User.findOne({
     _id: employeeId,
@@ -134,48 +400,91 @@ const getMeToday = async (companyId, employeeId, timeZone) => {
   });
 
   const mins = businessTime.businessMinutesSinceMidnight(tz);
-  const canCheckIn = Boolean(user) && !doc && mins >= CHECK_IN_FROM_MINUTES;
-  const canCheckOut = Boolean(doc?.checkInTime && !doc.checkOutTime);
+  const hasOpenShift = Boolean(doc?.checkInTime && !doc?.checkOutTime);
+  const pendingLateOnOpen = isLateCheckInPendingApproval(doc);
+  const canCheckOut = hasOpenShift && !pendingLateOnOpen;
+
+  const flags = await attendancePolicyService.getCompanyFlags(companyId);
+  const policySummary = await attendancePolicyService.policySummaryForEmployee(companyId, employeeId, tz, ymd);
+  const shiftCheckInClosed = Boolean(policySummary?.checkInClosedForShift);
+
+  let canCheckIn =
+    Boolean(user) && !todayRec?.checkInTime && !hasOpenShift && mins >= CHECK_IN_FROM_MINUTES;
+  if (shiftCheckInClosed) {
+    canCheckIn = false;
+  }
+
+  const rejectedLateToday =
+    todayRec?.lateCheckInApprovalStatus === LATE_CHECKIN_APPROVAL_STATUS.REJECTED && !todayRec?.checkInTime;
 
   let uiStatus = 'NOT_MARKED';
-  if (doc?.checkInTime && !doc.checkOutTime) uiStatus = 'PRESENT';
+  if (pendingLateOnOpen && doc?.checkInTime && !doc?.checkOutTime) {
+    uiStatus = 'LATE_CHECKIN_PENDING';
+  } else if (rejectedLateToday) {
+    uiStatus = 'LATE_CHECKIN_REJECTED';
+  } else if (shiftCheckInClosed && !todayRec?.checkInTime && !hasOpenShift) {
+    uiStatus = 'SHIFT_CHECKIN_CLOSED';
+  } else if (doc?.checkInTime && !doc.checkOutTime) uiStatus = 'PRESENT';
   else if (doc?.checkOutTime) uiStatus = 'CHECKED_OUT';
 
   const base = doc ? doc.toObject() : { checkInTime: null, checkOutTime: null, status: null };
+  if (base.checkOutTime && !base.checkOutSource) {
+    base.checkOutSource = ATTENDANCE_CHECKOUT_SOURCE.UNKNOWN_LEGACY;
+  }
+
+  const businessDate = doc?.date
+    ? businessTime.toBusinessTime(doc.date, tz).toISODate()
+    : ymd;
+
   return {
     ...base,
     canCheckIn,
     canCheckOut,
     uiStatus,
-    businessDate: ymd,
-    pstDate: ymd
+    businessDate,
+    pstDate: businessDate,
+    governance: {
+      attendanceGovernanceEnabled: flags.attendanceGovernanceEnabled,
+      attendancePoliciesEnabled: flags.attendancePoliciesEnabled,
+      attendanceApprovalsEnabled: flags.attendanceApprovalsEnabled,
+      strictLateBlocking: flags.strictLateBlocking,
+      allowCheckInWhenLate: flags.allowCheckInWhenLate,
+      autoRequestOnLateCheckIn: flags.autoRequestOnLateCheckIn
+    },
+    shiftCheckInClosed,
+    shiftCheckInClosedMessage: shiftCheckInClosed ? SHIFT_CHECKIN_CLOSED_USER_MESSAGE : undefined,
+    policySummary
   };
 };
 
 const dashboardLabel = (rec) => {
   if (!rec) return 'NOT_MARKED';
   if (rec.status === ATTENDANCE_STATUS.LEAVE) return 'LEAVE';
+  if (rec.lateCheckInApprovalStatus === LATE_CHECKIN_APPROVAL_STATUS.PENDING) return 'LATE_CHECKIN_PENDING';
   return rec.status;
 };
 
-const listToday = async (companyId, timeZone) => {
+const listToday = async (companyId, timeZone, visibleUserIds = null) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   const ymd = todayYmd(tz);
   const dateDoc = dateDocFromYmd(ymd, tz);
 
-  const users = await User.find({
+  const userFilter = {
     companyId,
     isActive: true,
     isDeleted: { $ne: true }
-  })
-    .select('name role')
-    .sort({ name: 1 })
-    .lean();
+  };
+  if (visibleUserIds && visibleUserIds.length) {
+    userFilter._id = { $in: visibleUserIds };
+  }
+
+  const users = await User.find(userFilter).select('name role').sort({ name: 1 }).lean();
 
   const recs = await Attendance.find({
     companyId,
     date: dateDoc,
-    isDeleted: { $ne: true }
+    isDeleted: { $ne: true },
+    ...(visibleUserIds && visibleUserIds.length ? { employeeId: { $in: visibleUserIds } } : {})
   }).lean();
 
   const byEmp = new Map(recs.map((r) => [r.employeeId.toString(), r]));
@@ -184,53 +493,113 @@ const listToday = async (companyId, timeZone) => {
     const r = byEmp.get(u._id.toString());
     const status = dashboardLabel(r);
     const hasCheckedOut = Boolean(r?.checkOutTime);
+    const lateMinutes = r?.lateMinutes != null ? r.lateMinutes : null;
     return {
       employeeId: u._id,
       name: u.name,
       role: u.role,
       status,
+      lateMinutes,
       checkInTime: businessTime.formatHmBusiness(r?.checkInTime, tz),
       checkOutTime: businessTime.formatHmBusiness(r?.checkOutTime, tz),
       hasCheckedOut
     };
   });
 
-  let present = 0;
+  let presentPayroll = 0;
+  let pendingLateApproval = 0;
   let notMarked = 0;
   let absent = 0;
   let halfDay = 0;
   let leave = 0;
+  let lateRecords = 0;
+  let missingCheckout = 0;
 
   for (const e of employees) {
     if (e.status === 'NOT_MARKED') {
       notMarked += 1;
-      absent += 1;
-    } else if (e.status === ATTENDANCE_STATUS.PRESENT) present += 1;
-    else if (e.status === ATTENDANCE_STATUS.ABSENT) absent += 1;
+    } else if (e.status === 'LATE_CHECKIN_PENDING') {
+      pendingLateApproval += 1;
+    } else if (e.status === ATTENDANCE_STATUS.PRESENT) {
+      presentPayroll += 1;
+    } else if (e.status === ATTENDANCE_STATUS.ABSENT) absent += 1;
     else if (e.status === ATTENDANCE_STATUS.HALF_DAY) halfDay += 1;
     else if (e.status === ATTENDANCE_STATUS.LEAVE) leave += 1;
   }
 
+  /** Operational sub-counts within the scoped employee list (align with exception semantics). */
+  for (const e of employees) {
+    if (e.status === ATTENDANCE_STATUS.LEAVE) continue;
+    const r = byEmp.get(String(e.employeeId));
+    if (!r) continue;
+    if ((r.lateMinutes || 0) > 0 && e.status !== 'LATE_CHECKIN_PENDING') lateRecords += 1;
+    if (r.checkInTime && !r.checkOutTime && e.status !== 'LATE_CHECKIN_PENDING') missingCheckout += 1;
+  }
+
+  const flags = await attendancePolicyService.getCompanyFlags(companyId);
+  const shiftMetaByEmp = new Map();
+  if (flags.attendancePoliciesEnabled && employees.length) {
+    await Promise.all(
+      employees.map(async (e) => {
+        try {
+          const ps = await attendancePolicyService.getEffectivePolicyAndShift(
+            companyId,
+            e.employeeId,
+            dateDoc,
+            { companyFlags: flags }
+          );
+          if (ps?.shift) {
+            const policyName = ps.policy?.name?.trim() || null;
+            const shiftName = ps.shift.name?.trim() || null;
+            shiftMetaByEmp.set(e.employeeId.toString(), {
+              shiftId: ps.shift._id.toString(),
+              shiftName,
+              scheduleLabel: policyName || shiftName || 'Schedule'
+            });
+          }
+        } catch {
+          /* ignore single-user resolution failures */
+        }
+      })
+    );
+  }
+
   const distribution = {
-    Present: present,
+    'Present (payroll)': presentPayroll,
+    'Pending late approval': pendingLateApproval,
     Absent: absent,
     'Half-Day': halfDay,
-    Leave: leave
+    Leave: leave,
+    'Not marked': notMarked
   };
 
   return {
-    employees: employees.map((e) => ({
-      employeeId: e.employeeId.toString(),
-      name: e.name,
-      status: e.status,
-      checkInTime: e.checkInTime,
-      checkOutTime: e.checkOutTime,
-      hasCheckedOut: e.hasCheckedOut
-    })),
+    businessDate: ymd,
+    employees: employees.map((e) => {
+      const m = shiftMetaByEmp.get(e.employeeId.toString());
+      return {
+        employeeId: e.employeeId.toString(),
+        name: e.name,
+        status: e.status,
+        lateMinutes: e.lateMinutes,
+        checkInTime: e.checkInTime,
+        checkOutTime: e.checkOutTime,
+        hasCheckedOut: e.hasCheckedOut,
+        shiftId: m?.shiftId ?? null,
+        shiftName: m?.shiftName ?? null,
+        scheduleLabel: m?.scheduleLabel ?? null
+      };
+    }),
     summary: {
-      present,
+      presentPayroll,
+      pendingLateApproval,
+      lateToday: lateRecords,
+      missingCheckoutToday: missingCheckout,
       notMarked,
-      totalEmployees: employees.length
+      absent,
+      totalEmployees: employees.length,
+      /** @deprecated Use presentPayroll (payroll-aligned). */
+      present: presentPayroll
     },
     distribution
   };
@@ -286,7 +655,11 @@ const getMonthStatsForPayroll = async (companyId, employeeId, monthStr, asOfDate
     }
     switch (rec.status) {
       case ATTENDANCE_STATUS.PRESENT:
-        presentDays += 1;
+        if (rec.lateCheckInApprovalStatus === LATE_CHECKIN_APPROVAL_STATUS.PENDING) {
+          absentDays += 1;
+        } else {
+          presentDays += 1;
+        }
         break;
       case ATTENDANCE_STATUS.ABSENT:
         absentDays += 1;
@@ -325,10 +698,11 @@ const runAutoCheckoutForCompanyDay = async (companyId, ymd, timeZone) => {
       date: dateDoc,
       status: ATTENDANCE_STATUS.PRESENT,
       checkInTime: { $ne: null },
+      lateCheckInApprovalStatus: { $ne: LATE_CHECKIN_APPROVAL_STATUS.PENDING },
       $or: [{ checkOutTime: null }, { checkOutTime: { $exists: false } }],
       isDeleted: { $ne: true }
     },
-    { $set: { checkOutTime: end } }
+    { $set: { checkOutTime: end, checkOutSource: ATTENDANCE_CHECKOUT_SOURCE.SYSTEM_AUTO } }
   );
 
   return res.modifiedCount ?? 0;
@@ -358,6 +732,10 @@ const report = async (companyId, query, timeZone) => {
   }
 
   const toYmd = (raw) => {
+    if (raw instanceof Date) {
+      if (Number.isNaN(raw.getTime())) throw new ApiError(400, 'Invalid date');
+      return DateTime.fromJSDate(raw, { zone: tz }).toISODate();
+    }
     const s = String(raw).trim();
     if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
     const dt = DateTime.fromISO(s, { zone: 'utc' });
@@ -403,7 +781,11 @@ const report = async (companyId, query, timeZone) => {
   for (const r of records) {
     switch (r.status) {
       case ATTENDANCE_STATUS.PRESENT:
-        presentDays += 1;
+        if (r.lateCheckInApprovalStatus === LATE_CHECKIN_APPROVAL_STATUS.PENDING) {
+          absentDays += 1;
+        } else {
+          presentDays += 1;
+        }
         break;
       case ATTENDANCE_STATUS.ABSENT:
         absentDays += 1;
@@ -435,7 +817,7 @@ const report = async (companyId, query, timeZone) => {
   };
 };
 
-const adminSetAttendanceToday = async (companyId, targetEmployeeId, status, timeZone) => {
+const adminSetAttendanceToday = async (companyId, targetEmployeeId, status, timeZone, actorUserId = null) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   if (!Object.values(ATTENDANCE_STATUS).includes(status)) {
     throw new ApiError(400, 'Invalid attendance status');
@@ -459,6 +841,7 @@ const adminSetAttendanceToday = async (companyId, targetEmployeeId, status, time
   });
 
   const stampLine = (verb) => `Admin ${verb} ${status} — ${businessTime.utcNowIso()}`;
+  const flags = await attendancePolicyService.getCompanyFlags(companyId);
 
   if (!doc) {
     const base = {
@@ -472,13 +855,30 @@ const adminSetAttendanceToday = async (companyId, targetEmployeeId, status, time
     if (status === ATTENDANCE_STATUS.PRESENT) {
       base.checkInTime = businessTime.utcNow();
       base.checkOutTime = null;
+      base.checkInSource = ATTENDANCE_CHECKIN_SOURCE.ADMIN;
+      base.checkOutSource = undefined;
     } else {
       base.checkInTime = null;
       base.checkOutTime = null;
+      base.checkInSource = undefined;
+      base.checkOutSource = undefined;
     }
     doc = await Attendance.create(base);
+    if (flags.attendanceGovernanceEnabled && actorUserId) {
+      await attendanceAuditService.log({
+        companyId,
+        attendanceId: doc._id,
+        actorUserId,
+        source: 'ADMIN',
+        action: 'ADMIN_SET_TODAY_CREATE',
+        after: doc.toObject(),
+        meta: { targetEmployeeId: String(targetEmployeeId), status }
+      });
+    }
     return doc;
   }
+
+  const before = doc.toObject();
 
   doc.status = status;
   doc.markedBy = ATTENDANCE_MARKED_BY.ADMIN;
@@ -486,13 +886,19 @@ const adminSetAttendanceToday = async (companyId, targetEmployeeId, status, time
   switch (status) {
     case ATTENDANCE_STATUS.PRESENT:
       if (!doc.checkInTime) doc.checkInTime = businessTime.utcNow();
+      doc.checkInSource = doc.checkInSource || ATTENDANCE_CHECKIN_SOURCE.ADMIN;
       doc.checkOutTime = null;
+      doc.checkOutSource = undefined;
+      doc.lateCheckInApprovalStatus = undefined;
       break;
     case ATTENDANCE_STATUS.ABSENT:
     case ATTENDANCE_STATUS.HALF_DAY:
     case ATTENDANCE_STATUS.LEAVE:
       doc.checkInTime = null;
       doc.checkOutTime = null;
+      doc.checkInSource = undefined;
+      doc.checkOutSource = undefined;
+      doc.lateCheckInApprovalStatus = undefined;
       break;
     default:
       break;
@@ -501,11 +907,40 @@ const adminSetAttendanceToday = async (companyId, targetEmployeeId, status, time
   const line = stampLine('updated');
   doc.notes = doc.notes ? `${doc.notes}\n${line}` : line;
   await doc.save();
+
+  if (flags.attendanceGovernanceEnabled && actorUserId) {
+    await attendanceAuditService.log({
+      companyId,
+      attendanceId: doc._id,
+      actorUserId,
+      source: 'ADMIN',
+      action: 'ADMIN_SET_TODAY_UPDATE',
+      before,
+      after: doc.toObject(),
+      meta: { targetEmployeeId: String(targetEmployeeId), status }
+    });
+  }
+
+  if (flags.attendanceApprovalsEnabled && actorUserId) {
+    try {
+      await attendanceWorkflowService.resolveLinkedRequestsForAdminAttendanceOverride({
+        companyId,
+        attendanceId: doc._id,
+        actorUserId,
+        newAttendanceStatus: status,
+        note: `Company attendance correction: ${status}`
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[attendance] resolveLinkedRequestsForAdminAttendanceOverride', err?.message || err);
+    }
+  }
+
   return doc;
 };
 
-const adminMarkAbsentToday = async (companyId, targetEmployeeId, timeZone) => {
-  return adminSetAttendanceToday(companyId, targetEmployeeId, ATTENDANCE_STATUS.ABSENT, timeZone);
+const adminMarkAbsentToday = async (companyId, targetEmployeeId, timeZone, actorUserId = null) => {
+  return adminSetAttendanceToday(companyId, targetEmployeeId, ATTENDANCE_STATUS.ABSENT, timeZone, actorUserId);
 };
 
 const monthlySummary = async (companyId, employeeId, monthStr, dailyAllowanceRate, timeZone) => {
@@ -539,8 +974,8 @@ const assertEmployeePresentForVisitDate = async (companyId, employeeId, visitDat
     date: dateDoc,
     isDeleted: { $ne: true }
   });
-  if (!rec || rec.status !== ATTENDANCE_STATUS.PRESENT) {
-    throw new ApiError(400, 'Attendance must be PRESENT on the visit date to log this visit');
+  if (!rec || rec.status !== ATTENDANCE_STATUS.PRESENT || isLateCheckInPendingApproval(rec)) {
+    throw new ApiError(400, 'Attendance must be approved PRESENT on the visit date to log this visit');
   }
   return rec;
 };

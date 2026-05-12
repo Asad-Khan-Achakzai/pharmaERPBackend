@@ -99,6 +99,46 @@ const ATTENDANCE_MARKED_BY = {
   ADMIN: 'ADMIN'
 };
 
+/** How check-in was recorded (governance / audit). Legacy rows may omit. */
+const ATTENDANCE_CHECKIN_SOURCE = {
+  USER: 'USER',
+  ADMIN: 'ADMIN'
+};
+
+/** How check-out was recorded. UNKNOWN_LEGACY for rows before governance fields existed. */
+const ATTENDANCE_CHECKOUT_SOURCE = {
+  USER: 'USER',
+  SYSTEM_AUTO: 'SYSTEM_AUTO',
+  ADMIN: 'ADMIN',
+  UNKNOWN_LEGACY: 'UNKNOWN_LEGACY'
+};
+
+/** Attendance regularization / approval request categories. */
+const ATTENDANCE_REQUEST_TYPE = {
+  LATE_ARRIVAL: 'LATE_ARRIVAL',
+  MISSED_CHECKOUT: 'MISSED_CHECKOUT',
+  TIME_CORRECTION: 'TIME_CORRECTION',
+  MANUAL_EXCEPTION: 'MANUAL_EXCEPTION'
+};
+
+const ATTENDANCE_REQUEST_STATUS = {
+  PENDING: 'PENDING',
+  APPROVED: 'APPROVED',
+  REJECTED: 'REJECTED',
+  CANCELLED: 'CANCELLED',
+  ESCALATED: 'ESCALATED'
+};
+
+/**
+ * Late self check-in when strict blocking is on: time is recorded but manager must approve
+ * before check-out / payroll “present” counts (see Attendance.lateCheckInApprovalStatus).
+ */
+const LATE_CHECKIN_APPROVAL_STATUS = {
+  PENDING: 'PENDING',
+  APPROVED: 'APPROVED',
+  REJECTED: 'REJECTED'
+};
+
 const WEEKLY_PLAN_STATUS = {
   DRAFT: 'DRAFT',
   /**
@@ -249,6 +289,11 @@ module.exports = {
   PAYROLL_STATUS,
   ATTENDANCE_STATUS,
   ATTENDANCE_MARKED_BY,
+  ATTENDANCE_CHECKIN_SOURCE,
+  ATTENDANCE_CHECKOUT_SOURCE,
+  ATTENDANCE_REQUEST_TYPE,
+  ATTENDANCE_REQUEST_STATUS,
+  LATE_CHECKIN_APPROVAL_STATUS,
   WEEKLY_PLAN_STATUS,
   PLAN_ITEM_TYPE,
   PLAN_ITEM_STATUS,

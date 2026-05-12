@@ -34,6 +34,7 @@ const LARGE_CUSTOM = [
     'targets.create',
     'targets.edit',
     'attendance.view',
+    'attendance.viewTeam',
     'users.view'
   ]),
   R('SALES_TEAM_LEAD', 'Sales Team Lead', [
@@ -52,7 +53,8 @@ const LARGE_CUSTOM = [
     'weeklyPlans.create',
     'weeklyPlans.markVisit',
     'targets.edit',
-    'attendance.view'
+    'attendance.view',
+    'attendance.viewTeam'
   ]),
   R('INV_COORD', 'Inventory Coordinator', [
     'dashboard.view',
@@ -75,7 +77,9 @@ const LARGE_CUSTOM = [
     'dashboard.view',
     'users.view',
     'attendance.view',
+    'attendance.viewTeam',
     'attendance.mark',
+    'attendance.override',
     'payroll.view',
     'payroll.create',
     'payroll.edit',

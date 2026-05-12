@@ -34,6 +34,51 @@ const companySchema = new mongoose.Schema(
     mrepMultiTerritory: { type: Boolean, default: false },
     /** When true, doctor assignment changes append `DoctorOwnershipEvent` rows (additive audit). */
     mrepOwnershipAudit: { type: Boolean, default: false },
+    /**
+     * Attendance governance (all default false — production-safe; enable per company).
+     * When false, behaviour matches legacy check-in/out with additive audit fields only.
+     */
+    attendanceGovernanceEnabled: { type: Boolean, default: false },
+    /** When true, WorkShift / policy assignment affects late detection and /me/today hints. */
+    attendancePoliciesEnabled: { type: Boolean, default: false },
+    /** When true, AttendanceRequest workflow + inbox APIs are active. */
+    attendanceApprovalsEnabled: { type: Boolean, default: false },
+    /** When true, check-in after grace + late blocks until overridden (requires policies). */
+    strictLateBlocking: { type: Boolean, default: false },
+    /**
+     * When true with strictLateBlocking + policies + late check-in, employee check-in still records (lateMinutes kept).
+     * Default false preserves legacy hard-block for tenants that already enabled strict mode.
+     */
+    allowCheckInWhenLate: { type: Boolean, default: false },
+    /**
+     * When true with attendanceApprovalsEnabled + lateMinutes on check-in, submit a linked LATE_ARRIVAL workflow (non-blocking).
+     */
+    autoRequestOnLateCheckIn: { type: Boolean, default: false },
+    /**
+     * Attendance request automation (all optional; defaults preserve legacy behaviour).
+     */
+    /** Hours after submission when SLA timer fires (null = no SLA-based automation). */
+    attendanceApprovalSlaHours: { type: Number, default: null, min: 0.25, max: 336 },
+    /** When SLA elapses: NONE (default), ESCALATE_NEXT, ADMIN_POOL */
+    attendanceSlaBreachAction: {
+      type: String,
+      enum: ['NONE', 'ESCALATE_NEXT', 'ADMIN_POOL'],
+      default: 'NONE'
+    },
+    /** After company-local close of the attendance workday, run attendanceEodEscalationAction once per request/day. */
+    attendanceEodEscalationEnabled: { type: Boolean, default: false },
+    attendanceEodEscalationAction: {
+      type: String,
+      enum: ['NONE', 'ESCALATE_NEXT', 'ADMIN_POOL'],
+      default: 'NONE'
+    },
+    /** Allow managers in the requester’s reporting chain to act (approve/reject/escalate) before the step is theirs. */
+    attendanceOversightInterventionEnabled: { type: Boolean, default: false },
+    /**
+     * Optional: auto-reject pending late-arrival requests after N hours (compliance / hygiene).
+     * Null = disabled. Uses same clock as SLA.
+     */
+    attendancePendingAutoRejectHours: { type: Number, default: null, min: 1, max: 720 },
     /** Single canonical IANA timezone for business calendar (reports, plans, attendance anchors). Required at creation — no implicit UTC. */
     timeZone: {
       type: String,

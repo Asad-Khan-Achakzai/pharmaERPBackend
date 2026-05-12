@@ -47,7 +47,13 @@ const userHasPermission = (reqUser, permission) => {
   if (perms.includes(ADMIN_ACCESS)) return true;
   /** Populated on req.user in companyScope for RBAC users. */
   if (reqUser.roleCode === DEFAULT_ADMIN_CODE) return true;
-  return perms.includes(permission);
+  if (perms.includes(permission)) return true;
+  /** `attendance.approve` grants both step types (enterprise shorthand). */
+  if (permission === 'attendance.approve.direct' && perms.includes('attendance.approve')) return true;
+  if (permission === 'attendance.approve.escalated' && perms.includes('attendance.approve')) return true;
+  /** Team-scope attendance reads */
+  if (permission === 'attendance.view' && perms.includes('attendance.viewTeam')) return true;
+  return false;
 };
 
 const userHasEveryPermission = (reqUser, requiredPermissions) =>
