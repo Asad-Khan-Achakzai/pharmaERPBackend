@@ -36,6 +36,20 @@ const byRep = async (companyId, repId, fromYmd, toYmd, tz) => {
       $group: {
         _id: null,
         orderCount: { $sum: 1 },
+        returnedOrderCount: {
+          $sum: {
+            $cond: [
+              {
+                $in: [
+                  '$status',
+                  [ORDER_STATUS.PARTIALLY_RETURNED, ORDER_STATUS.RETURNED]
+                ]
+              },
+              1,
+              0
+            ]
+          }
+        },
         grossRevenue: { $sum: { $ifNull: ['$finalCompanyRevenue', 0] } },
         distinctDoctors: { $addToSet: '$doctorId' }
       }
@@ -43,11 +57,12 @@ const byRep = async (companyId, repId, fromYmd, toYmd, tz) => {
   ]);
 
   if (!agg) {
-    return { orderCount: 0, grossRevenue: 0, distinctDoctorCount: 0 };
+    return { orderCount: 0, returnedOrderCount: 0, grossRevenue: 0, distinctDoctorCount: 0 };
   }
   const distinctDoctorCount = (agg.distinctDoctors || []).filter((x) => x != null).length;
   return {
     orderCount: agg.orderCount,
+    returnedOrderCount: agg.returnedOrderCount || 0,
     grossRevenue: Math.round((agg.grossRevenue || 0) * 100) / 100,
     distinctDoctorCount
   };
@@ -57,6 +72,7 @@ const byTeam = async (companyId, repIds, fromYmd, toYmd, tz) => {
   if (!repIds?.length) {
     return {
       orderCount: 0,
+      returnedOrderCount: 0,
       grossRevenue: 0,
       distinctDoctorCount: 0,
       byRep: []
@@ -79,6 +95,20 @@ const byTeam = async (companyId, repIds, fromYmd, toYmd, tz) => {
         $group: {
           _id: null,
           orderCount: { $sum: 1 },
+          returnedOrderCount: {
+            $sum: {
+              $cond: [
+                {
+                  $in: [
+                    '$status',
+                    [ORDER_STATUS.PARTIALLY_RETURNED, ORDER_STATUS.RETURNED]
+                  ]
+                },
+                1,
+                0
+              ]
+            }
+          },
           grossRevenue: { $sum: { $ifNull: ['$finalCompanyRevenue', 0] } },
           distinctDoctors: { $addToSet: '$doctorId' }
         }
@@ -90,6 +120,20 @@ const byTeam = async (companyId, repIds, fromYmd, toYmd, tz) => {
         $group: {
           _id: '$medicalRepId',
           orderCount: { $sum: 1 },
+          returnedOrderCount: {
+            $sum: {
+              $cond: [
+                {
+                  $in: [
+                    '$status',
+                    [ORDER_STATUS.PARTIALLY_RETURNED, ORDER_STATUS.RETURNED]
+                  ]
+                },
+                1,
+                0
+              ]
+            }
+          },
           grossRevenue: { $sum: { $ifNull: ['$finalCompanyRevenue', 0] } }
         }
       },
@@ -97,16 +141,18 @@ const byTeam = async (companyId, repIds, fromYmd, toYmd, tz) => {
     ])
   ]);
 
-  const totals = totalsAgg[0] || { orderCount: 0, grossRevenue: 0, distinctDoctors: [] };
+  const totals = totalsAgg[0] || { orderCount: 0, returnedOrderCount: 0, grossRevenue: 0, distinctDoctors: [] };
   const distinctDoctorCount = (totals.distinctDoctors || []).filter((x) => x != null).length;
 
   return {
     orderCount: totals.orderCount,
+    returnedOrderCount: totals.returnedOrderCount || 0,
     grossRevenue: Math.round((totals.grossRevenue || 0) * 100) / 100,
     distinctDoctorCount,
     byRep: perRep.map((r) => ({
       medicalRepId: String(r._id),
       orderCount: r.orderCount,
+      returnedOrderCount: r.returnedOrderCount || 0,
       grossRevenue: Math.round((r.grossRevenue || 0) * 100) / 100
     }))
   };

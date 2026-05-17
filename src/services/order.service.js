@@ -20,6 +20,7 @@ const { getNextSequenceNumber } = require('../utils/orderNumber');
 const { parsePagination } = require('../utils/pagination');
 const { ORDER_STATUS, LEDGER_TYPE, LEDGER_REFERENCE_TYPE, TRANSACTION_TYPE, LEDGER_ENTITY_TYPE } = require('../constants/enums');
 const auditService = require('./audit.service');
+const medRepTargetAchievedService = require('./medRepTargetAchieved.service');
 const pdfService = require('./pdf.service');
 const logger = require('../utils/logger');
 const financialService = require('./financial.service');
@@ -422,7 +423,7 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC') => {
     const month = getBusinessMonthKey(businessDate, tz);
     await MedRepTarget.updateOne(
       { companyId, medicalRepId: order.medicalRepId, month, isDeleted: { $ne: true } },
-      { $inc: { achievedSales: totalAmount, achievedPacks: totalPacks } },
+      { $inc: { achievedPacks: totalPacks } },
       { session }
     );
 
@@ -444,6 +445,17 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC') => {
     await auditService.logInSession(session, { companyId, userId: reqUser.userId, action: 'order.deliver', entityType: 'Order', entityId: orderId, changes: { deliveryId: delivery._id, items: deliveryRecordItems } });
 
     await session.commitTransaction();
+
+    try {
+      await medRepTargetAchievedService.syncAchievedSalesTpForRepMonth(companyId, order.medicalRepId, month, tz);
+    } catch (err) {
+      logger.error('MedRepTarget TP sync failed after delivery', {
+        orderId: String(orderId),
+        month,
+        message: err?.message,
+        stack: err?.stack
+      });
+    }
 
     // Generate PDF async (non-blocking)
     pdfService.generateInvoice(delivery._id).catch((err) => {
@@ -581,7 +593,7 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
     const month = getBusinessMonthKey(returnRecord.returnedAt, tz);
     await MedRepTarget.updateOne(
       { companyId, medicalRepId: order.medicalRepId, month, isDeleted: { $ne: true } },
-      { $inc: { achievedSales: -totalAmount, achievedPacks: -totalPacks } },
+      { $inc: { achievedPacks: -totalPacks } },
       { session }
     );
 
@@ -628,6 +640,33 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
     await auditService.logInSession(session, { companyId, userId: reqUser.userId, action: 'order.return', entityType: 'Order', entityId: orderId, changes: { returnId: returnRecord._id, items: returnRecordItems } });
 
     await session.commitTransaction();
+
+    const monthKeys = new Set([getBusinessMonthKey(retDate, tz)]);
+    if (order.status === ORDER_STATUS.RETURNED) {
+      const dels = await DeliveryRecord.find({
+        companyId,
+        orderId,
+        isDeleted: { $ne: true }
+      })
+        .select('deliveredAt')
+        .lean();
+      for (const d of dels) {
+        monthKeys.add(getBusinessMonthKey(d.deliveredAt, tz));
+      }
+    }
+    for (const m of monthKeys) {
+      try {
+        await medRepTargetAchievedService.syncAchievedSalesTpForRepMonth(companyId, order.medicalRepId, m, tz);
+      } catch (err) {
+        logger.error('MedRepTarget TP sync failed after return', {
+          orderId: String(orderId),
+          month: m,
+          message: err?.message,
+          stack: err?.stack
+        });
+      }
+    }
+
     return returnRecord;
   } catch (error) {
     await session.abortTransaction();

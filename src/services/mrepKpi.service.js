@@ -11,6 +11,7 @@ const { PLAN_ITEM_STATUS } = require('../constants/enums');
 const { ATTENDANCE_STATUS } = require('../constants/enums');
 const coverageService = require('./coverage.service');
 const salesAttributionService = require('./salesAttribution.service');
+const { computeDashboardNetGrossSalesTp } = require('./tpSalesRollup.service');
 
 const monthFirstLastYmd = (yyyyMm, tz) => {
   const zone = businessTime.requireCompanyIanaZone(tz);
@@ -93,8 +94,12 @@ const attendanceScorePercent = async (companyId, repId, yyyyMm, tz) => {
 
 const monthlyRowForRep = async (companyId, repId, yyyyMm, tz) => {
   const { fromYmd, toYmd } = monthFirstLastYmd(yyyyMm, tz);
+  const zone = businessTime.requireCompanyIanaZone(tz);
+  const tpRange = businessTime.coalesceBusinessDateRangeFromYmd(fromYmd, toYmd, zone);
+  const cid = new mongoose.Types.ObjectId(String(companyId));
+  const repOid = new mongoose.Types.ObjectId(String(repId));
 
-  const [coverage, planStats, target, sales, attendancePct] = await Promise.all([
+  const [coverage, planStats, target, sales, attendancePct, totalGrossSalesTp] = await Promise.all([
     coverageService.coverageForRepMonth(companyId, repId, yyyyMm, tz),
     planItemExecutionStats(companyId, repId, yyyyMm, tz),
     MedRepTarget.findOne({
@@ -106,7 +111,8 @@ const monthlyRowForRep = async (companyId, repId, yyyyMm, tz) => {
       .select('salesTarget achievedSales packsTarget achievedPacks')
       .lean(),
     salesAttributionService.byRep(companyId, repId, fromYmd, toYmd, tz),
-    attendanceScorePercent(companyId, repId, yyyyMm, tz)
+    attendanceScorePercent(companyId, repId, yyyyMm, tz),
+    computeDashboardNetGrossSalesTp(cid, tpRange, repOid)
   ]);
 
   const salesTarget = target?.salesTarget != null ? Number(target.salesTarget) : null;
@@ -137,6 +143,7 @@ const monthlyRowForRep = async (companyId, repId, yyyyMm, tz) => {
           salesAchievementPercent: null
         },
     ordersInPeriod: sales,
+    totalGrossSalesTp,
     attendanceScorePercent: attendancePct
   };
 };

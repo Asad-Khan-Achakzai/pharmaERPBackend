@@ -21,8 +21,7 @@ const {
   LEDGER_ENTITY_TYPE,
   SETTLEMENT_DIRECTION,
   SUPPLIER_LEDGER_TYPE,
-  COLLECTOR_TYPE,
-  ORDER_STATUS
+  COLLECTOR_TYPE
 } = require('../constants/enums');
 const {
   FINANCIAL_SCOPE,
@@ -31,6 +30,7 @@ const {
   withFinancialEnvelope
 } = require('../constants/financialSchema');
 const financialService = require('./financial.service');
+const { computeDashboardNetGrossSalesTp } = require('./tpSalesRollup.service');
 const supplierService = require('./supplier.service');
 const auditService = require('./audit.service');
 const ApiError = require('../utils/ApiError');
@@ -75,67 +75,6 @@ const distributorCommissionNet = async (companyId, dateRange = null) => {
   const deliveryShare = roundPKR(deliveryAgg[0]?.total || 0);
   const reversal = roundPKR(reversalAgg[0]?.total || 0);
   return roundPKR(deliveryShare - reversal);
-};
-
-/**
- * Same net-TP semantics as doctorActivity.service `computeNetTpAchieved` (without doctor filter):
- * - Fully returned orders: no delivery credit and no return debit for TP.
- * - Otherwise: sum delivery.tpSubtotal in scope minus sum (order line tpAtTime × return qty) for returns in scope.
- *
- * @param {mongoose.Types.ObjectId} cid
- * @param {{ $gte: Date, $lte: Date } | null} dateRange - null = lifetime (no deliveredAt/returnedAt filter)
- * @param {mongoose.Types.ObjectId | null} medicalRepOid - if set, only orders with this medicalRepId
- */
-const computeDashboardNetGrossSalesTp = async (cid, dateRange, medicalRepOid = null) => {
-  const deliveryFilter = { companyId: cid, isDeleted: nd };
-  if (dateRange) deliveryFilter.deliveredAt = dateRange;
-
-  const returnFilter = { companyId: cid, isDeleted: nd };
-  if (dateRange) returnFilter.returnedAt = dateRange;
-
-  const repIdStr = medicalRepOid ? String(medicalRepOid) : null;
-
-  /** @param {any} order */
-  const isOrderFullyReturned = (order) => {
-    if (!order) return false;
-    if (order.status === ORDER_STATUS.RETURNED) return true;
-    if (!order.items?.length) return false;
-    return order.items.every((i) => (i.returnedQty || 0) >= (i.deliveredQty || 0));
-  };
-
-  const [deliveries, returns] = await Promise.all([
-    DeliveryRecord.find(deliveryFilter)
-      .populate({ path: 'orderId', select: 'items status medicalRepId' })
-      .lean(),
-    ReturnRecord.find(returnFilter)
-      .populate({ path: 'orderId', select: 'items status medicalRepId' })
-      .lean()
-  ]);
-
-  let deliveredTp = 0;
-  for (const d of deliveries) {
-    const order = d.orderId;
-    if (!order) continue;
-    if (repIdStr && String(order.medicalRepId) !== repIdStr) continue;
-    if (isOrderFullyReturned(order)) continue;
-    deliveredTp += roundPKR(d.tpSubtotal || 0);
-  }
-  deliveredTp = roundPKR(deliveredTp);
-
-  let returnedTp = 0;
-  for (const ret of returns) {
-    const order = ret.orderId;
-    if (!order) continue;
-    if (repIdStr && String(order.medicalRepId) !== repIdStr) continue;
-    if (isOrderFullyReturned(order)) continue;
-    for (const ri of ret.items || []) {
-      const oi = order.items.find((i) => String(i.productId) === String(ri.productId));
-      if (oi) returnedTp += roundPKR(Number(oi.tpAtTime) * Number(ri.quantity));
-    }
-  }
-  returnedTp = roundPKR(returnedTp);
-
-  return roundPKR(deliveredTp - returnedTp);
 };
 
 const dashboardForMedicalRep = async (cid, repOid, dateRange, tz) => {

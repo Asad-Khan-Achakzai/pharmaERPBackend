@@ -19,6 +19,11 @@ const updateTargetSchema = Joi.object({
   packsTarget: Joi.number().integer().min(0)
 }).min(1);
 
+const packsBreakdownQuerySchema = Joi.object({
+  medicalRepId: Joi.string().required(),
+  month: Joi.string().required().pattern(/^\d{4}-\d{2}$/)
+});
+
 const createWeeklyPlanSchema = Joi.object({
   medicalRepId: Joi.string(),
   weekStartDate: Joi.date().required(),
@@ -41,4 +46,10 @@ const updateWeeklyPlanSchema = Joi.object({
   status: Joi.string().valid('DRAFT', 'ACTIVE', 'COMPLETED', 'SUBMITTED', 'REVIEWED')
 }).min(1);
 
-module.exports = { createTargetSchema, updateTargetSchema, createWeeklyPlanSchema, updateWeeklyPlanSchema };
+module.exports = {
+  createTargetSchema,
+  updateTargetSchema,
+  packsBreakdownQuerySchema,
+  createWeeklyPlanSchema,
+  updateWeeklyPlanSchema
+};
