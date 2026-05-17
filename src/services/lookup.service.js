@@ -106,17 +106,29 @@ const doctors = async (companyId, query = {}) => {
   const searchTerm = qScalar(query.search);
   if (searchTerm) {
     const rx = escapeRegex(searchTerm);
-    f.name = { $regex: rx, $options: 'i' };
+    f.$or = [
+      { name: { $regex: rx, $options: 'i' } },
+      { specialization: { $regex: rx, $options: 'i' } },
+      { doctorBrick: { $regex: rx, $options: 'i' } },
+      { doctorCode: { $regex: rx, $options: 'i' } },
+      { city: { $regex: rx, $options: 'i' } },
+      { zone: { $regex: rx, $options: 'i' } }
+    ];
   }
   const rows = await Doctor.find(f)
-    .select('name pharmacyId')
+    .select('name pharmacyId specialization doctorBrick doctorCode city zone')
     .sort({ name: 1 })
     .limit(limit)
     .lean();
   return rows.map((d) => ({
     _id: d._id,
     name: d.name,
-    pharmacyId: d.pharmacyId
+    pharmacyId: d.pharmacyId,
+    specialization: d.specialization ?? null,
+    doctorBrick: d.doctorBrick ?? null,
+    doctorCode: d.doctorCode ?? null,
+    city: d.city ?? null,
+    zone: d.zone ?? null
   }));
 };
 
