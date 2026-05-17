@@ -250,7 +250,7 @@ const assertCallerCanManagePlan = async (companyId, planId, reqUser, action = 'r
     /** Rep cannot review/approve their own plan. */
     throw new ApiError(403, `Cannot ${action} your own plan`);
   }
-  const subtree = await resolveSubtreeUserIds(companyId, reqUser.userId, { includeSelf: false });
+  const subtree = await resolveSubtreeUserIds(companyId, reqUser.userId, { includeSelf: false, activeOnly: true });
   const inTree = subtree.some((id) => String(id) === String(repId));
   if (!inTree) {
     throw new ApiError(403, 'You can only ' + action + ' plans of users reporting to you');
@@ -273,7 +273,7 @@ const submit = async (companyId, planId, reqUser) => {
   const isOwner = String(plan.medicalRepId) === String(reqUser.userId);
   let isManagerOfOwner = false;
   if (!isAdmin && !isOwner) {
-    const subtree = await resolveSubtreeUserIds(companyId, reqUser.userId, { includeSelf: false });
+    const subtree = await resolveSubtreeUserIds(companyId, reqUser.userId, { includeSelf: false, activeOnly: true });
     isManagerOfOwner = subtree.some((id) => String(id) === String(plan.medicalRepId));
   }
   if (!(isAdmin || isOwner || isManagerOfOwner)) {
@@ -373,7 +373,7 @@ const pendingApprovals = async (companyId, reqUser) => {
   if (isAdmin) {
     userFilter = undefined;
   } else {
-    const subtree = await resolveSubtreeUserIds(companyId, reqUser.userId, { includeSelf: false });
+    const subtree = await resolveSubtreeUserIds(companyId, reqUser.userId, { includeSelf: false, activeOnly: true });
     if (!subtree.length) return [];
     userFilter = { $in: subtree };
   }

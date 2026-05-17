@@ -85,13 +85,14 @@ async function buildAllowedTerritoryIdSet(companyId, viewerUserId, permissions) 
 
   let userIds = [viewerUserId];
   if (perms.includes('team.viewAllReports')) {
-    userIds = await resolveSubtreeUserIds(companyId, viewerUserId, { includeSelf: true });
+    userIds = await resolveSubtreeUserIds(companyId, viewerUserId, { includeSelf: true, activeOnly: true });
   }
 
   const users = await User.find({
     _id: { $in: userIds },
     companyId: new mongoose.Types.ObjectId(String(companyId)),
-    isDeleted: { $ne: true }
+    isDeleted: { $ne: true },
+    isActive: true
   })
     .populate('roleId', 'code')
     .populate('territoryId', 'materializedPath kind')

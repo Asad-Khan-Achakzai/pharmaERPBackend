@@ -4,8 +4,11 @@ const User = require('../models/User');
 /**
  * Manager-scope resolver (Phase 1).
  *
- * Given a manager userId, returns the set of *active* user ids in their reporting subtree
+ * Given a manager userId, returns user ids in their reporting subtree
  * (descendants only by default; pass { includeSelf: true } to include the caller).
+ *
+ * Pass { activeOnly: true } to exclude inactive users (operational team / reports).
+ * Default activeOnly: false preserves hierarchy checks such as cycle detection.
  *
  * Implementation note: traversal is BFS on `managerId`. With Phase 1 hierarchy depth ≤ 4
  * (RM → ASM → MR; future: Director → RM → ASM → MR) the worst-case is a few hundred users
@@ -14,7 +17,11 @@ const User = require('../models/User');
  *
  * Soft-deleted users are excluded by the `User` softDelete plugin's auto-filter.
  */
-const resolveSubtreeUserIds = async (companyId, managerUserId, { includeSelf = false } = {}) => {
+const resolveSubtreeUserIds = async (
+  companyId,
+  managerUserId,
+  { includeSelf = false, activeOnly = false } = {}
+) => {
   if (!managerUserId || !mongoose.Types.ObjectId.isValid(managerUserId)) return [];
   const cid = new mongoose.Types.ObjectId(companyId);
   const rootId = new mongoose.Types.ObjectId(managerUserId);
@@ -23,12 +30,14 @@ const resolveSubtreeUserIds = async (companyId, managerUserId, { includeSelf = f
   let frontier = [rootId];
 
   while (frontier.length) {
-    const children = await User.find({
+    const q = {
       companyId: cid,
       managerId: { $in: frontier }
-    })
-      .select('_id')
-      .lean();
+    };
+    if (activeOnly) {
+      q.isActive = true;
+    }
+    const children = await User.find(q).select('_id').lean();
     if (!children.length) break;
     const next = [];
     for (const c of children) {
@@ -39,7 +48,21 @@ const resolveSubtreeUserIds = async (companyId, managerUserId, { includeSelf = f
     }
     frontier = next;
   }
-  return Array.from(collected, (s) => new mongoose.Types.ObjectId(s));
+
+  const list = Array.from(collected, (s) => new mongoose.Types.ObjectId(s));
+  if (!activeOnly || list.length === 0) {
+    return list;
+  }
+
+  const activeRows = await User.find({
+    _id: { $in: list },
+    companyId: cid,
+    isActive: true
+  })
+    .select('_id')
+    .lean();
+  const activeSet = new Set(activeRows.map((d) => String(d._id)));
+  return list.filter((oid) => activeSet.has(String(oid)));
 };
 
 /**
@@ -70,6 +93,8 @@ const assertNoCycle = async (companyId, userId, newManagerId) => {
  *
  * Throws 403 when `?scope=team` is requested by a user without `team.viewAllReports`
  * (or `admin.access`, which always satisfies). Throws 400 for unknown `scope` values.
+ *
+ * Team scope includes only active users in the reporting subtree (inactive users are excluded).
  */
 const { userHasPermission } = require('./effectivePermissions');
 
@@ -85,7 +110,7 @@ const resolveTeamScopeForRequest = async (req) => {
   if (!allowed) {
     throw new ApiError(403, 'scope=team requires team.viewAllReports permission');
   }
-  return resolveSubtreeUserIds(req.companyId, req.user.userId, { includeSelf: true });
+  return resolveSubtreeUserIds(req.companyId, req.user.userId, { includeSelf: true, activeOnly: true });
 };
 
 module.exports = { resolveSubtreeUserIds, assertNoCycle, resolveTeamScopeForRequest };

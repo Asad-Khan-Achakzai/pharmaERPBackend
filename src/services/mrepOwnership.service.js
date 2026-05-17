@@ -74,7 +74,7 @@ const ownedDoctorsFilter = async (companyId, repId) => {
   const cid = new mongoose.Types.ObjectId(String(companyId));
   const rid = new mongoose.Types.ObjectId(String(repId));
 
-  const rep = await User.findOne({ _id: rid, companyId: cid, isDeleted: { $ne: true } })
+  const rep = await User.findOne({ _id: rid, companyId: cid, isDeleted: { $ne: true }, isActive: true })
     .select('territoryId coverageTerritoryIds')
     .lean();
   if (!rep) return null;

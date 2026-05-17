@@ -40,7 +40,7 @@ const getTeamSummary = async (companyId, reqUser, timeZone) => {
         .lean()
     ).map((u) => u._id);
   } else {
-    subtreeUserIds = await resolveSubtreeUserIds(companyId, reqUser.userId, { includeSelf: true });
+    subtreeUserIds = await resolveSubtreeUserIds(companyId, reqUser.userId, { includeSelf: true, activeOnly: true });
   }
 
   if (!subtreeUserIds.length) {

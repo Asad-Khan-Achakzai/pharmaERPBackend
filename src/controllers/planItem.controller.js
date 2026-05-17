@@ -11,7 +11,10 @@ const listToday = asyncHandler(async (req, res) => {
     if (userHasPermission(req.user, 'admin.access')) {
       /* ok */
     } else if (userHasPermission(req.user, 'team.viewAllReports')) {
-      const subtree = await resolveSubtreeUserIds(req.companyId, req.user.userId, { includeSelf: true });
+      const subtree = await resolveSubtreeUserIds(req.companyId, req.user.userId, {
+        includeSelf: true,
+        activeOnly: true
+      });
       const ok = subtree.some((id) => String(id) === String(targetId));
       if (!ok) {
         throw new ApiError(403, 'You can only view plan items for yourself or your team');

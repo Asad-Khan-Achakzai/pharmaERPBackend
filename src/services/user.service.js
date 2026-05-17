@@ -436,10 +436,11 @@ const setStatus = async (companyId, id, { isActive }, reqUser) => {
 };
 
 /**
- * GET /users/team — reporting subtree by default.
+ * GET /users/team — reporting subtree by default (active users only).
  * - Tenant-wide operators only (SUPER_ADMIN in company, legacy ADMIN, DEFAULT_ADMIN role, `admin.access`):
- *   without `?managerId=`, returns all users in the company. With `?managerId=`, returns that manager's subtree.
- * - Everyone else (including `team.viewAllReports` roles such as Regional Manager): subtree of the target manager
+ *   without `?managerId=`, returns active users in the company. With `?managerId=`, returns that manager's active subtree.
+ *   Pass `includeInactive=true` to include deactivated accounts in the roster (admin / HR).
+ * - Everyone else (including `team.viewAllReports` roles such as Regional Manager): active subtree of the target manager
  *   (defaults to caller), same as before.
  */
 const listTeam = async (companyId, reqUser, query = {}) => {
@@ -448,8 +449,11 @@ const listTeam = async (companyId, reqUser, query = {}) => {
   const wholeCompany = !hasManagerFilter && userHasTenantWideAccess(reqUser);
 
   const baseFilter = { companyId };
+  const includeInactive = query.includeInactive === 'true' || query.includeInactive === true;
   if (query.isActive === 'true' || query.isActive === 'false') {
     baseFilter.isActive = query.isActive === 'true';
+  } else if (!includeInactive) {
+    baseFilter.isActive = true;
   }
   const term = qScalar(query.search);
   if (term) {
@@ -476,7 +480,8 @@ const listTeam = async (companyId, reqUser, query = {}) => {
     ? new mongoose.Types.ObjectId(query.managerId)
     : reqUser.userId;
   const subtreeIds = await resolveSubtreeUserIds(companyId, targetId, {
-    includeSelf: query.includeSelf === 'true' || query.includeSelf === true
+    includeSelf: query.includeSelf === 'true' || query.includeSelf === true,
+    activeOnly: true
   });
   if (!subtreeIds.length) return { docs: [], total: 0 };
 
@@ -496,7 +501,7 @@ const listDirectReports = async (companyId, id) => {
   if (!mongoose.Types.ObjectId.isValid(id)) {
     throw new ApiError(400, 'Invalid id format');
   }
-  const docs = await User.find({ companyId, managerId: id })
+  const docs = await User.find({ companyId, managerId: id, isActive: true })
     .sort({ name: 1 })
     .populate('roleId', 'name code')
     .populate('territoryId', 'name code kind')

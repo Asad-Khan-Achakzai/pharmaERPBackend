@@ -18,16 +18,27 @@ const {
 } = require('../utils/territoryCompareScope.util');
 
 const assertCanViewRep = async (companyId, viewerUser, repId) => {
+  const rep = await User.findOne({
+    _id: repId,
+    companyId,
+    isDeleted: { $ne: true },
+    isActive: true
+  })
+    .select('_id')
+    .lean();
+  if (!rep) throw new ApiError(404, 'Representative not found or inactive');
+
   const viewerUserId = viewerUser.userId;
   if (String(viewerUserId) === String(repId)) return;
 
   if (userHasTenantWideAccess(viewerUser)) {
-    const rep = await User.findOne({ _id: repId, companyId }).select('_id').lean();
-    if (!rep) throw new ApiError(404, 'Representative not found');
     return;
   }
 
-  const subtree = await resolveSubtreeUserIds(companyId, viewerUserId, { includeSelf: true });
+  const subtree = await resolveSubtreeUserIds(companyId, viewerUserId, {
+    includeSelf: true,
+    activeOnly: true
+  });
   const ok = subtree.some((id) => String(id) === String(repId));
   if (!ok) throw new ApiError(403, 'You cannot view this representative’s performance data');
 };
@@ -40,7 +51,7 @@ const resolveOverviewRepIds = async (companyId, viewerUser, explicitRepId) => {
   }
 
   if (userHasTenantWideAccess(viewerUser)) {
-    const docs = await User.find({ companyId, isDeleted: { $ne: true } })
+    const docs = await User.find({ companyId, isDeleted: { $ne: true }, isActive: true })
       .select('_id')
       .sort({ name: 1 })
       .lean();
@@ -48,8 +59,22 @@ const resolveOverviewRepIds = async (companyId, viewerUser, explicitRepId) => {
   }
 
   if (userHasPermission(viewerUser, 'team.viewAllReports')) {
-    const subtree = await resolveSubtreeUserIds(companyId, viewerUserId, { includeSelf: true });
-    return subtree.length ? subtree : [new mongoose.Types.ObjectId(String(viewerUserId))];
+    let ids = await resolveSubtreeUserIds(companyId, viewerUserId, {
+      includeSelf: true,
+      activeOnly: true
+    });
+    if (!ids.length) {
+      const selfActive = await User.findOne({
+        _id: viewerUserId,
+        companyId,
+        isDeleted: { $ne: true },
+        isActive: true
+      })
+        .select('_id')
+        .lean();
+      ids = selfActive ? [selfActive._id] : [];
+    }
+    return ids;
   }
 
   return [new mongoose.Types.ObjectId(String(viewerUserId))];
@@ -62,7 +87,8 @@ const monthlyOverview = async (companyId, viewerUser, yyyyMm, timeZone, { repId:
   const users = await User.find({
     _id: { $in: repOids },
     companyId,
-    isDeleted: { $ne: true }
+    isDeleted: { $ne: true },
+    isActive: true
   })
     .select('name email employeeCode')
     .lean();
@@ -102,7 +128,8 @@ const deviationSummary = async (companyId, viewerUser, yyyyMm, timeZone, { repId
   const users = await User.find({
     _id: { $in: repOids },
     companyId,
-    isDeleted: { $ne: true }
+    isDeleted: { $ne: true },
+    isActive: true
   })
     .select('name email employeeCode')
     .lean();

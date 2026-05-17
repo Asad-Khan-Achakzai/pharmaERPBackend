@@ -49,7 +49,7 @@ const resolveAttendanceVisibleUserIds = async (companyId, reqUser) => {
 
   /** Regional / multi-level hierarchy — full reporting subtree (RM and RM-like roles). */
   if (reqUser.roleCode && String(reqUser.roleCode) === DEFAULT_RM_CODE) {
-    return resolveSubtreeUserIds(companyId, reqUser.userId, { includeSelf: true });
+    return resolveSubtreeUserIds(companyId, reqUser.userId, { includeSelf: true, activeOnly: true });
   }
 
   /** ASM: direct reports + self (operational field manager scope). */
@@ -72,7 +72,7 @@ const resolveAttendanceVisibleUserIds = async (companyId, reqUser) => {
    * otherwise direct reports + self.
    */
   if ((reqUser.permissions || []).includes('team.viewAllReports')) {
-    return resolveSubtreeUserIds(companyId, reqUser.userId, { includeSelf: true });
+    return resolveSubtreeUserIds(companyId, reqUser.userId, { includeSelf: true, activeOnly: true });
   }
 
   const direct = await User.find({
