@@ -33,6 +33,7 @@ const superAdminRoutes = require('./superAdmin.routes');
 const platformRoutes = require('./platform.routes');
 const territoryRoutes = require('./territory.routes');
 const territoryImportRoutes = require('./territoryImport.routes');
+const onboardingRoutes = require('./onboarding.routes');
 
 router.use('/auth', authRoutes);
 router.use('/super-admin', superAdminRoutes);
@@ -68,5 +69,6 @@ router.use('/procurement', procurementRoutes);
 router.use('/audit-logs', auditLogRoutes);
 router.use('/territories/import', territoryImportRoutes);
 router.use('/territories', territoryRoutes);
+router.use('/onboarding', onboardingRoutes);
 
 module.exports = router;

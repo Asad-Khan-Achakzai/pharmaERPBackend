@@ -15,6 +15,10 @@ const createCompanySchema = Joi.object({
   strictVisitSequence: Joi.boolean(),
   mrepMultiTerritory: Joi.boolean(),
   mrepOwnershipAudit: Joi.boolean(),
+  onboardingEnabled: Joi.boolean(),
+  onboardingStrictValidation: Joi.boolean(),
+  onboardingKillSwitch: Joi.boolean(),
+  onboardingPilotCohort: Joi.string().trim().allow('', null).max(64),
   isActive: Joi.boolean().default(true)
 });
 
@@ -33,6 +37,10 @@ const updateCompanySchema = Joi.object({
   strictVisitSequence: Joi.boolean(),
   mrepMultiTerritory: Joi.boolean(),
   mrepOwnershipAudit: Joi.boolean(),
+  onboardingEnabled: Joi.boolean(),
+  onboardingStrictValidation: Joi.boolean(),
+  onboardingKillSwitch: Joi.boolean(),
+  onboardingPilotCohort: Joi.string().trim().allow('', null).max(64),
   isActive: Joi.boolean()
 })
   .min(1)

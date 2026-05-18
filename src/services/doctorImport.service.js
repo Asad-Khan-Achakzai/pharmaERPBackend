@@ -9,6 +9,7 @@ const mongoose = require('mongoose');
 const Doctor = require('../models/Doctor');
 const ApiError = require('../utils/ApiError');
 const auditService = require('./audit.service');
+const { loadRowsFromWorkbook, sanitizeMapping } = require('./importEngine/adapterRunner');
 const { createDoctorSchema } = require('../validators/doctor.validator');
 const {
   FIELDS,
@@ -25,99 +26,15 @@ const CHUNK_SIZE = 200;
 const MAX_FILE_BYTES = 8 * 1024 * 1024; // 8MB raw xlsx (well under express.json 10mb base64 envelope)
 const ERRORS_INLINE_LIMIT = 200;
 
-const decodeFile = (fileBase64) => {
-  if (!fileBase64 || typeof fileBase64 !== 'string') {
-    throw new ApiError(400, 'fileBase64 is required');
-  }
-  const stripped = fileBase64.includes(',') ? fileBase64.split(',').pop() : fileBase64;
-  let buf;
-  try {
-    buf = Buffer.from(stripped, 'base64');
-  } catch (e) {
-    throw new ApiError(400, 'Invalid base64 file payload');
-  }
-  if (!buf || buf.length === 0) throw new ApiError(400, 'Uploaded file is empty');
-  if (buf.length > MAX_FILE_BYTES) {
-    throw new ApiError(400, `File too large. Max ${Math.round(MAX_FILE_BYTES / 1024 / 1024)} MB.`);
-  }
-  return buf;
-};
-
-const readWorkbook = (buffer) => {
-  let wb;
-  try {
-    wb = XLSX.read(buffer, { type: 'buffer', cellDates: false, cellNF: false, cellText: true });
-  } catch (e) {
-    throw new ApiError(400, 'Could not read the Excel file. Make sure it is a valid .xlsx');
-  }
-  if (!wb.SheetNames || wb.SheetNames.length === 0) {
-    throw new ApiError(400, 'The workbook has no sheets');
-  }
-  return wb;
-};
-
-/** Reads the first non-empty row as headers; returns { headers[], rows[] } where rows is array of plain objects keyed by header. */
-const readSheetAsRecords = (wb, sheetName) => {
-  const name = sheetName && wb.Sheets[sheetName] ? sheetName : wb.SheetNames[0];
-  const ws = wb.Sheets[name];
-  if (!ws) throw new ApiError(400, `Sheet "${name}" not found`);
-
-  // raw:false coerces numbers/dates to display strings — safer for phone numbers.
-  const grid = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: false, blankrows: false });
-  if (!grid.length) return { sheet: name, headers: [], rows: [] };
-
-  // Some files have a title row; pick the first row that has at least 2 non-empty cells as headers.
-  let headerRowIdx = 0;
-  for (let i = 0; i < Math.min(grid.length, 5); i += 1) {
-    const cells = grid[i] || [];
-    const non = cells.filter((c) => c != null && String(c).trim() !== '').length;
-    if (non >= 2) {
-      headerRowIdx = i;
-      break;
-    }
-  }
-  const headerRow = (grid[headerRowIdx] || []).map((c) => (c == null ? '' : String(c).trim()));
-  // Disambiguate empty / duplicate headers so each column has a unique key.
-  // First occurrence keeps the original label (so client-side mapping still resolves);
-  // subsequent collisions get a numeric suffix.
-  const seenHeader = new Map();
-  const headers = headerRow.map((h, i) => {
-    const base = h || `Column ${i + 1}`;
-    const count = seenHeader.get(base) || 0;
-    seenHeader.set(base, count + 1);
-    return count === 0 ? base : `${base} (${count + 1})`;
-  });
-
-  const rows = [];
-  for (let r = headerRowIdx + 1; r < grid.length; r += 1) {
-    const arr = grid[r] || [];
-    const obj = {};
-    let hasAny = false;
-    for (let c = 0; c < headers.length; c += 1) {
-      const v = arr[c];
-      obj[headers[c]] = v == null ? '' : String(v);
-      if (v != null && String(v).trim() !== '') hasAny = true;
-    }
-    obj.__rowNumber = r + 1; // 1-based to match Excel
-    if (hasAny) rows.push(obj);
-  }
-
-  return { sheet: name, headers, rows };
-};
-
 /* ----------------------------- Public service API ----------------------------- */
 
 const previewWorkbook = async (fileBase64, sheetName) => {
-  const buffer = decodeFile(fileBase64);
-  const wb = readWorkbook(buffer);
-  const { sheet, headers, rows } = readSheetAsRecords(wb, sheetName);
-
-  if (rows.length > MAX_ROWS) {
-    throw new ApiError(
-      400,
-      `This file has ${rows.length} rows. Max ${MAX_ROWS} per import — please split the file and try again.`
-    );
-  }
+  const { wb, sheet, headers, rows } = loadRowsFromWorkbook({
+    fileBase64,
+    sheetName,
+    maxFileBytes: MAX_FILE_BYTES,
+    maxRows: MAX_ROWS
+  });
 
   const mapping = inferMapping(headers);
   const sample = rows.slice(0, PREVIEW_ROWS).map((r) => {
@@ -166,23 +83,15 @@ const validateRow = (payload) => {
 };
 
 const commitWorkbook = async (companyId, reqUser, fileBase64, mappingFromClient, options = {}) => {
-  const buffer = decodeFile(fileBase64);
-  const wb = readWorkbook(buffer);
-  const { sheet, headers, rows } = readSheetAsRecords(wb, options.sheet);
-
-  if (rows.length > MAX_ROWS) {
-    throw new ApiError(
-      400,
-      `This file has ${rows.length} rows. Max ${MAX_ROWS} per import — please split the file and try again.`
-    );
-  }
+  const { sheet, headers, rows } = loadRowsFromWorkbook({
+    fileBase64,
+    sheetName: options.sheet,
+    maxFileBytes: MAX_FILE_BYTES,
+    maxRows: MAX_ROWS
+  });
 
   // Trust the server-built mapping shape; only accept canonical keys.
-  const mapping = {};
-  for (const f of FIELDS) {
-    const h = mappingFromClient ? mappingFromClient[f] : null;
-    mapping[f] = h && headers.includes(h) ? h : null;
-  }
+  const mapping = sanitizeMapping({ fields: FIELDS, headers, mappingFromClient });
   if (!mapping.name) {
     throw new ApiError(400, 'Doctor Name column must be mapped before import');
   }
@@ -428,7 +337,7 @@ module.exports = {
   commitWorkbook,
   buildTemplateBuffer,
   // Exposed for tests / future use
-  _internals: { decodeFile, readWorkbook, readSheetAsRecords, validateRow }
+  _internals: { validateRow }
 };
 
 // Quiet linter: mongoose import kept for future use (e.g. ObjectId casts).

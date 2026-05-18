@@ -34,5 +34,12 @@ module.exports = {
   GoodsReceiptNote: require('./GoodsReceiptNote'),
   GoodsReceiptLine: require('./GoodsReceiptLine'),
   SupplierInvoice: require('./SupplierInvoice'),
-  Settlement: require('./Settlement')
+  Settlement: require('./Settlement'),
+  OnboardingSession: require('./OnboardingSession'),
+  ImportJob: require('./ImportJob'),
+  ImportJobRow: require('./ImportJobRow'),
+  ImportCommit: require('./ImportCommit'),
+  MigrationReconciliation: require('./MigrationReconciliation'),
+  MigrationAuditEvent: require('./MigrationAuditEvent'),
+  HistoricalImportArchive: require('./HistoricalImportArchive')
 };

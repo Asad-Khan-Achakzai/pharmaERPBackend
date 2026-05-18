@@ -7,7 +7,8 @@
     "start": "node server.js",
     "test": "node --test src/utils/orderBackdate.test.js",
     "dev": "nodemon server.js",
-    "add-super-admin": "node scripts/addSuperAdmin.js"
+    "add-super-admin": "node scripts/addSuperAdmin.js",
+    "migrate:tenant-safety-indexes": "node scripts/migrateTenantSafetyIndexes.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

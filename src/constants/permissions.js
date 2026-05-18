@@ -55,6 +55,11 @@ const PERMISSIONS = {
   team:         ['view', 'manage', 'viewAllReports'],
   /** MRep territory tree (Zone/Area/Brick). `manage` covers create/edit/delete; `view` is read-only. */
   territories:  ['view', 'manage'],
+  /**
+   * Enterprise onboarding & migration orchestration.
+   * `manage` controls session/step transitions; `import` runs jobs; `approveGoLive` finalizes cutover.
+   */
+  onboarding:   ['view', 'manage', 'import', 'approveGoLive', 'rollback'],
   platform:     ['dashboard.view', 'companies.manage']
 };
 

@@ -12,6 +12,7 @@ const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const { generateTokens } = require('./auth.tokens');
 const { formatUserForClient } = require('../utils/authUserPayload');
+const { tenantAggregateMatch } = require('../utils/tenantAggregate');
 
 const { resolveCompanyTimeZone } = require('../utils/countryTimeZone');
 const { Info } = require('luxon');
@@ -69,8 +70,8 @@ const getCompanySummary = async (companyId) => {
   const exists = await Company.findById(companyId);
   if (!exists) throw new ApiError(404, 'Company not found');
 
-  const cid = new mongoose.Types.ObjectId(companyId);
-  const base = { companyId: cid, ...notDeleted };
+  const base = tenantAggregateMatch(companyId);
+  const cid = base.companyId;
 
   const [
     totalUsers,

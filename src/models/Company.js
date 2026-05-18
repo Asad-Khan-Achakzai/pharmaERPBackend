@@ -54,6 +54,11 @@ const companySchema = new mongoose.Schema(
      * When true with attendanceApprovalsEnabled + lateMinutes on check-in, submit a linked LATE_ARRIVAL workflow (non-blocking).
      */
     autoRequestOnLateCheckIn: { type: Boolean, default: false },
+    /** Onboarding controls (enterprise rollout) */
+    onboardingEnabled: { type: Boolean, default: false },
+    onboardingStrictValidation: { type: Boolean, default: false },
+    onboardingKillSwitch: { type: Boolean, default: false },
+    onboardingPilotCohort: { type: String, trim: true, maxlength: 64, default: '' },
     /**
      * Attendance request automation (all optional; defaults preserve legacy behaviour).
      */

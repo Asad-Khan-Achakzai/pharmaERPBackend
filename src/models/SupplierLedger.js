@@ -54,8 +54,8 @@ const supplierLedgerSchema = new mongoose.Schema(
       enum: [...Object.values(SUPPLIER_PAYMENT_VERIFICATION)],
       default: SUPPLIER_PAYMENT_VERIFICATION.UNVERIFIED
     },
-    /** Printable voucher id (unique when set) */
-    voucherNumber: { type: String, trim: true, sparse: true, unique: true },
+    /** Printable voucher id (tenant-unique when set) */
+    voucherNumber: { type: String, trim: true, default: null },
     /** PAYMENT rows: partial allocation against supplier invoices (Phase 4+) */
     paymentAllocations: { type: [supplierPaymentAllocationSchema], default: undefined }
   },
@@ -66,6 +66,10 @@ supplierLedgerSchema.index({ companyId: 1, supplierId: 1, date: -1 });
 supplierLedgerSchema.index({ companyId: 1, type: 1, date: -1 });
 supplierLedgerSchema.index({ companyId: 1, referenceType: 1, referenceId: 1 });
 supplierLedgerSchema.index({ companyId: 1, type: 1, supplierId: 1, date: -1 });
+supplierLedgerSchema.index(
+  { companyId: 1, voucherNumber: 1 },
+  { unique: true, partialFilterExpression: { voucherNumber: { $type: 'string' }, isDeleted: { $ne: true } } }
+);
 
 supplierLedgerSchema.plugin(softDeletePlugin);
 
