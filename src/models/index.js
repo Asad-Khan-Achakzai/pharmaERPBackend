@@ -41,5 +41,8 @@ module.exports = {
   ImportCommit: require('./ImportCommit'),
   MigrationReconciliation: require('./MigrationReconciliation'),
   MigrationAuditEvent: require('./MigrationAuditEvent'),
-  HistoricalImportArchive: require('./HistoricalImportArchive')
+  HistoricalImportArchive: require('./HistoricalImportArchive'),
+  DeviceSession: require('./DeviceSession'),
+  IdempotencyRecord: require('./IdempotencyRecord'),
+  MediaAsset: require('./MediaAsset')
 };

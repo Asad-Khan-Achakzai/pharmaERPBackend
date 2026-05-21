@@ -2,14 +2,18 @@
  * Tenant-scoped lookup rows for form dropdowns (auth + companyScope only; no resource.view).
  * Returns data required for UIs (e.g. order create needs TP/discount fields), not full admin records.
  */
+const mongoose = require('mongoose');
 const Distributor = require('../models/Distributor');
 const Product = require('../models/Product');
 const Pharmacy = require('../models/Pharmacy');
 const Doctor = require('../models/Doctor');
 const User = require('../models/User');
 const Supplier = require('../models/Supplier');
+const mrepOwnership = require('./mrepOwnership.service');
 const { escapeRegex, qScalar } = require('../utils/listQuery');
 const { ADMIN_ACCESS } = require('../constants/rbac');
+const { userHasTenantWideAccess } = require('../utils/effectivePermissions');
+const { resolveSubtreeUserIds } = require('../utils/teamScope');
 
 const LOOKUP_MAX = Math.min(100, Number(process.env.LOOKUP_MAX) || 100);
 
@@ -103,6 +107,22 @@ const doctors = async (companyId, query = {}) => {
   const base = { companyId };
   const f = applyActive(base, query);
   if (query.pharmacyId) f.pharmacyId = query.pharmacyId;
+
+  let territoryFilter = null;
+  if (query.underTerritoryId && mongoose.Types.ObjectId.isValid(query.underTerritoryId)) {
+    const brickIds = await mrepOwnership.brickIdsForTerritoryNode(companyId, query.underTerritoryId);
+    if (!brickIds.length) return [];
+    territoryFilter = { $in: brickIds };
+  } else if (query.territoryId && mongoose.Types.ObjectId.isValid(query.territoryId)) {
+    territoryFilter = new mongoose.Types.ObjectId(query.territoryId);
+  }
+  if (territoryFilter !== null) {
+    f.territoryId = territoryFilter;
+  }
+  if (query.assignedRepId && mongoose.Types.ObjectId.isValid(query.assignedRepId)) {
+    f.assignedRepId = new mongoose.Types.ObjectId(query.assignedRepId);
+  }
+
   const searchTerm = qScalar(query.search);
   if (searchTerm) {
     const rx = escapeRegex(searchTerm);
@@ -116,7 +136,8 @@ const doctors = async (companyId, query = {}) => {
     ];
   }
   const rows = await Doctor.find(f)
-    .select('name pharmacyId specialization doctorBrick doctorCode city zone')
+    .select('name pharmacyId specialization doctorBrick doctorCode city zone territoryId assignedRepId')
+    .populate('territoryId', 'name code kind')
     .sort({ name: 1 })
     .limit(limit)
     .lean();
@@ -128,14 +149,24 @@ const doctors = async (companyId, query = {}) => {
     doctorBrick: d.doctorBrick ?? null,
     doctorCode: d.doctorCode ?? null,
     city: d.city ?? null,
-    zone: d.zone ?? null
+    zone: d.zone ?? null,
+    territoryId: d.territoryId ?? null,
+    assignedRepId: d.assignedRepId ?? null
   }));
 };
 
 /** Same semantics as order assignable reps: active company users (minimal fields for dropdowns). */
-const assignableUsers = async (companyId, query = {}) => {
+const assignableUsers = async (companyId, query = {}, reqUser = null) => {
   const limit = clampLimit(query);
   const filter = { companyId, isActive: true };
+  const scopeTeam = qScalar(query.scope) === 'team';
+  if (scopeTeam && reqUser && !userHasTenantWideAccess(reqUser)) {
+    const subtreeIds = await resolveSubtreeUserIds(companyId, reqUser.userId, {
+      includeSelf: true,
+      activeOnly: true
+    });
+    filter._id = subtreeIds.length ? { $in: subtreeIds } : { $in: [] };
+  }
   const searchTerm = qScalar(query.search);
   if (searchTerm) {
     const rx = escapeRegex(searchTerm);

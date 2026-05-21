@@ -34,7 +34,13 @@ const platformRoutes = require('./platform.routes');
 const territoryRoutes = require('./territory.routes');
 const territoryImportRoutes = require('./territoryImport.routes');
 const onboardingRoutes = require('./onboarding.routes');
+const mobileAuthRoutes = require('./mobileAuth.routes');
+const syncRoutes = require('./sync.routes');
+const mediaRoutes = require('./media.routes');
 
+router.use('/auth/mobile', mobileAuthRoutes);
+router.use('/sync', syncRoutes);
+router.use('/media', mediaRoutes);
 router.use('/auth', authRoutes);
 router.use('/super-admin', superAdminRoutes);
 router.use('/platform', platformRoutes);

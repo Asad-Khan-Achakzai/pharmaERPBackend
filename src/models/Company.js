@@ -96,7 +96,16 @@ const companySchema = new mongoose.Schema(
         message: 'Company timeZone must be a valid IANA timezone identifier'
       }
     },
-    isActive: { type: Boolean, default: true }
+    isActive: { type: Boolean, default: true },
+    /**
+     * Mobile feature flags (Phase 0 additive). All default false so existing
+     * companies remain unaffected until explicitly opted in.
+     */
+    mobileEnabled: { type: Boolean, default: true },
+    mobilePushEnabled: { type: Boolean, default: false },
+    attendanceGeofenceEnabled: { type: Boolean, default: false },
+    doctorApprovalRequired: { type: Boolean, default: false },
+    liveTrackingEnabled: { type: Boolean, default: false }
   },
   { timestamps: true }
 );

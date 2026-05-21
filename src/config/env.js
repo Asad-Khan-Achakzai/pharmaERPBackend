@@ -22,7 +22,30 @@ const schema = Joi.object({
       if (!Number.isFinite(n) || n < 0) return 0;
       return Math.min(n, 100);
     })
-    .default(0)
+    .default(0),
+  /**
+   * Mobile media flags (Phase 0 additive). When false, /media/* endpoints
+   * return 503 MEDIA_DISABLED and the mobile UI shows non-interactive shells.
+   * Defaults are intentionally false until S3-like storage is configured for
+   * the tenant. Core flows (visits, orders, attendance, expenses) MUST work
+   * with every flag disabled.
+   */
+  ENABLE_MEDIA_UPLOAD: Joi.string().valid('0', '1').default('0'),
+  ENABLE_VISIT_PHOTOS: Joi.string().valid('0', '1').default('0'),
+  ENABLE_EXPENSE_RECEIPTS: Joi.string().valid('0', '1').default('0'),
+  ENABLE_PRODUCT_MEDIA: Joi.string().valid('0', '1').default('0'),
+  /**
+   * Optional storage configuration. Only consulted when ENABLE_MEDIA_UPLOAD=1.
+   * Leave blank to keep media disabled.
+   */
+  MEDIA_STORAGE_PROVIDER: Joi.string().valid('none', 's3', 'gcs').default('none'),
+  MEDIA_BUCKET: Joi.string().allow('').default(''),
+  MEDIA_REGION: Joi.string().allow('').default(''),
+  MEDIA_PUBLIC_BASE_URL: Joi.string().allow('').default(''),
+  MEDIA_MAX_FILE_SIZE: Joi.number().integer().default(5 * 1024 * 1024),
+  /** Mobile sync defaults. */
+  MOBILE_SYNC_PAGE_SIZE: Joi.number().integer().min(10).max(500).default(50),
+  MOBILE_SYNC_POLL_INTERVAL_MS: Joi.number().integer().min(15000).default(60000)
 }).unknown(true);
 
 const { value: env, error } = schema.validate(process.env, { convert: true });

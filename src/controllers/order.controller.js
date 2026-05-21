@@ -2,9 +2,15 @@ const path = require('path');
 const orderService = require('../services/order.service');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../middleware/asyncHandler');
+const { resolveOrderVisibleMedicalRepIds } = require('../utils/orderScope.util');
+
+const visibleRepIdsFor = (req) => resolveOrderVisibleMedicalRepIds(req.companyId, req.user);
 
 const list = asyncHandler(async (req, res) => {
-  const result = await orderService.list(req.companyId, req.query, req.context.timeZone);
+  const visibleRepIds = await visibleRepIdsFor(req);
+  const result = await orderService.list(req.companyId, req.query, req.context.timeZone, {
+    visibleRepIds
+  });
   ApiResponse.paginated(res, result);
 });
 
@@ -14,35 +20,58 @@ const create = asyncHandler(async (req, res) => {
 });
 
 const getById = asyncHandler(async (req, res) => {
-  const order = await orderService.getById(req.companyId, req.params.id);
+  const visibleRepIds = await visibleRepIdsFor(req);
+  const order = await orderService.getById(req.companyId, req.params.id, { visibleRepIds });
   ApiResponse.success(res, order);
 });
 
 const update = asyncHandler(async (req, res) => {
-  const order = await orderService.update(req.companyId, req.params.id, req.body, req.user);
+  const visibleRepIds = await visibleRepIdsFor(req);
+  const order = await orderService.update(req.companyId, req.params.id, req.body, req.user, {
+    visibleRepIds
+  });
   ApiResponse.success(res, order, 'Order updated');
 });
 
 const deliver = asyncHandler(async (req, res) => {
-  const delivery = await orderService.deliver(req.companyId, req.params.id, req.body, req.user, req.context.timeZone);
+  const visibleRepIds = await visibleRepIdsFor(req);
+  const delivery = await orderService.deliver(
+    req.companyId,
+    req.params.id,
+    req.body,
+    req.user,
+    req.context.timeZone,
+    { visibleRepIds }
+  );
   ApiResponse.success(res, delivery, 'Order delivered successfully');
 });
 
 const returnOrder = asyncHandler(async (req, res) => {
-  const returnRecord = await orderService.returnOrder(req.companyId, req.params.id, req.body.items, req.user, req.context.timeZone);
+  const visibleRepIds = await visibleRepIdsFor(req);
+  const returnRecord = await orderService.returnOrder(
+    req.companyId,
+    req.params.id,
+    req.body.items,
+    req.user,
+    req.context.timeZone,
+    { visibleRepIds }
+  );
   ApiResponse.success(res, returnRecord, 'Return processed successfully');
 });
 
 const cancel = asyncHandler(async (req, res) => {
-  await orderService.cancel(req.companyId, req.params.id, req.user);
+  const visibleRepIds = await visibleRepIdsFor(req);
+  await orderService.cancel(req.companyId, req.params.id, req.user, { visibleRepIds });
   ApiResponse.success(res, null, 'Order cancelled');
 });
 
 const downloadDeliveryInvoice = asyncHandler(async (req, res) => {
+  const visibleRepIds = await visibleRepIdsFor(req);
   const absPath = await orderService.ensureDeliveryInvoicePdfPath(
     req.companyId,
     req.params.orderId,
-    req.params.deliveryId
+    req.params.deliveryId,
+    { visibleRepIds }
   );
   const filename = path.basename(absPath);
   res.setHeader('Content-Type', 'application/pdf');

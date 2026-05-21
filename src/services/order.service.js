@@ -32,6 +32,10 @@ const {
   applyCreatedAtRangeFromQuery,
   applyCreatedByFromQuery
 } = require('../utils/listQuery');
+const {
+  applyOrderMedicalRepScope,
+  assertOrderVisibleToUser
+} = require('../utils/orderScope.util');
 
 const resolveVisitLogRef = async (companyId, visitLogId, { doctorId, medicalRepId }) => {
   if (visitLogId == null || visitLogId === '') return null;
@@ -86,7 +90,7 @@ const buildLineItemsFromPayload = (data, productMap, pharmacy, distributor) => {
   });
 };
 
-const list = async (companyId, query, timeZone = 'UTC') => {
+const list = async (companyId, query, timeZone = 'UTC', opts = {}) => {
   const { page, limit, skip, sort, search } = parsePagination(query);
   const searchTerm = qScalar(search);
   const filter = { companyId };
@@ -105,7 +109,7 @@ const list = async (companyId, query, timeZone = 'UTC') => {
   }
   if (query.distributorId) filter.distributorId = query.distributorId;
   if (query.pharmacyId) filter.pharmacyId = query.pharmacyId;
-  if (query.medicalRepId) filter.medicalRepId = query.medicalRepId;
+  applyOrderMedicalRepScope(filter, opts.visibleRepIds ?? null, query.medicalRepId);
   applyCreatedByFromQuery(filter, query);
   applyCreatedAtRangeFromQuery(filter, query, timeZone);
   if (searchTerm) {
@@ -202,7 +206,7 @@ const create = async (companyId, data, reqUser, _timeZone) => {
   return order;
 };
 
-const getById = async (companyId, id) => {
+const getById = async (companyId, id, opts = {}) => {
   const order = await Order.findOne({ _id: id, companyId })
     .populate('pharmacyId', 'name city address phone bonusScheme discountOnTP')
     .populate('doctorId', 'name specialization')
@@ -211,6 +215,7 @@ const getById = async (companyId, id) => {
     .populate('visitLogId', 'visitTime doctorId employeeId')
     .populate('items.productId', 'name composition mrp tp casting');
   if (!order) throw new ApiError(404, 'Order not found');
+  assertOrderVisibleToUser(order, opts.visibleRepIds ?? null);
 
   const [deliveries, returns] = await Promise.all([
     DeliveryRecord.find({ companyId, orderId: id }).populate('deliveredBy', 'name').sort({ deliveredAt: -1 }),
@@ -220,9 +225,10 @@ const getById = async (companyId, id) => {
   return { ...order.toObject(), deliveries, returns };
 };
 
-const update = async (companyId, id, data, reqUser) => {
+const update = async (companyId, id, data, reqUser, opts = {}) => {
   const order = await Order.findOne({ _id: id, companyId });
   if (!order) throw new ApiError(404, 'Order not found');
+  assertOrderVisibleToUser(order, opts.visibleRepIds ?? null);
   if (order.status !== ORDER_STATUS.PENDING) throw new ApiError(400, 'Only pending orders can be edited');
 
   const before = order.toObject();
@@ -288,7 +294,7 @@ const update = async (companyId, id, data, reqUser) => {
   return order;
 };
 
-const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC') => {
+const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts = {}) => {
   const tz = requireCompanyIanaZone(timeZone);
   const deliveryItems = body.items;
   const businessDate = utcNow();
@@ -299,6 +305,7 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC') => {
   try {
     const order = await Order.findOne({ _id: orderId, companyId }).session(session);
     if (!order) throw new ApiError(404, 'Order not found');
+    assertOrderVisibleToUser(order, opts.visibleRepIds ?? null);
     if (![ORDER_STATUS.PENDING, ORDER_STATUS.PARTIALLY_DELIVERED].includes(order.status)) {
       throw new ApiError(400, 'Order cannot be delivered in its current status');
     }
@@ -475,7 +482,7 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC') => {
   }
 };
 
-const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 'UTC') => {
+const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 'UTC', opts = {}) => {
   const tz = requireCompanyIanaZone(timeZone);
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -483,6 +490,7 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
   try {
     const order = await Order.findOne({ _id: orderId, companyId }).session(session);
     if (!order) throw new ApiError(404, 'Order not found');
+    assertOrderVisibleToUser(order, opts.visibleRepIds ?? null);
     if (![ORDER_STATUS.DELIVERED, ORDER_STATUS.PARTIALLY_DELIVERED, ORDER_STATUS.PARTIALLY_RETURNED].includes(order.status)) {
       throw new ApiError(400, 'Order cannot be returned in its current status');
     }
@@ -676,9 +684,10 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
   }
 };
 
-const cancel = async (companyId, id, reqUser) => {
+const cancel = async (companyId, id, reqUser, opts = {}) => {
   const order = await Order.findOne({ _id: id, companyId });
   if (!order) throw new ApiError(404, 'Order not found');
+  assertOrderVisibleToUser(order, opts.visibleRepIds ?? null);
   if (order.status !== ORDER_STATUS.PENDING) throw new ApiError(400, 'Only pending orders can be cancelled');
   order.status = ORDER_STATUS.CANCELLED;
   order.updatedBy = reqUser.userId;
@@ -687,7 +696,11 @@ const cancel = async (companyId, id, reqUser) => {
   return order;
 };
 
-const ensureDeliveryInvoicePdfPath = async (companyId, orderId, deliveryId) => {
+const ensureDeliveryInvoicePdfPath = async (companyId, orderId, deliveryId, opts = {}) => {
+  const order = await Order.findOne({ _id: orderId, companyId }).select('medicalRepId');
+  if (!order) throw new ApiError(404, 'Order not found');
+  assertOrderVisibleToUser(order, opts.visibleRepIds ?? null);
+
   const delivery = await DeliveryRecord.findOne({
     _id: deliveryId,
     companyId,
