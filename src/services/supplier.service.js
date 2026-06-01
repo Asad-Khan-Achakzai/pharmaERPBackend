@@ -21,6 +21,8 @@ const {
   SUPPLIER_INVOICE_STATUS
 } = require('../constants/enums');
 const auditService = require('./audit.service');
+const glBridge = require('./glBridge.service');
+const moneyAccountService = require('./moneyAccount.service');
 const logger = require('../utils/logger');
 const { generateSupplierPaymentPdf } = require('../utils/supplierPaymentPdf');
 
@@ -169,6 +171,20 @@ const recordPurchaseFromStockTransfer = async (
     ],
     session ? { session } : {}
   );
+  if (session) {
+    await glBridge.postPurchaseGl(
+      session,
+      companyId,
+      {
+        supplierId: sid,
+        amount: purchaseAmount,
+        referenceId: stockTransferId,
+        date: new Date(),
+        supplierLedgerEntryId: row._id
+      },
+      reqUser
+    );
+  }
   return row;
 };
 
@@ -282,6 +298,23 @@ const recordPurchaseFromGrn = async ({ session, companyId, supplierId, grnId, am
     ],
     session ? { session } : {}
   );
+
+  if (session) {
+    await glBridge.postPurchaseGl(
+      session,
+      companyId,
+      {
+        supplierId,
+        amount: a,
+        referenceId: grnId,
+        date: new Date(),
+        narration: notes || 'GRN purchase',
+        supplierLedgerEntryId: row._id
+      },
+      reqUser
+    );
+  }
+
   return row;
 };
 
@@ -289,7 +322,7 @@ const recordManualPurchase = async (companyId, supplierId, { amount, date, notes
   await getById(companyId, supplierId);
   const a = roundPKR(amount);
   if (a <= 0) throw new ApiError(400, 'Amount must be positive');
-  return SupplierLedger.create({
+  const row = await SupplierLedger.create({
     companyId: oid(companyId),
     supplierId: oid(supplierId),
     type: SUPPLIER_LEDGER_TYPE.PURCHASE,
@@ -299,6 +332,19 @@ const recordManualPurchase = async (companyId, supplierId, { amount, date, notes
     notes: notes || 'Manual purchase / adjustment',
     createdBy: reqUser.userId
   });
+  await glBridge.postPurchaseGl(
+    null,
+    companyId,
+    {
+      supplierId,
+      amount: a,
+      referenceId: row._id,
+      date: row.date,
+      supplierLedgerEntryId: row._id
+    },
+    reqUser
+  );
+  return row;
 };
 
 const recordPayment = async (companyId, supplierId, body, reqUser) => {
@@ -306,6 +352,8 @@ const recordPayment = async (companyId, supplierId, body, reqUser) => {
   const a = roundPKR(body.amount);
   if (a <= 0) throw new ApiError(400, 'Amount must be positive');
   if (!body.paymentMethod) throw new ApiError(400, 'paymentMethod is required');
+
+  const moneyAcc = await moneyAccountService.assertMoneyAccount(companyId, body.moneyAccountId);
 
   let paymentAllocations;
   if (body.paymentAllocations && body.paymentAllocations.length > 0) {
@@ -352,6 +400,8 @@ const recordPayment = async (companyId, supplierId, body, reqUser) => {
       body.notes != null && String(body.notes).trim() !== '' ? String(body.notes).trim() : 'Payment to supplier',
     createdBy: reqUser.userId,
     paymentMethod: body.paymentMethod,
+    moneyAccountId: moneyAcc._id,
+    moneyAccountNature: moneyAcc.moneyAccountNature || (moneyAcc.isBank ? 'BANK' : 'CASH'),
     referenceNumber: body.referenceNumber || undefined,
     attachmentUrl: body.attachmentUrl || undefined,
     verificationStatus: body.verificationStatus || SUPPLIER_PAYMENT_VERIFICATION.UNVERIFIED,
@@ -374,6 +424,22 @@ const recordPayment = async (companyId, supplierId, body, reqUser) => {
     entityId: row._id,
     changes: { after: row.toObject() }
   });
+
+  await glBridge.postSupplierPaymentGl(
+    null,
+    companyId,
+    {
+      supplierId,
+      amount: a,
+      paymentMethod: body.paymentMethod,
+      moneyAccountId: moneyAcc._id,
+      date: row.date,
+      narration: row.notes,
+      supplierLedgerEntryId: row._id,
+      voucherNumber
+    },
+    reqUser
+  );
 
   logger.info({
     msg: 'supplier.payment.create',

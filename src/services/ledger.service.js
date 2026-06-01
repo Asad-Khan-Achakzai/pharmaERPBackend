@@ -5,7 +5,18 @@ const Collection = require('../models/Collection');
 const DeliveryRecord = require('../models/DeliveryRecord');
 const { parsePagination } = require('../utils/pagination');
 const { roundPKR } = require('../utils/currency');
-const { LEDGER_ENTITY_TYPE, LEDGER_REFERENCE_TYPE } = require('../constants/enums');
+const {
+  LEDGER_ENTITY_TYPE,
+  LEDGER_REFERENCE_TYPE,
+  SUPPLIER_LEDGER_TYPE,
+  SUPPLIER_LEDGER_ADJUSTMENT_EFFECT,
+  EXPENSE_CATEGORY
+} = require('../constants/enums');
+const Supplier = require('../models/Supplier');
+const SupplierLedger = require('../models/SupplierLedger');
+const Expense = require('../models/Expense');
+const User = require('../models/User');
+const Account = require('../models/Account');
 const financialService = require('./financial.service');
 const businessTime = require('../utils/businessTime');
 const {
@@ -439,10 +450,401 @@ const getBalance = async (companyId, pharmacyId) => {
 const getDistributorClearingBalance = (companyId, distributorId) =>
   financialService.getDistributorClearingBalance(companyId, distributorId);
 
+const attachRunningWithDebitCredit = (linesAsc, openingBalance) => {
+  let running = openingBalance;
+  return linesAsc.map((line) => {
+    const debit = line.type === 'DEBIT' ? roundPKR(line.amount) : 0;
+    const credit = line.type === 'CREDIT' ? roundPKR(line.amount) : 0;
+    running = roundPKR(running + debit - credit);
+    return { ...line, debit, credit, runningBalance: running };
+  });
+};
+
+/**
+ * Chronological client ledger (pharmacy receivable or distributor clearing) for statement UI.
+ */
+const fetchClientLedgerChronological = async (companyId, clientId, entityType, query, timeZone, cap = 5000) => {
+  const filter = {
+    companyId: new mongoose.Types.ObjectId(companyId),
+    entityId: new mongoose.Types.ObjectId(clientId),
+    entityType,
+    isDeleted: nd
+  };
+  applyDateFieldRangeFromQuery(filter, query, 'date', timeZone);
+
+  let openingBalance = 0;
+  const fromRaw = qScalar(query.from);
+  if (fromRaw) {
+    try {
+      const zone = businessTime.requireCompanyIanaZone(timeZone);
+      const t0 = queryDateBound(fromRaw, 'start', zone);
+      if (t0) {
+        const preF = { ...filter };
+        delete preF.date;
+        preF.date = { $lt: t0 };
+        openingBalance = await netBalanceForFilter(preF);
+      }
+    } catch {
+      /* invalid from */
+    }
+  }
+
+  const docs = await Ledger.find(filter).sort({ date: 1, _id: 1 }).limit(cap).lean();
+  let lines = attachRunningWithDebitCredit(docs, openingBalance);
+  if (entityType === LEDGER_ENTITY_TYPE.PHARMACY) {
+    lines = await enrichPharmacyLedgerLines(companyId, lines);
+  }
+
+  let debit = 0;
+  let credit = 0;
+  for (const L of docs) {
+    if (L.type === 'DEBIT') debit = roundPKR(debit + L.amount);
+    else credit = roundPKR(credit + L.amount);
+  }
+  const closingBalance = lines.length ? lines[lines.length - 1].runningBalance : openingBalance;
+
+  return {
+    entries: lines,
+    openingBalance,
+    closingBalance,
+    totals: { debit, credit }
+  };
+};
+
+const getClientStatement = async (companyId, query, timeZone = 'UTC') => {
+  const ApiError = require('../utils/ApiError');
+  const clientType = (qScalar(query.clientType) || '').toUpperCase();
+  const clientId = qScalar(query.clientId);
+  if (!clientId) throw new ApiError(400, 'clientId is required');
+
+  let entityType;
+  if (clientType === 'PHARMACY') entityType = LEDGER_ENTITY_TYPE.PHARMACY;
+  else if (clientType === 'DISTRIBUTOR') entityType = LEDGER_ENTITY_TYPE.DISTRIBUTOR_CLEARING;
+  else throw new ApiError(400, 'clientType must be PHARMACY or DISTRIBUTOR');
+
+  const Pharmacy = require('../models/Pharmacy');
+  const Distributor = require('../models/Distributor');
+  const cid = new mongoose.Types.ObjectId(companyId);
+
+  let clientName = '';
+  if (entityType === LEDGER_ENTITY_TYPE.PHARMACY) {
+    const p = await Pharmacy.findOne({ _id: new mongoose.Types.ObjectId(clientId), companyId: cid, isDeleted: nd }).lean();
+    if (!p) throw new ApiError(404, 'Pharmacy not found');
+    clientName = p.name;
+  } else {
+    const d = await Distributor.findOne({ _id: new mongoose.Types.ObjectId(clientId), companyId: cid, isDeleted: nd }).lean();
+    if (!d) throw new ApiError(404, 'Distributor not found');
+    clientName = d.name;
+  }
+
+  const stmt = await fetchClientLedgerChronological(companyId, clientId, entityType, query, timeZone);
+  return {
+    clientType,
+    clientId,
+    clientName,
+    entityType,
+    ...stmt
+  };
+};
+
+const applySupplierRowToBalance = (balance, row) => {
+  const amt = roundPKR(row.amount || 0);
+  if (row.type === SUPPLIER_LEDGER_TYPE.PURCHASE) return roundPKR(balance + amt);
+  if (row.type === SUPPLIER_LEDGER_TYPE.PAYMENT || row.type === SUPPLIER_LEDGER_TYPE.PURCHASE_RETURN) {
+    return roundPKR(balance - amt);
+  }
+  if (row.type === SUPPLIER_LEDGER_TYPE.ADJUSTMENT && row.adjustmentEffect) {
+    if (row.adjustmentEffect === SUPPLIER_LEDGER_ADJUSTMENT_EFFECT.INCREASE_PAYABLE) return roundPKR(balance + amt);
+    if (row.adjustmentEffect === SUPPLIER_LEDGER_ADJUSTMENT_EFFECT.DECREASE_PAYABLE) return roundPKR(balance - amt);
+  }
+  return balance;
+};
+
+const supplierRowToDebitCredit = (row) => {
+  const amt = roundPKR(row.amount || 0);
+  if (row.type === SUPPLIER_LEDGER_TYPE.PURCHASE) return { debit: amt, credit: 0 };
+  if (row.type === SUPPLIER_LEDGER_TYPE.PAYMENT || row.type === SUPPLIER_LEDGER_TYPE.PURCHASE_RETURN) {
+    return { debit: 0, credit: amt };
+  }
+  if (row.type === SUPPLIER_LEDGER_TYPE.ADJUSTMENT && row.adjustmentEffect) {
+    if (row.adjustmentEffect === SUPPLIER_LEDGER_ADJUSTMENT_EFFECT.INCREASE_PAYABLE) return { debit: amt, credit: 0 };
+    if (row.adjustmentEffect === SUPPLIER_LEDGER_ADJUSTMENT_EFFECT.DECREASE_PAYABLE) return { debit: 0, credit: amt };
+  }
+  return { debit: 0, credit: 0 };
+};
+
+const supplierRowDescription = (row) => {
+  if (row.notes) return row.notes;
+  if (row.type === SUPPLIER_LEDGER_TYPE.PURCHASE) return 'Purchase / goods received';
+  if (row.type === SUPPLIER_LEDGER_TYPE.PAYMENT) return 'Payment to supplier';
+  if (row.type === SUPPLIER_LEDGER_TYPE.PURCHASE_RETURN) return 'Purchase return';
+  if (row.type === SUPPLIER_LEDGER_TYPE.ADJUSTMENT) return 'Payable adjustment';
+  return row.referenceType || row.type;
+};
+
+const sumExpenseAmounts = (rows) => roundPKR(rows.reduce((s, r) => roundPKR(s + (r.amount || 0)), 0));
+
+/**
+ * Supplier payable ledger (PURCHASE/adjustments increase debit side; PAYMENT/returns increase credit side).
+ */
+const fetchSupplierLedgerChronological = async (companyId, supplierId, query, timeZone, cap = 5000) => {
+  const cid = new mongoose.Types.ObjectId(companyId);
+  const sid = new mongoose.Types.ObjectId(supplierId);
+  const baseFilter = { companyId: cid, supplierId: sid, isDeleted: nd };
+
+  let openingBalance = 0;
+  const fromRaw = qScalar(query.from);
+  if (fromRaw) {
+    try {
+      const zone = businessTime.requireCompanyIanaZone(timeZone);
+      const t0 = queryDateBound(fromRaw, 'start', zone);
+      if (t0) {
+        const preRows = await SupplierLedger.find({ ...baseFilter, date: { $lt: t0 } })
+          .sort({ date: 1, _id: 1 })
+          .lean();
+        for (const row of preRows) openingBalance = applySupplierRowToBalance(openingBalance, row);
+      }
+    } catch {
+      /* invalid from */
+    }
+  }
+
+  const s = await Supplier.findOne({ _id: sid, companyId: cid, isDeleted: nd }).lean();
+  if (!s) {
+    const ApiError = require('../utils/ApiError');
+    throw new ApiError(404, 'Supplier not found');
+  }
+  openingBalance = roundPKR(openingBalance + roundPKR(s.openingBalance || 0));
+
+  const filter = { ...baseFilter };
+  applyDateFieldRangeFromQuery(filter, query, 'date', timeZone);
+  const docs = await SupplierLedger.find(filter).sort({ date: 1, _id: 1 }).limit(cap).lean();
+
+  let running = openingBalance;
+  let debit = 0;
+  let credit = 0;
+  const entries = docs.map((row) => {
+    const { debit: d, credit: c } = supplierRowToDebitCredit(row);
+    debit = roundPKR(debit + d);
+    credit = roundPKR(credit + c);
+    running = roundPKR(running + d - c);
+    return {
+      _id: row._id,
+      date: row.date,
+      referenceType: row.referenceType || row.type,
+      type: row.type,
+      description: supplierRowDescription(row),
+      debit: d,
+      credit: c,
+      runningBalance: running,
+      voucherNumber: row.voucherNumber || null
+    };
+  });
+
+  const closingBalance = entries.length ? entries[entries.length - 1].runningBalance : openingBalance;
+  return {
+    entries,
+    openingBalance,
+    closingBalance,
+    totals: { debit, credit }
+  };
+};
+
+const getSupplierStatement = async (companyId, query, timeZone = 'UTC') => {
+  const ApiError = require('../utils/ApiError');
+  const supplierId = qScalar(query.supplierId);
+  if (!supplierId) throw new ApiError(400, 'supplierId is required');
+
+  const cid = new mongoose.Types.ObjectId(companyId);
+  const s = await Supplier.findOne({ _id: new mongoose.Types.ObjectId(supplierId), companyId: cid, isDeleted: nd })
+    .select('name city phone')
+    .lean();
+  if (!s) throw new ApiError(404, 'Supplier not found');
+
+  const stmt = await fetchSupplierLedgerChronological(companyId, supplierId, query, timeZone);
+  return {
+    supplierId,
+    supplierName: s.name,
+    supplierCity: s.city,
+    ...stmt
+  };
+};
+
+/**
+ * Company expense activity — each expense is a debit; running total is cumulative spend in period.
+ */
+const fetchExpenseLedgerChronological = async (companyId, query, timeZone, cap = 5000) => {
+  const cid = new mongoose.Types.ObjectId(companyId);
+  const baseFilter = { companyId: cid, isDeleted: nd };
+  const category = qScalar(query.category);
+  const expenseAccountId = qScalar(query.expenseAccountId);
+  if (category) baseFilter.category = category;
+  if (expenseAccountId) baseFilter.expenseAccountId = new mongoose.Types.ObjectId(expenseAccountId);
+
+  let openingBalance = 0;
+  const fromRaw = qScalar(query.from);
+  if (fromRaw) {
+    try {
+      const zone = businessTime.requireCompanyIanaZone(timeZone);
+      const t0 = queryDateBound(fromRaw, 'start', zone);
+      if (t0) {
+        const preFilter = { ...baseFilter, date: { $lt: t0 } };
+        const preRows = await Expense.find(preFilter).select('amount').lean();
+        openingBalance = sumExpenseAmounts(preRows);
+      }
+    } catch {
+      /* invalid from */
+    }
+  }
+
+  const filter = { ...baseFilter };
+  applyDateFieldRangeFromQuery(filter, query, 'date', timeZone);
+  const docs = await Expense.find(filter)
+    .sort({ date: 1, _id: 1 })
+    .limit(cap)
+    .populate('employeeId', 'name')
+    .populate('expenseAccountId', 'name code')
+    .lean();
+
+  let running = openingBalance;
+  let debit = 0;
+  const entries = docs.map((row) => {
+    const d = roundPKR(row.amount || 0);
+    debit = roundPKR(debit + d);
+    running = roundPKR(running + d);
+    const employeeName = row.employeeId?.name;
+    const accountName = row.expenseAccountId?.name;
+    const baseDesc = row.description || accountName || row.category?.replace(/_/g, ' ') || 'Expense';
+    const desc = employeeName ? `${baseDesc} (${employeeName})` : baseDesc;
+    return {
+      _id: row._id,
+      date: row.date,
+      referenceType: 'EXPENSE',
+      category: accountName || row.category,
+      description: desc,
+      debit: d,
+      credit: 0,
+      runningBalance: running
+    };
+  });
+
+  const closingBalance = entries.length ? entries[entries.length - 1].runningBalance : openingBalance;
+  return {
+    entries,
+    openingBalance,
+    closingBalance,
+    totals: { debit, credit: 0 },
+    category: category || null
+  };
+};
+
+const getExpenseLedger = async (companyId, query, timeZone = 'UTC') => {
+  const expenseAccountId = qScalar(query.expenseAccountId);
+  const stmt = await fetchExpenseLedgerChronological(companyId, query, timeZone);
+  let categoryLabel = 'All expense accounts';
+  if (expenseAccountId) {
+    const acc = await Account.findOne({
+      companyId: new mongoose.Types.ObjectId(companyId),
+      _id: new mongoose.Types.ObjectId(expenseAccountId),
+      isDeleted: nd
+    })
+      .select('name')
+      .lean();
+    categoryLabel = acc?.name || 'Selected account';
+  }
+  return {
+    expenseAccountId: expenseAccountId || null,
+    categoryLabel,
+    ...stmt
+  };
+};
+
+/**
+ * Expenses attributed to an employee (includes salary from paid payroll).
+ */
+const fetchEmployeeLedgerChronological = async (companyId, employeeId, query, timeZone, cap = 5000) => {
+  const cid = new mongoose.Types.ObjectId(companyId);
+  const eid = new mongoose.Types.ObjectId(employeeId);
+  const baseFilter = { companyId: cid, employeeId: eid, isDeleted: nd };
+
+  let openingBalance = 0;
+  const fromRaw = qScalar(query.from);
+  if (fromRaw) {
+    try {
+      const zone = businessTime.requireCompanyIanaZone(timeZone);
+      const t0 = queryDateBound(fromRaw, 'start', zone);
+      if (t0) {
+        const preRows = await Expense.find({ ...baseFilter, date: { $lt: t0 } }).select('amount').lean();
+        openingBalance = sumExpenseAmounts(preRows);
+      }
+    } catch {
+      /* invalid from */
+    }
+  }
+
+  const filter = { ...baseFilter };
+  applyDateFieldRangeFromQuery(filter, query, 'date', timeZone);
+  const docs = await Expense.find(filter).sort({ date: 1, _id: 1 }).limit(cap).lean();
+
+  let running = openingBalance;
+  let debit = 0;
+  const entries = docs.map((row) => {
+    const d = roundPKR(row.amount || 0);
+    debit = roundPKR(debit + d);
+    running = roundPKR(running + d);
+    return {
+      _id: row._id,
+      date: row.date,
+      referenceType: row.category === EXPENSE_CATEGORY.SALARY ? 'SALARY' : 'EXPENSE',
+      category: row.category,
+      description: row.description || row.category.replace(/_/g, ' '),
+      debit: d,
+      credit: 0,
+      runningBalance: running
+    };
+  });
+
+  const closingBalance = entries.length ? entries[entries.length - 1].runningBalance : openingBalance;
+  return {
+    entries,
+    openingBalance,
+    closingBalance,
+    totals: { debit, credit: 0 }
+  };
+};
+
+const getEmployeeStatement = async (companyId, query, timeZone = 'UTC') => {
+  const ApiError = require('../utils/ApiError');
+  const employeeId = qScalar(query.employeeId);
+  if (!employeeId) throw new ApiError(400, 'employeeId is required');
+
+  const cid = new mongoose.Types.ObjectId(companyId);
+  const user = await User.findOne({
+    _id: new mongoose.Types.ObjectId(employeeId),
+    companyId: cid,
+    isDeleted: nd
+  })
+    .select('name email employeeCode role')
+    .lean();
+  if (!user) throw new ApiError(404, 'Employee not found');
+
+  const stmt = await fetchEmployeeLedgerChronological(companyId, employeeId, query, timeZone);
+  return {
+    employeeId,
+    employeeName: user.name,
+    employeeCode: user.employeeCode || null,
+    ...stmt
+  };
+};
+
 module.exports = {
   list,
   getByPharmacy,
   getBalance,
   getDistributorClearingBalance,
-  fetchPharmacyLedgerChronological
+  fetchPharmacyLedgerChronological,
+  getClientStatement,
+  getSupplierStatement,
+  getExpenseLedger,
+  getEmployeeStatement
 };

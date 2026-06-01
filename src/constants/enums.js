@@ -274,6 +274,60 @@ const SUPPLIER_PAYMENT_VERIFICATION = {
   UNVERIFIED: 'UNVERIFIED'
 };
 
+/** Chart of Accounts — top-level classification (Orbit-like). */
+const ACCOUNT_GROUP_TYPE = {
+  ASSET: 'ASSET',
+  LIABILITY: 'LIABILITY',
+  EQUITY: 'EQUITY',
+  INCOME: 'INCOME',
+  EXPENSE: 'EXPENSE'
+};
+
+/** Normal balance side for an account group (debit-normal vs credit-normal). */
+const ACCOUNT_NORMAL_BALANCE = {
+  DEBIT: 'DEBIT',
+  CREDIT: 'CREDIT'
+};
+
+const VOUCHER_TYPE = {
+  JV: 'JV',
+  PV: 'PV',
+  RV: 'RV',
+  CV: 'CV',
+  SV: 'SV',
+  PURV: 'PURV',
+  AUTO: 'AUTO'
+};
+
+const VOUCHER_STATUS = {
+  DRAFT: 'DRAFT',
+  POSTED: 'POSTED',
+  REVERSED: 'REVERSED'
+};
+
+const SUB_LEDGER_SOURCE = {
+  LEDGER: 'LEDGER',
+  SUPPLIER_LEDGER: 'SUPPLIER_LEDGER'
+};
+
+const GL_SOURCE_MODULE = {
+  MANUAL: 'MANUAL',
+  ORDER: 'ORDER',
+  COLLECTION: 'COLLECTION',
+  SETTLEMENT: 'SETTLEMENT',
+  EXPENSE: 'EXPENSE',
+  SUPPLIER: 'SUPPLIER',
+  PROCUREMENT: 'PROCUREMENT',
+  OPENING: 'OPENING',
+  FUND_TRANSFER: 'FUND_TRANSFER'
+};
+
+/** Liquid accounts used for real cash/bank movements. */
+const MONEY_ACCOUNT_NATURE = {
+  CASH: 'CASH',
+  BANK: 'BANK'
+};
+
 module.exports = {
   ROLES,
   USER_TYPES,
@@ -311,5 +365,12 @@ module.exports = {
   SUPPLIER_LEDGER_REFERENCE_TYPE,
   SUPPLIER_PAYMENT_METHOD,
   SUPPLIER_PAYMENT_VERIFICATION,
-  PURCHASE_RETURN_STATUS
+  PURCHASE_RETURN_STATUS,
+  ACCOUNT_GROUP_TYPE,
+  ACCOUNT_NORMAL_BALANCE,
+  VOUCHER_TYPE,
+  VOUCHER_STATUS,
+  SUB_LEDGER_SOURCE,
+  GL_SOURCE_MODULE,
+  MONEY_ACCOUNT_NATURE
 };

@@ -21,6 +21,9 @@ const collectionSchema = new mongoose.Schema(
     collectorType: { type: String, enum: Object.values(COLLECTOR_TYPE), required: true },
     amount: { type: Number, required: true },
     paymentMethod: { type: String, enum: Object.values(PAYMENT_METHOD), required: true },
+    /** GL Cash/Bank account that received this collection */
+    moneyAccountId: { type: mongoose.Schema.Types.ObjectId, ref: 'Account', default: null },
+    moneyAccountNature: { type: String, enum: ['CASH', 'BANK'], default: null },
     referenceNumber: { type: String },
     collectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     date: { type: Date, default: Date.now },

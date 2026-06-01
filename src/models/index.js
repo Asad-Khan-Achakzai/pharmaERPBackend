@@ -44,5 +44,10 @@ module.exports = {
   HistoricalImportArchive: require('./HistoricalImportArchive'),
   DeviceSession: require('./DeviceSession'),
   IdempotencyRecord: require('./IdempotencyRecord'),
-  MediaAsset: require('./MediaAsset')
+  MediaAsset: require('./MediaAsset'),
+  Account: require('./Account'),
+  FiscalPeriod: require('./FiscalPeriod'),
+  VoucherSequence: require('./VoucherSequence'),
+  Voucher: require('./Voucher'),
+  SubLedgerLink: require('./SubLedgerLink')
 };

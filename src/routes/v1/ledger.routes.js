@@ -7,6 +7,10 @@ const { checkPermission } = require('../../middleware/checkPermission');
 
 router.use(authenticate, companyScope);
 router.get('/', checkPermission('ledger.view'), c.list);
+router.get('/client-statement', checkPermission('ledger.view'), c.getClientStatement);
+router.get('/supplier-statement', checkPermission('ledger.view'), c.getSupplierStatement);
+router.get('/expense-ledger', checkPermission('expenses.view'), c.getExpenseLedger);
+router.get('/employee-statement', checkPermission('ledger.view'), c.getEmployeeStatement);
 router.get('/pharmacy/:id', checkPermission('ledger.view'), c.getByPharmacy);
 router.get('/pharmacy/:id/balance', checkPermission('ledger.view'), c.getBalance);
 router.get('/distributor/:id/clearing-balance', checkPermission('ledger.view'), c.getDistributorClearingBalance);

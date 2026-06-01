@@ -5,6 +5,7 @@ const Role = require('../../../src/models/Role');
 const UserCompanyAccess = require('../../../src/models/UserCompanyAccess');
 const { ROLES, USER_TYPES, TERRITORY_KIND } = require('../../../src/constants/enums');
 const { seedDefaultRolesForCompany } = require('../../../src/services/role.service');
+const coaSeed = require('../../../src/services/coaSeed.service');
 const territoryService = require('../../../src/services/territory.service');
 const { LARGE_CUSTOM, MEDIUM_CUSTOM, SMALL_CUSTOM } = require('../lib/roleDefinitions');
 const {
@@ -171,6 +172,7 @@ async function seedTenantGraph() {
       isActive: true
     });
     const { adminRole, medicalRole } = await seedDefaultRolesForCompany(c._id, {});
+    await coaSeed.ensureCoaForCompany(c._id);
 
     let customDefs = SMALL_CUSTOM;
     if (t.key === 'aurora') customDefs = LARGE_CUSTOM;

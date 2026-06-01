@@ -4,6 +4,7 @@ const User = require('../models/User');
 const UserCompanyAccess = require('../models/UserCompanyAccess');
 const { ROLES: USER_ROLES, USER_TYPES } = require('../constants/enums');
 const { seedDefaultRolesForCompany } = require('./role.service');
+const coaSeed = require('./coaSeed.service');
 const Order = require('../models/Order');
 const Transaction = require('../models/Transaction');
 const Payroll = require('../models/Payroll');
@@ -45,6 +46,7 @@ const createCompany = async (payload) => {
   data.timeZone = tz;
   const company = await Company.create(data);
   await seedDefaultRolesForCompany(company._id, {});
+  await coaSeed.ensureCoaForCompany(company._id);
   return company;
 };
 

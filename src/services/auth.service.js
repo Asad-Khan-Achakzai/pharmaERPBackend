@@ -6,6 +6,7 @@ const ApiError = require('../utils/ApiError');
 const { ROLES, USER_TYPES } = require('../constants/enums');
 const { generateTokens } = require('./auth.tokens');
 const { seedDefaultRolesForCompany } = require('./role.service');
+const coaSeed = require('./coaSeed.service');
 const { formatUserForClient } = require('../utils/authUserPayload');
 const { effectiveUserType } = require('../utils/jwtAccess');
 const { getPlatformAllowedCompanyIds, hasAccessToCompany } = require('../utils/platformAccess.util');
@@ -49,6 +50,7 @@ const register = async ({
   });
 
   const { adminRole } = await seedDefaultRolesForCompany(company._id, {});
+  await coaSeed.ensureCoaForCompany(company._id);
 
   const user = await User.create({
     companyId: company._id,

@@ -10,6 +10,8 @@ const PERMISSIONS = {
   orders:       ['view', 'create', 'edit', 'deliver', 'return'],
   payments:     ['view', 'create'],
   ledger:       ['view'],
+  accounts:     ['view', 'manage'],
+  vouchers:     ['view', 'create', 'post', 'reverse'],
   targets:      ['view', 'create', 'edit'],
   /** `review` lets a manager open a submitted plan; `approve` lets them activate or reject it. */
   weeklyPlans:  ['view', 'create', 'edit', 'markVisit', 'review', 'approve'],
@@ -41,7 +43,7 @@ const PERMISSIONS = {
     'matrix.manage',
     'governance.view'
   ],
-  reports:      ['view'],
+  reports:      ['view', 'accounting'],
   suppliers:    ['view', 'manage'],
   /** SAP-style PO / GRN; liability on SupplierLedger only when GRN is posted — see procurement.routes */
   procurement:  ['view', 'create', 'approve', 'receive', 'invoicePost', 'return', 'grnReverse', 'cancelPo'],

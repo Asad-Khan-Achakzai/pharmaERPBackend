@@ -24,6 +24,7 @@ const medRepTargetAchievedService = require('./medRepTargetAchieved.service');
 const pdfService = require('./pdf.service');
 const logger = require('../utils/logger');
 const financialService = require('./financial.service');
+const glBridge = require('./glBridge.service');
 const { calculateBonus, normalizeBonusScheme, lineTotalQuantity } = require('../utils/bonus');
 const { utcNow, getBusinessMonthKey, requireCompanyIanaZone } = require('../utils/businessTime');
 const {
@@ -434,7 +435,7 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts
       { session }
     );
 
-    await financialService.postDeliveryLedgers(session, {
+    const { entries } = await financialService.postDeliveryLedgers(session, {
       companyId,
       pharmacyId: order.pharmacyId,
       deliveryId: delivery._id,
@@ -443,6 +444,21 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts
       pharmacyNetPayable,
       date: businessDate
     });
+
+    await glBridge.postDeliveryGl(
+      session,
+      companyId,
+      {
+        pharmacyId: order.pharmacyId,
+        deliveryId: delivery._id,
+        invoiceNumber,
+        pharmacyNetPayable,
+        cogsAmount: totalCost,
+        date: businessDate,
+        ledgerEntryId: entries?.[0]?._id
+      },
+      reqUser
+    );
 
     await Transaction.create(
       [{ companyId, type: TRANSACTION_TYPE.SALE, referenceType: 'DELIVERY', referenceId: delivery._id, revenue: totalAmount, cost: totalCost, profit: totalProfit, date: businessDate, description: `Sale - ${invoiceNumber}` }],
@@ -605,9 +621,23 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
       { session }
     );
 
-    await Ledger.create(
+    const [returnLedger] = await Ledger.create(
       [{ companyId, entityType: LEDGER_ENTITY_TYPE.PHARMACY, entityId: order.pharmacyId, type: LEDGER_TYPE.CREDIT, amount: totalAmount, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: returnRecord._id, description: `Return for order ${order.orderNumber}`, date: retDate }],
       { session, ordered: true }
+    );
+
+    await glBridge.postReturnGl(
+      session,
+      companyId,
+      {
+        pharmacyId: order.pharmacyId,
+        returnId: returnRecord._id,
+        amount: totalAmount,
+        date: retDate,
+        narration: `Return for order ${order.orderNumber}`,
+        ledgerEntryId: returnLedger?._id
+      },
+      reqUser
     );
 
     for (const row of returnRecordItems) {

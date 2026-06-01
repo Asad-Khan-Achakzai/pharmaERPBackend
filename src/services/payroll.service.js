@@ -367,39 +367,99 @@ const update = async (companyId, id, data, reqUser) => {
   return payroll.populate('employeeId', 'name email role');
 };
 
-const pay = async (companyId, id, reqUser) => {
+const pay = async (companyId, id, reqUser, body = {}) => {
   const payroll = await Payroll.findOne({ _id: id, companyId });
   if (!payroll) throw new ApiError(404, 'Payroll not found');
   if (payroll.status === PAYROLL_STATUS.PAID) throw new ApiError(400, 'Already paid');
 
+  const glPosting = require('./glPosting.service');
+  const moneyAccountService = require('./moneyAccount.service');
+  const { ACCOUNT_CODES } = require('../constants/coaTemplate');
+  const coaSeed = require('./coaSeed.service');
+  const glBridge = require('./glBridge.service');
+  const mongoose = require('mongoose');
+
   payroll.status = PAYROLL_STATUS.PAID;
   payroll.paidOn = new Date();
   payroll.updatedBy = reqUser.userId;
-  await payroll.save();
 
-  const expense = await Expense.create({
-    companyId,
-    category: EXPENSE_CATEGORY.SALARY,
-    amount: payroll.netSalary,
-    description: `Salary for ${payroll.month}`,
-    date: new Date(),
-    employeeId: payroll.employeeId,
-    approvedBy: reqUser.userId,
-    createdBy: reqUser.userId
-  });
+  const session = await mongoose.startSession();
+  let expense;
+  try {
+    await session.withTransaction(async () => {
+      await payroll.save({ session });
+      await coaSeed.ensureCoaForCompany(companyId, { session });
+      const salaryAcc = await glPosting.getAccountByCode(companyId, ACCOUNT_CODES.SALARY_EXPENSE, session);
+      if (!salaryAcc) throw new ApiError(400, 'Salary expense account not found in Chart of Accounts');
 
-  await Transaction.create({
-    companyId,
-    type: TRANSACTION_TYPE.EXPENSE,
-    referenceType: 'PAYROLL',
-    referenceId: payroll._id,
-    revenue: 0,
-    cost: payroll.netSalary,
-    profit: roundPKR(-payroll.netSalary),
-    date: new Date(),
-    description: `Salary payment - ${payroll.month}`,
-    createdBy: reqUser.userId
-  });
+      let moneyAcc;
+      if (body.moneyAccountId) {
+        moneyAcc = await moneyAccountService.assertMoneyAccount(companyId, body.moneyAccountId, session);
+      } else {
+        const moneyAccounts = await moneyAccountService.listMoneyAccounts(companyId);
+        moneyAcc = moneyAccounts[0];
+      }
+      if (!moneyAcc) throw new ApiError(400, 'No cash or bank account found — add a money account before paying payroll');
+
+      const paidOn = payroll.paidOn;
+      const amount = roundPKR(payroll.netSalary);
+      const narration = `Salary for ${payroll.month}`;
+
+      [expense] = await Expense.create(
+        [
+          {
+            companyId,
+            category: EXPENSE_CATEGORY.SALARY,
+            expenseAccountId: salaryAcc._id,
+            moneyAccountId: moneyAcc._id,
+            amount,
+            description: narration,
+            date: paidOn,
+            employeeId: payroll.employeeId,
+            approvedBy: reqUser.userId,
+            createdBy: reqUser.userId
+          }
+        ],
+        { session }
+      );
+
+      const voucher = await glBridge.postExpenseGl(
+        session,
+        companyId,
+        {
+          expenseId: expense._id,
+          expenseAccountId: salaryAcc._id,
+          moneyAccountId: moneyAcc._id,
+          amount,
+          date: paidOn,
+          narration
+        },
+        reqUser
+      );
+      expense.voucherId = voucher._id;
+      await expense.save({ session });
+
+      await Transaction.create(
+        [
+          {
+            companyId,
+            type: TRANSACTION_TYPE.EXPENSE,
+            referenceType: 'PAYROLL',
+            referenceId: payroll._id,
+            revenue: 0,
+            cost: amount,
+            profit: roundPKR(-amount),
+            date: paidOn,
+            description: `Salary payment - ${payroll.month}`,
+            createdBy: reqUser.userId
+          }
+        ],
+        { session }
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
 
   await auditService.log({
     companyId,

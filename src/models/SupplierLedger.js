@@ -46,6 +46,9 @@ const supplierLedgerSchema = new mongoose.Schema(
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     /** PAYMENT rows only — optional for legacy rows */
     paymentMethod: { type: String, enum: [...Object.values(SUPPLIER_PAYMENT_METHOD)] },
+    /** GL Cash/Bank account paid from (PAYMENT rows) */
+    moneyAccountId: { type: mongoose.Schema.Types.ObjectId, ref: 'Account', default: null },
+    moneyAccountNature: { type: String, enum: ['CASH', 'BANK'], default: null },
     referenceNumber: { type: String, trim: true },
     /** Optional receipt image URL (e.g. cloud or pasted link) */
     attachmentUrl: { type: String, trim: true },

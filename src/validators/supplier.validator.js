@@ -33,6 +33,7 @@ const paymentRecordSchema = Joi.object({
   date: Joi.date().optional(),
   notes: Joi.string().trim().allow('', null),
   paymentMethod: Joi.string().valid('CASH', 'BANK', 'CHEQUE', 'OTHER').required(),
+  moneyAccountId: Joi.string().hex().length(24).required(),
   referenceNumber: Joi.string().trim().allow('', null),
   attachmentUrl: Joi.string().trim().allow('', null),
   verificationStatus: Joi.string().valid('VERIFIED', 'UNVERIFIED').optional(),

@@ -16,6 +16,8 @@ const {
   SETTLEMENT_DIRECTION,
   LEDGER_COLLECTION_PORTION
 } = require('../constants/enums');
+const glBridge = require('./glBridge.service');
+const moneyAccountService = require('./moneyAccount.service');
 
 const oid = (id) => new mongoose.Types.ObjectId(id);
 
@@ -366,10 +368,13 @@ const createCollection = async (companyId, data, reqUser, session) => {
     distributorId: collectingDistributorId,
     amount,
     paymentMethod,
+    moneyAccountId,
     referenceNumber,
     date,
     notes
   } = data;
+
+  const moneyAcc = await moneyAccountService.assertMoneyAccount(companyId, moneyAccountId, session);
 
   let state = await computePharmacyReceivableState(companyId, pharmacyId, session);
 
@@ -423,6 +428,8 @@ const createCollection = async (companyId, data, reqUser, session) => {
         collectorType,
         amount: roundPKR(amount),
         paymentMethod,
+        moneyAccountId: moneyAcc._id,
+        moneyAccountNature: moneyAcc.moneyAccountNature || (moneyAcc.isBank ? 'BANK' : 'CASH'),
         referenceNumber,
         collectedBy: reqUser.userId,
         date: date || new Date(),
@@ -466,6 +473,31 @@ const createCollection = async (companyId, data, reqUser, session) => {
       d
     );
   }
+
+  const createdLedgerRows = await Ledger.find({
+    companyId: oid(companyId),
+    referenceType: LEDGER_REFERENCE_TYPE.COLLECTION,
+    referenceId: collection._id,
+    ...{ isDeleted: { $ne: true } }
+  })
+    .session(session)
+    .select('_id');
+
+  await glBridge.postCollectionGl(
+    session,
+    companyId,
+    {
+      collectionId: collection._id,
+      pharmacyId,
+      amount: roundPKR(amount),
+      paymentMethod,
+      moneyAccountId: moneyAcc._id,
+      date: d,
+      narration: notes || 'Pharmacy collection',
+      ledgerEntryIds: createdLedgerRows.map((r) => r._id)
+    },
+    reqUser
+  );
 
   return collection;
 };

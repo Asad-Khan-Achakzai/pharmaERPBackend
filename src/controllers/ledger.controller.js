@@ -38,4 +38,29 @@ const getDistributorClearingBalance = asyncHandler(async (req, res) => {
   ApiResponse.success(res, balance);
 });
 
-module.exports = { list, getByPharmacy, getBalance, getDistributorClearingBalance };
+const getClientStatement = asyncHandler(async (req, res) => {
+  ApiResponse.success(res, await ledgerService.getClientStatement(req.companyId, req.query, req.context.timeZone));
+});
+
+const getSupplierStatement = asyncHandler(async (req, res) => {
+  ApiResponse.success(res, await ledgerService.getSupplierStatement(req.companyId, req.query, req.context.timeZone));
+});
+
+const getExpenseLedger = asyncHandler(async (req, res) => {
+  ApiResponse.success(res, await ledgerService.getExpenseLedger(req.companyId, req.query, req.context.timeZone));
+});
+
+const getEmployeeStatement = asyncHandler(async (req, res) => {
+  ApiResponse.success(res, await ledgerService.getEmployeeStatement(req.companyId, req.query, req.context.timeZone));
+});
+
+module.exports = {
+  list,
+  getByPharmacy,
+  getBalance,
+  getDistributorClearingBalance,
+  getClientStatement,
+  getSupplierStatement,
+  getExpenseLedger,
+  getEmployeeStatement
+};
