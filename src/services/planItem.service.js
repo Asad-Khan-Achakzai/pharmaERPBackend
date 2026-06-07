@@ -165,8 +165,24 @@ const parseFollowUpDate = (raw, timeZone) => {
   if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw)) {
     return businessTime.businessDayStartUtc(raw, tz);
   }
+  if (raw instanceof Date) {
+    if (Number.isNaN(raw.getTime())) throw new ApiError(400, 'Invalid followUpDate');
+    return raw;
+  }
   const d = DateTime.fromISO(String(raw), { zone: 'utc' });
   if (!d.isValid) throw new ApiError(400, 'Invalid followUpDate');
+  return d.toJSDate();
+};
+
+/** Joi `Joi.date()` yields JS Date objects — must not use `fromISO(String(date))`. */
+const parseInstantFromBody = (raw, label = 'date') => {
+  if (raw == null || raw === '') return null;
+  if (raw instanceof Date) {
+    if (Number.isNaN(raw.getTime())) throw new ApiError(400, `Invalid ${label}`);
+    return raw;
+  }
+  const d = DateTime.fromISO(String(raw), { zone: 'utc' });
+  if (!d.isValid) throw new ApiError(400, `Invalid ${label}`);
   return d.toJSDate();
 };
 
@@ -321,9 +337,8 @@ const markVisit = async (companyId, planItemId, body, reqUser, timeZone, company
     await attendanceService.assertEmployeePresentForVisitDate(companyId, reqUser.userId, item.date, tz);
 
     const visitTime = body.visitTime
-      ? DateTime.fromISO(String(body.visitTime), { zone: 'utc' }).toJSDate()
+      ? parseInstantFromBody(body.visitTime, 'visitTime')
       : businessTime.utcNow();
-    if (body.visitTime && Number.isNaN(visitTime.getTime())) throw new ApiError(400, 'Invalid visitTime');
 
     const doctorId =
       item.type === PLAN_ITEM_TYPE.DOCTOR_VISIT ? item.doctorId : body.doctorId || null;
@@ -333,10 +348,8 @@ const markVisit = async (companyId, planItemId, body, reqUser, timeZone, company
     }
 
     const parseOpt = (x) => {
-      if (x == null) return undefined;
-      const d = DateTime.fromISO(String(x), { zone: 'utc' });
-      if (!d.isValid) throw new ApiError(400, 'Invalid date');
-      return d.toJSDate();
+      if (x == null || x === '') return undefined;
+      return parseInstantFromBody(x, 'date');
     };
 
     const { uniq, primary } = await assertProductPayload(
@@ -585,9 +598,8 @@ const createUnplannedAsPlanItem = async (companyId, body, reqUser, timeZone) => 
   if (!doctor) throw new ApiError(404, 'Doctor not found');
 
   const vt = visitTime
-    ? DateTime.fromISO(String(visitTime), { zone: 'utc' }).toJSDate()
+    ? parseInstantFromBody(visitTime, 'visitTime')
     : businessTime.utcNow();
-  if (visitTime && Number.isNaN(vt.getTime())) throw new ApiError(400, 'Invalid visitTime');
 
   await attendanceService.assertEmployeePresentForVisitDate(companyId, reqUser.userId, vt, tz);
 
@@ -598,9 +610,7 @@ const createUnplannedAsPlanItem = async (companyId, body, reqUser, timeZone) => 
 
   const parseOpt = (x) => {
     if (x == null || x === '') return undefined;
-    const d = DateTime.fromISO(String(x), { zone: 'utc' });
-    if (!d.isValid) throw new ApiError(400, 'Invalid date');
-    return d.toJSDate();
+    return parseInstantFromBody(x, 'date');
   };
 
   const { uniq, primary } = await assertProductPayload(

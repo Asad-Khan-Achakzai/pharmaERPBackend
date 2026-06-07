@@ -8,6 +8,7 @@ const { checkPermission } = require('../../middleware/checkPermission');
 const { validate } = require('../../middleware/validate');
 const { createWeeklyPlanSchema, updateWeeklyPlanSchema } = require('../../validators/target.validator');
 const { bulkPlanItemsSchema } = require('../../validators/planItem.validator');
+const { optimizeRouteSchema } = require('../../validators/phase2.validator');
 
 const rejectPlanSchema = Joi.object({
   reason: Joi.string().required().trim().min(1).max(1000)
@@ -23,6 +24,7 @@ router.post('/', checkPermission('weeklyPlans.create'), validate(createWeeklyPla
 router.get('/rep/:id', checkPermission('weeklyPlans.view'), c.getByRep);
 router.post('/:id/plan-items', checkPermission('weeklyPlans.edit'), validate(bulkPlanItemsSchema), c.bulkPlanItems);
 router.post('/:id/copy-previous-week', checkPermission('weeklyPlans.edit'), c.copyPreviousWeek);
+router.post('/:id/optimize-route', checkPermission('weeklyPlans.edit'), validate(optimizeRouteSchema), c.optimizeRoute);
 
 /** Phase 2B approval workflow — opt-in per company via Company.weeklyPlanApprovalRequired. */
 router.post('/:id/submit', checkPermission('weeklyPlans.edit'), c.submit);

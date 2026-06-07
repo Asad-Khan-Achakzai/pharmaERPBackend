@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { EXPENSE_CATEGORY } = require('../constants/enums');
+const { EXPENSE_CATEGORY, EXPENSE_STATUS } = require('../constants/enums');
 const { softDeletePlugin } = require('../plugins/softDelete');
 
 const expenseSchema = new mongoose.Schema(
@@ -19,7 +19,13 @@ const expenseSchema = new mongoose.Schema(
     distributorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Distributor' },
     doctorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Doctor' },
     employeeId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+    approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    status: {
+      type: String,
+      enum: Object.values(EXPENSE_STATUS),
+      default: EXPENSE_STATUS.APPROVED
+    },
+    rejectionReason: { type: String, trim: true, maxlength: 500, default: null }
   },
   { timestamps: true }
 );

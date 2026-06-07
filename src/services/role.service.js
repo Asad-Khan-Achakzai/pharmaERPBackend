@@ -104,6 +104,28 @@ const assertPermissions = (arr) => {
 };
 
 /**
+ * Add any catalog permissions missing from a system role vs its canonical defaults.
+ * Never removes permissions (admins may have extended roles in the UI).
+ */
+const syncSystemRolePermissions = async (companyId, code, defaults) => {
+  const role = await Role.findOne({ companyId, code, isSystem: true, isDeleted: { $ne: true } });
+  if (!role) return null;
+  const merged = new Set(role.permissions || []);
+  let changed = false;
+  for (const perm of defaults) {
+    if (!merged.has(perm)) {
+      merged.add(perm);
+      changed = true;
+    }
+  }
+  if (changed) {
+    role.permissions = [...merged];
+    await role.save();
+  }
+  return role;
+};
+
+/**
  * Create default system roles for a new company. Idempotent when codes exist.
  * Existing callers depend on `{ adminRole, medicalRole }` — preserved as primary return.
  * `asmRole` / `rmRole` are added (Phase 0) without breaking that contract.
@@ -152,6 +174,10 @@ const seedDefaultRolesForCompany = async (companyId, { createdBy = null } = {}) 
       permissions: [...DEFAULT_RM_PERMISSIONS]
     });
   }
+
+  await syncSystemRolePermissions(cid, DEFAULT_MEDICAL_REP_CODE, DEFAULT_MEDICAL_REP_PERMISSIONS);
+  await syncSystemRolePermissions(cid, DEFAULT_ASM_CODE, DEFAULT_ASM_PERMISSIONS);
+  await syncSystemRolePermissions(cid, DEFAULT_RM_CODE, DEFAULT_RM_PERMISSIONS);
 
   return { adminRole, medicalRole, asmRole, rmRole };
 };

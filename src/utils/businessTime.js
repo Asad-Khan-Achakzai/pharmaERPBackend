@@ -218,6 +218,12 @@ const businessMinutesSinceMidnight = (tz) => {
   return n.hour * 60 + n.minute + n.second / 60 + n.millisecond / 60000;
 };
 
+/** Minutes since local midnight for a stored UTC instant in company TZ. */
+const businessMinutesSinceMidnightForInstant = (date, tz) => {
+  const n = toBusinessTime(date, tz);
+  return n.hour * 60 + n.minute + n.second / 60 + n.millisecond / 60000;
+};
+
 const formatHmBusiness = (jsDate, tz) => {
   if (jsDate == null) return null;
   const js = jsDate instanceof Date ? jsDate : new Date(jsDate);
@@ -255,5 +261,6 @@ module.exports = {
   lastNBusinessMonthsUtcRangeAndKeys,
   businessMonthYmds,
   businessMinutesSinceMidnight,
+  businessMinutesSinceMidnightForInstant,
   formatHmBusiness
 };

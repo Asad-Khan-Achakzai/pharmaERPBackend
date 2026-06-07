@@ -50,6 +50,17 @@ const pendingApprovals = asyncHandler(async (req, res) => {
   ApiResponse.success(res, data, 'Pending approvals');
 });
 
+const optimizeRoute = asyncHandler(async (req, res) => {
+  const data = await weeklyPlanService.optimizeRoute(
+    req.companyId,
+    req.params.id,
+    req.body,
+    req.user,
+    req.context.timeZone
+  );
+  ApiResponse.success(res, data, 'Route optimized');
+});
+
 module.exports = {
   list,
   create,
@@ -61,5 +72,6 @@ module.exports = {
   submit,
   approve,
   reject,
-  pendingApprovals
+  pendingApprovals,
+  optimizeRoute
 };

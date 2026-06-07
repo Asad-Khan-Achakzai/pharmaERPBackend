@@ -29,7 +29,12 @@ const checkin = asyncHandler(async (req, res) => {
 });
 
 const checkout = asyncHandler(async (req, res) => {
-  const doc = await attendanceService.checkOut(req.companyId, req.user.userId, tz(req));
+  const doc = await attendanceService.checkOut(
+    req.companyId,
+    req.user.userId,
+    tz(req),
+    req.body || {}
+  );
   ApiResponse.success(res, doc, 'Checked out');
 });
 

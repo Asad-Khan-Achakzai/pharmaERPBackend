@@ -49,7 +49,15 @@ const attendanceSchema = new mongoose.Schema(
       enum: Object.values(ATTENDANCE_MARKED_BY),
       default: ATTENDANCE_MARKED_BY.SELF
     },
-    notes: { type: String, trim: true, maxlength: 500 }
+    notes: { type: String, trim: true, maxlength: 500 },
+    /** GPS captured at check-in (mobile offline sync). */
+    checkInLat: { type: Number, default: null },
+    checkInLng: { type: Number, default: null },
+    checkInAccuracy: { type: Number, default: null },
+    /** GPS captured at check-out (mobile offline sync). */
+    checkOutLat: { type: Number, default: null },
+    checkOutLng: { type: Number, default: null },
+    checkOutAccuracy: { type: Number, default: null }
   },
   { timestamps: true }
 );

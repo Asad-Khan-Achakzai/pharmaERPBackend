@@ -40,10 +40,14 @@ const voucherRoutes = require('./voucher.routes');
 const mobileAuthRoutes = require('./mobileAuth.routes');
 const syncRoutes = require('./sync.routes');
 const mediaRoutes = require('./media.routes');
+const notificationRoutes = require('./notification.routes');
+const announcementRoutes = require('./announcement.routes');
 
 router.use('/auth/mobile', mobileAuthRoutes);
 router.use('/sync', syncRoutes);
 router.use('/media', mediaRoutes);
+router.use('/notifications', notificationRoutes);
+router.use('/announcements', announcementRoutes);
 router.use('/auth', authRoutes);
 router.use('/super-admin', superAdminRoutes);
 router.use('/platform', platformRoutes);

@@ -45,7 +45,9 @@ const schema = Joi.object({
   MEDIA_MAX_FILE_SIZE: Joi.number().integer().default(5 * 1024 * 1024),
   /** Mobile sync defaults. */
   MOBILE_SYNC_PAGE_SIZE: Joi.number().integer().min(10).max(500).default(50),
-  MOBILE_SYNC_POLL_INTERVAL_MS: Joi.number().integer().min(15000).default(60000)
+  MOBILE_SYNC_POLL_INTERVAL_MS: Joi.number().integer().min(15000).default(60000),
+  /** Optional — Expo push notifications when Company.mobilePushEnabled is true. */
+  EXPO_ACCESS_TOKEN: Joi.string().allow('').default('')
 }).unknown(true);
 
 const { value: env, error } = schema.validate(process.env, { convert: true });

@@ -3,10 +3,11 @@
  * - supplier_ledgers.voucherNumber global unique -> tenant-scoped unique
  * - auditlogs entity index becomes partial for nullable entityId
  */
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '../.env') });
 const mongoose = require('mongoose');
 
-const mongoUri = process.env.MONGO_URI;
+const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URI;
 
 const dropIfExists = async (collection, name) => {
   const indexes = await collection.indexes();
@@ -26,7 +27,7 @@ const ensureIndex = async (collection, key, options) => {
 
 const run = async () => {
   if (!mongoUri) {
-    throw new Error('MONGO_URI is required');
+    throw new Error('MONGODB_URI (or MONGO_URI) is required in pharmaERPBackend/.env');
   }
   await mongoose.connect(mongoUri);
   const db = mongoose.connection.db;
@@ -41,7 +42,8 @@ const run = async () => {
     {
       name: 'companyId_1_voucherNumber_1',
       unique: true,
-      partialFilterExpression: { voucherNumber: { $type: 'string' }, isDeleted: { $ne: true } }
+      // MongoDB partial indexes do not support $ne — only index rows with a real voucher number
+      partialFilterExpression: { voucherNumber: { $type: 'string' } }
     }
   );
 

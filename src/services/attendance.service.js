@@ -38,6 +38,34 @@ const parseJsDateFromBody = (raw) => {
   return dt.toJSDate();
 };
 
+const resolveActionInstant = (body) => {
+  if (body && body.capturedAt != null && String(body.capturedAt).trim() !== '') {
+    return parseJsDateFromBody(body.capturedAt);
+  }
+  return businessTime.utcNow();
+};
+
+const applyCheckInGeo = (doc, body) => {
+  if (!body || typeof body !== 'object') return;
+  if (body.lat != null) doc.checkInLat = body.lat;
+  if (body.lng != null) doc.checkInLng = body.lng;
+  if (body.accuracy != null) doc.checkInAccuracy = body.accuracy;
+};
+
+const applyCheckOutGeo = (doc, body) => {
+  if (!body || typeof body !== 'object') return;
+  if (body.lat != null) doc.checkOutLat = body.lat;
+  if (body.lng != null) doc.checkOutLng = body.lng;
+  if (body.accuracy != null) doc.checkOutAccuracy = body.accuracy;
+};
+
+const mergeNotes = (existing, incoming) => {
+  if (incoming == null) return existing;
+  const next = String(incoming).trim();
+  if (!next) return existing;
+  return next;
+};
+
 const findTodayRecord = async (companyId, employeeId, timeZone) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   const ymd = todayYmd(tz);
@@ -110,9 +138,17 @@ const checkIn = async (companyId, employeeId, timeZone, body = {}) => {
   });
   if (!user) throw new ApiError(403, 'Active employee not found');
 
-  const ymd = todayYmd(tz);
+  const checkInInstant = resolveActionInstant(body);
+  const checkInLuxon = businessTime.toBusinessTime(checkInInstant, tz);
+  const ymd =
+    body && body.capturedAt != null && String(body.capturedAt).trim() !== ''
+      ? businessTime.businessDayKeyFromUtcInstant(checkInInstant, tz)
+      : todayYmd(tz);
   const dateDoc = dateDocFromYmd(ymd, tz);
-  const mins = businessTime.businessMinutesSinceMidnight(tz);
+  const mins =
+    body && body.capturedAt != null && String(body.capturedAt).trim() !== ''
+      ? businessTime.businessMinutesSinceMidnightForInstant(checkInInstant, tz)
+      : businessTime.businessMinutesSinceMidnight(tz);
 
   if (mins < CHECK_IN_FROM_MINUTES) {
     throw new ApiError(400, 'Check-in is not available before the configured local opening time');
@@ -139,7 +175,7 @@ const checkIn = async (companyId, employeeId, timeZone, body = {}) => {
     throw new ApiError(400, 'Check out your previous shift before checking in again.');
   }
 
-  const now = businessTime.utcNow();
+  const now = checkInInstant;
   const flags = await attendancePolicyService.getCompanyFlags(companyId);
   let lateMinutes = null;
   let workShiftId = null;
@@ -148,7 +184,9 @@ const checkIn = async (companyId, employeeId, timeZone, body = {}) => {
   if (flags.attendancePoliciesEnabled) {
     const ps = await attendancePolicyService.getEffectivePolicyAndShift(companyId, employeeId);
     if (ps?.shift) {
-      if (attendancePolicyService.isSelfCheckInPastShiftClose(ymd, ps.shift, tz)) {
+      if (
+        attendancePolicyService.isSelfCheckInPastShiftClose(ymd, ps.shift, tz, checkInLuxon)
+      ) {
         throw new ApiError(400, SHIFT_CHECKIN_CLOSED_USER_MESSAGE);
       }
       lateMinutes = attendancePolicyService.computeLateMinutes(mins, ps.shift);
@@ -184,6 +222,8 @@ const checkIn = async (companyId, employeeId, timeZone, body = {}) => {
       att.policyId = policyId;
       att.markedBy = ATTENDANCE_MARKED_BY.SELF;
       att.lateCheckInApprovalStatus = LATE_CHECKIN_APPROVAL_STATUS.PENDING;
+      att.notes = mergeNotes(att.notes, body.notes);
+      applyCheckInGeo(att, body);
       await att.save();
     } else {
       att = await Attendance.create({
@@ -197,8 +237,11 @@ const checkIn = async (companyId, employeeId, timeZone, body = {}) => {
         workShiftId,
         policyId,
         markedBy: ATTENDANCE_MARKED_BY.SELF,
-        lateCheckInApprovalStatus: LATE_CHECKIN_APPROVAL_STATUS.PENDING
+        lateCheckInApprovalStatus: LATE_CHECKIN_APPROVAL_STATUS.PENDING,
+        notes: mergeNotes(undefined, body.notes)
       });
+      applyCheckInGeo(att, body);
+      await att.save();
     }
 
     if (flags.attendanceGovernanceEnabled) {
@@ -256,6 +299,8 @@ const checkIn = async (companyId, employeeId, timeZone, body = {}) => {
     docToSave.policyId = policyId;
     docToSave.markedBy = ATTENDANCE_MARKED_BY.SELF;
     docToSave.lateCheckInApprovalStatus = undefined;
+    docToSave.notes = mergeNotes(docToSave.notes, body.notes);
+    applyCheckInGeo(docToSave, body);
     await docToSave.save();
   } else {
     docToSave = await Attendance.create({
@@ -268,8 +313,11 @@ const checkIn = async (companyId, employeeId, timeZone, body = {}) => {
       lateMinutes,
       workShiftId,
       policyId,
-      markedBy: ATTENDANCE_MARKED_BY.SELF
+      markedBy: ATTENDANCE_MARKED_BY.SELF,
+      notes: mergeNotes(undefined, body.notes)
     });
+    applyCheckInGeo(docToSave, body);
+    await docToSave.save();
   }
 
   if (flags.attendanceGovernanceEnabled) {
@@ -304,7 +352,7 @@ const checkIn = async (companyId, employeeId, timeZone, body = {}) => {
   return docToSave;
 };
 
-const checkOut = async (companyId, employeeId, timeZone) => {
+const checkOut = async (companyId, employeeId, timeZone, body = {}) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   const rec = await resolveOpenAttendanceForCheckout(companyId, employeeId, tz);
 
@@ -320,8 +368,10 @@ const checkOut = async (companyId, employeeId, timeZone) => {
 
   const flags = await attendancePolicyService.getCompanyFlags(companyId);
   const before = rec.toObject();
-  rec.checkOutTime = businessTime.utcNow();
+  rec.checkOutTime = resolveActionInstant(body);
   rec.checkOutSource = ATTENDANCE_CHECKOUT_SOURCE.USER;
+  rec.notes = mergeNotes(rec.notes, body.notes);
+  applyCheckOutGeo(rec, body);
   await rec.save();
 
   if (flags.attendanceGovernanceEnabled) {

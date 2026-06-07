@@ -1,5 +1,7 @@
 const Joi = require('joi');
 
+const isoInstant = Joi.alternatives().try(Joi.string().trim().max(44), Joi.date());
+
 const markAttendanceSchema = Joi.object({
   checkOutTime: Joi.date().optional(),
   notes: Joi.string().trim().max(500).allow(''),
@@ -8,7 +10,20 @@ const markAttendanceSchema = Joi.object({
 
 /** Optional note shown on the manager’s late check-in request (strict late + approvals). */
 const checkinBodySchema = Joi.object({
-  reason: Joi.string().trim().max(500).allow('', null).optional()
+  reason: Joi.string().trim().max(500).allow('', null).optional(),
+  capturedAt: isoInstant.optional(),
+  lat: Joi.number().min(-90).max(90).optional(),
+  lng: Joi.number().min(-180).max(180).optional(),
+  accuracy: Joi.number().min(0).max(5000).allow(null).optional(),
+  notes: Joi.string().trim().max(500).allow('', null).optional()
+}).default({});
+
+const checkoutBodySchema = Joi.object({
+  capturedAt: isoInstant.optional(),
+  lat: Joi.number().min(-90).max(90).optional(),
+  lng: Joi.number().min(-180).max(180).optional(),
+  accuracy: Joi.number().min(0).max(5000).allow(null).optional(),
+  notes: Joi.string().trim().max(500).allow('', null).optional()
 }).default({});
 
 /** Calendar dates only — avoid Joi.date() on query strings (coerces to Date and breaks report toYmd). */
@@ -129,8 +144,6 @@ const approvalMatrixPatchSchema = Joi.object({
   effectiveTo: Joi.date().optional().allow(null)
 }).min(1);
 
-const isoInstant = Joi.alternatives().try(Joi.string().trim().max(44), Joi.date());
-
 const timeCorrectionPayloadSchema = Joi.object({
   checkInTime: isoInstant.optional(),
   checkOutTime: isoInstant.optional()
@@ -178,6 +191,7 @@ const policyAssignmentBulkBodySchema = Joi.object({
 module.exports = {
   markAttendanceSchema,
   checkinBodySchema,
+  checkoutBodySchema,
   reportQuerySchema,
   monthlySummaryQuerySchema,
   adminMarkAbsentTodaySchema,

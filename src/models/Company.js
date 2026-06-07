@@ -105,7 +105,12 @@ const companySchema = new mongoose.Schema(
     mobilePushEnabled: { type: Boolean, default: false },
     attendanceGeofenceEnabled: { type: Boolean, default: false },
     doctorApprovalRequired: { type: Boolean, default: false },
-    liveTrackingEnabled: { type: Boolean, default: false }
+    liveTrackingEnabled: { type: Boolean, default: false },
+    /**
+     * When true, field expenses from mobile stay PENDING until a manager approves
+     * and GL is posted. Default false — existing tenants auto-post on create.
+     */
+    expenseApprovalRequired: { type: Boolean, default: false }
   },
   { timestamps: true }
 );

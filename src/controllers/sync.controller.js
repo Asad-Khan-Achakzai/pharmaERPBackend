@@ -24,11 +24,25 @@ const serverConfig = asyncHandler(async (req, res) => {
       pageSize: env.MOBILE_SYNC_PAGE_SIZE,
       pollIntervalMs: env.MOBILE_SYNC_POLL_INTERVAL_MS
     },
+    push: {
+      enabled: !!(company && company.mobilePushEnabled)
+    },
+    liveTracking: {
+      enabled: !!(company && company.liveTrackingEnabled),
+      maxAccuracyMeters: 150,
+      heartbeatIntervalMs: 5 * 60 * 1000
+    },
+    expenses: {
+      approvalRequired: !!(company && company.expenseApprovalRequired)
+    },
     company: company
       ? {
           id: String(company._id),
           name: company.name,
-          status: 'LIVE'
+          status: 'LIVE',
+          mobilePushEnabled: !!company.mobilePushEnabled,
+          liveTrackingEnabled: !!company.liveTrackingEnabled,
+          expenseApprovalRequired: !!company.expenseApprovalRequired
         }
       : null
   };

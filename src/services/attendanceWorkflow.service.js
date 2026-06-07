@@ -15,7 +15,8 @@ const {
 } = require('../constants/enums');
 const attendancePolicyService = require('./attendancePolicy.service');
 const attendanceAuditService = require('./attendanceAudit.service');
-const { userHasPermission } = require('../utils/effectivePermissions');
+const { userHasPermission, userHasTenantWideAccess } = require('../utils/effectivePermissions');
+const { resolveAttendanceVisibleUserIds } = require('../utils/attendanceScope.util');
 
 /** Config-free default when no ApprovalMatrix document exists. */
 const BUILTIN_STEPS = [
@@ -113,6 +114,13 @@ const computeNextSlaDueAt = (company, fromDate = new Date()) => {
   return new Date(fromDate.getTime() + Math.min(336, Math.max(0.25, Number(h))) * 3600000);
 };
 
+/** ObjectId or populated `{ _id, name, … }` from inbox/governance list APIs. */
+const normalizeObjectIdRef = (ref) => {
+  if (ref == null || ref === '') return null;
+  if (typeof ref === 'object' && ref._id != null) return String(ref._id);
+  return String(ref);
+};
+
 /**
  * Walk requester → managers; true if viewerId appears in chain (viewer is manager-of-manager... of requester).
  */
@@ -135,7 +143,9 @@ const computeOversightBypass = async (companyId, actorUserId, isAdmin, reqUser, 
     (await Company.findById(companyId).select('attendanceOversightInterventionEnabled').lean());
   if (!company?.attendanceOversightInterventionEnabled) return false;
   if (!userHasPermission(reqUser, 'attendance.approve.escalated')) return false;
-  return isUserAncestorOfRequester(companyId, actorUserId, request.requesterId);
+  const requesterId = normalizeObjectIdRef(request.requesterId);
+  if (!requesterId) return false;
+  return isUserAncestorOfRequester(companyId, actorUserId, requesterId);
 };
 
 const assertActorCanAct = async (request, actorUserId, isAdmin, opts = {}) => {
@@ -148,12 +158,13 @@ const assertActorCanAct = async (request, actorUserId, isAdmin, opts = {}) => {
     throw new ApiError(403, 'Only an administrator can approve this step');
   }
   if (oversightBypass) return;
-  if (request.currentApproverId && String(request.currentApproverId) === String(actorUserId)) {
+  const approverId = normalizeObjectIdRef(request.currentApproverId);
+  if (approverId && approverId === String(actorUserId)) {
     return;
   }
-  if (request.currentApproverId) {
+  if (approverId) {
     const mgr = await User.findOne({
-      _id: request.currentApproverId,
+      _id: approverId,
       companyId: request.companyId,
       isDeleted: { $ne: true }
     })
@@ -721,7 +732,17 @@ const listInbox = async (companyId, actorUserId, { isAdmin, limit: limRaw, skip:
     });
 };
 
-/** Company-wide actionable requests for company administrators (governance queue). */
+/** True when governance queue may list every employee's requests (admins / company attendance). */
+const canViewCompanyWideAttendanceRequests = (reqUser, isAdmin) => {
+  if (isAdmin) return true;
+  if (!reqUser) return false;
+  return (
+    userHasTenantWideAccess(reqUser) ||
+    userHasPermission(reqUser, 'attendance.viewCompany')
+  );
+};
+
+/** Company-wide actionable requests for administrators; managers see their team scope only. */
 const listGovernanceRequestQueue = async (
   companyId,
   { limit: limRaw, skip: skipRaw, sort: sortRaw, viewerUserId, isAdmin, reqUser }
@@ -730,11 +751,33 @@ const listGovernanceRequestQueue = async (
   const skip = Math.min(Math.max(Number(skipRaw) || 0, 0), 10000);
   const sortDir = sortRaw === 'oldest' ? 1 : -1;
   const now = Date.now();
-  const rows = await AttendanceRequest.find({
+
+  const query = {
     companyId,
     status: actionableStatusQuery(),
     isDeleted: { $ne: true }
-  })
+  };
+
+  if (!canViewCompanyWideAttendanceRequests(reqUser, isAdmin) && reqUser && viewerUserId) {
+    const visibleRequesterIds = await resolveAttendanceVisibleUserIds(companyId, reqUser);
+    const scopeOr = [];
+    if (visibleRequesterIds.length) {
+      scopeOr.push({ requesterId: { $in: visibleRequesterIds } });
+    }
+    const actorOid = mongoose.Types.ObjectId.isValid(String(viewerUserId))
+      ? new mongoose.Types.ObjectId(String(viewerUserId))
+      : null;
+    if (actorOid) {
+      scopeOr.push({ currentApproverId: actorOid });
+    }
+    if (scopeOr.length) {
+      query.$or = scopeOr;
+    } else {
+      query.requesterId = { $in: [] };
+    }
+  }
+
+  const rows = await AttendanceRequest.find(query)
     .sort({ createdAt: sortDir })
     .skip(skip)
     .limit(limit)

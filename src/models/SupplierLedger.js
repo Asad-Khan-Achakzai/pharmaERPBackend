@@ -71,7 +71,7 @@ supplierLedgerSchema.index({ companyId: 1, referenceType: 1, referenceId: 1 });
 supplierLedgerSchema.index({ companyId: 1, type: 1, supplierId: 1, date: -1 });
 supplierLedgerSchema.index(
   { companyId: 1, voucherNumber: 1 },
-  { unique: true, partialFilterExpression: { voucherNumber: { $type: 'string' }, isDeleted: { $ne: true } } }
+  { unique: true, partialFilterExpression: { voucherNumber: { $type: 'string' } } }
 );
 
 supplierLedgerSchema.plugin(softDeletePlugin);

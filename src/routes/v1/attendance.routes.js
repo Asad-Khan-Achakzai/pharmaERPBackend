@@ -2,8 +2,10 @@ const express = require('express');
 const router = express.Router();
 const c = require('../../controllers/attendance.controller');
 const g = require('../../controllers/attendanceGovernance.controller');
+const live = require('../../controllers/liveTracking.controller');
 const { authenticate } = require('../../middleware/auth');
 const { companyScope } = require('../../middleware/companyScope');
+const { clientUuid } = require('../../middleware/clientUuid');
 const { checkPermission, checkPermissionAny } = require('../../middleware/checkPermission');
 const { validate, validateQuery } = require('../../middleware/validate');
 const {
@@ -23,17 +25,26 @@ const {
   oversightQueueQuerySchema,
   myApprovalDelegationSchema,
   checkinBodySchema,
+  checkoutBodySchema,
   submitAttendanceRequestSchema,
   requestCommentSchema,
   inboxQuerySchema
 } = require('../../validators/attendance.validator');
+const { heartbeatSchema } = require('../../validators/phase2.validator');
 
-router.use(authenticate, companyScope);
+router.use(authenticate, companyScope, clientUuid());
+
+router.post('/heartbeat', validate(heartbeatSchema), live.heartbeat);
+router.get(
+  '/live',
+  checkPermissionAny('team.view', 'team.viewAllReports', 'attendance.viewTeam', 'admin.access'),
+  live.live
+);
 
 router.post('/mark', checkPermission('attendance.mark'), validate(markAttendanceSchema), c.mark);
 /** Self-service: only `req.user.userId` — any authenticated company user may check in/out and read own today. */
 router.post('/checkin', validate(checkinBodySchema), c.checkin);
-router.post('/checkout', c.checkout);
+router.post('/checkout', validate(checkoutBodySchema), c.checkout);
 router.get('/me/today', c.meToday);
 router.get(
   '/today',

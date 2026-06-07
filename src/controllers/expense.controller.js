@@ -6,5 +6,8 @@ const list = asyncHandler(async (req, res) => { ApiResponse.paginated(res, await
 const create = asyncHandler(async (req, res) => { ApiResponse.created(res, await expenseService.create(req.companyId, req.body, req.user)); });
 const update = asyncHandler(async (req, res) => { ApiResponse.success(res, await expenseService.update(req.companyId, req.params.id, req.body, req.user), 'Expense updated'); });
 const remove = asyncHandler(async (req, res) => { await expenseService.remove(req.companyId, req.params.id, req.user); ApiResponse.success(res, null, 'Expense deleted'); });
+const inbox = asyncHandler(async (req, res) => { ApiResponse.paginated(res, await expenseService.inbox(req.companyId, req.user, req.query)); });
+const approve = asyncHandler(async (req, res) => { ApiResponse.success(res, await expenseService.approve(req.companyId, req.params.id, req.user), 'Expense approved'); });
+const reject = asyncHandler(async (req, res) => { ApiResponse.success(res, await expenseService.reject(req.companyId, req.params.id, req.body.reason, req.user), 'Expense rejected'); });
 
-module.exports = { list, create, update, remove };
+module.exports = { list, create, update, remove, inbox, approve, reject };

@@ -390,6 +390,98 @@ const pendingApprovals = async (companyId, reqUser) => {
     .lean();
 };
 
+function haversineKm(a, b) {
+  const R = 6371;
+  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const lat1 = (a.lat * Math.PI) / 180;
+  const lat2 = (b.lat * Math.PI) / 180;
+  const x =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.sin(dLng / 2) * Math.sin(dLng / 2) * Math.cos(lat1) * Math.cos(lat2);
+  return 2 * R * Math.asin(Math.sqrt(x));
+}
+
+/**
+ * Basic nearest-neighbor reorder for one plan day. Uses optional client-supplied
+ * coordinates; items without coords are appended sorted by city/location/name.
+ */
+const optimizeRoute = async (companyId, planId, payload, reqUser, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const { date: dateStr, startLat, startLng, itemCoordinates = {} } = payload;
+
+  const plan = await WeeklyPlan.findOne({ _id: planId, companyId, isDeleted: { $ne: true } });
+  if (!plan) throw new ApiError(404, 'Weekly plan not found');
+
+  const dateDoc = businessTime.businessDayStartUtc(String(dateStr).trim(), tz);
+  const items = await PlanItem.find({
+    companyId,
+    weeklyPlanId: planId,
+    date: dateDoc,
+    isDeleted: { $ne: true }
+  })
+    .populate('doctorId', 'name city locationName doctorBrick zone')
+    .sort({ sequenceOrder: 1, createdAt: 1 })
+    .lean();
+
+  if (items.length <= 1) {
+    return items;
+  }
+
+  const coords = new Map();
+  for (const it of items) {
+    const custom = itemCoordinates[String(it._id)];
+    if (custom && typeof custom.lat === 'number' && typeof custom.lng === 'number') {
+      coords.set(String(it._id), custom);
+    }
+  }
+
+  const withCoords = items.filter((it) => coords.has(String(it._id)));
+  const withoutCoords = items.filter((it) => !coords.has(String(it._id)));
+
+  let ordered = [];
+  if (withCoords.length >= 2) {
+    const remaining = [...withCoords];
+    let current =
+      startLat != null && startLng != null
+        ? { lat: startLat, lng: startLng }
+        : coords.get(String(remaining[0]._id));
+    while (remaining.length) {
+      let bestIdx = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < remaining.length; i += 1) {
+        const c = coords.get(String(remaining[i]._id));
+        const d = haversineKm(current, c);
+        if (d < bestDist) {
+          bestDist = d;
+          bestIdx = i;
+        }
+      }
+      const next = remaining.splice(bestIdx, 1)[0];
+      ordered.push(next);
+      current = coords.get(String(next._id));
+    }
+  } else {
+    ordered = [...withCoords];
+  }
+
+  withoutCoords.sort((a, b) => {
+    const docA = a.doctorId || {};
+    const docB = b.doctorId || {};
+    const keyA = `${docA.city || ''}|${docA.locationName || ''}|${docA.name || ''}`;
+    const keyB = `${docB.city || ''}|${docB.locationName || ''}|${docB.name || ''}`;
+    return keyA.localeCompare(keyB);
+  });
+
+  const orderedPlanItemIds = [...ordered, ...withoutCoords].map((it) => String(it._id));
+  return planItemService.reorderForDay(
+    companyId,
+    { weeklyPlanId: planId, date: dateStr, orderedPlanItemIds },
+    reqUser,
+    timeZone
+  );
+};
+
 module.exports = {
   list,
   create,
@@ -400,5 +492,6 @@ module.exports = {
   submit,
   approve,
   reject,
-  pendingApprovals
+  pendingApprovals,
+  optimizeRoute
 };
