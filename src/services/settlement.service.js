@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const Settlement = require('../models/Settlement');
+const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const financialService = require('./financial.service');
 const {
@@ -58,4 +59,29 @@ const getById = async (companyId, id) => {
     .populate('settledBy', 'name');
 };
 
-module.exports = { list, create, getById };
+const runInTransaction = async (fn) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const result = await fn(session);
+    await session.commitTransaction();
+    return result;
+  } catch (e) {
+    await session.abortTransaction();
+    throw e;
+  } finally {
+    session.endSession();
+  }
+};
+
+const update = async (companyId, id, body, reqUser) => {
+  if (!mongoose.Types.ObjectId.isValid(id)) throw new ApiError(400, 'Invalid settlement id');
+  return runInTransaction((session) => financialService.updateSettlement(companyId, id, body, reqUser, session));
+};
+
+const reverse = async (companyId, id, body, reqUser) => {
+  if (!mongoose.Types.ObjectId.isValid(id)) throw new ApiError(400, 'Invalid settlement id');
+  return runInTransaction((session) => financialService.reverseSettlement(companyId, id, body, reqUser, session));
+};
+
+module.exports = { list, create, getById, update, reverse };

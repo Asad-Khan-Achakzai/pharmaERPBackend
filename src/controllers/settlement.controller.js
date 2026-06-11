@@ -28,4 +28,37 @@ const getById = asyncHandler(async (req, res) => {
   ApiResponse.success(res, doc);
 });
 
-module.exports = { list, create, getById };
+const update = asyncHandler(async (req, res) => {
+  const before = await settlementService.getById(req.companyId, req.params.id);
+  if (!before) throw new ApiError(404, 'Settlement not found');
+  const doc = await settlementService.update(req.companyId, req.params.id, req.body, req.user);
+  await auditService.log({
+    companyId: req.companyId,
+    userId: req.user.userId,
+    action: 'settlement.update',
+    entityType: 'Settlement',
+    entityId: doc._id,
+    changes: { before: before.toObject(), after: doc.toObject() }
+  });
+  ApiResponse.success(res, doc, 'Settlement updated');
+});
+
+const reverse = asyncHandler(async (req, res) => {
+  const before = await settlementService.getById(req.companyId, req.params.id);
+  if (!before) throw new ApiError(404, 'Settlement not found');
+  const result = await settlementService.reverse(req.companyId, req.params.id, req.body, req.user);
+  await auditService.log({
+    companyId: req.companyId,
+    userId: req.user.userId,
+    action: 'settlement.reverse',
+    entityType: 'Settlement',
+    entityId: before._id,
+    changes: {
+      before: before.toObject(),
+      meta: { reversalReason: req.body?.reversalReason || null, softDeleted: true }
+    }
+  });
+  ApiResponse.success(res, result, 'Settlement reversed');
+});
+
+module.exports = { list, create, getById, update, reverse };

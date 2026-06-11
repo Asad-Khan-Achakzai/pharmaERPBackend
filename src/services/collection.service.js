@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const Collection = require('../models/Collection');
+const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const financialService = require('./financial.service');
 const { escapeRegex, qScalar, applyDateFieldRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
@@ -62,4 +63,29 @@ const getByPharmacy = async (companyId, pharmacyId) => {
     .sort({ date: -1 });
 };
 
-module.exports = { list, create, getById, getByPharmacy };
+const runInTransaction = async (fn) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const result = await fn(session);
+    await session.commitTransaction();
+    return result;
+  } catch (e) {
+    await session.abortTransaction();
+    throw e;
+  } finally {
+    session.endSession();
+  }
+};
+
+const update = async (companyId, id, body, reqUser) => {
+  if (!mongoose.Types.ObjectId.isValid(id)) throw new ApiError(400, 'Invalid collection id');
+  return runInTransaction((session) => financialService.updateCollection(companyId, id, body, reqUser, session));
+};
+
+const reverse = async (companyId, id, body, reqUser) => {
+  if (!mongoose.Types.ObjectId.isValid(id)) throw new ApiError(400, 'Invalid collection id');
+  return runInTransaction((session) => financialService.reverseCollection(companyId, id, body, reqUser, session));
+};
+
+module.exports = { list, create, getById, getByPharmacy, update, reverse };

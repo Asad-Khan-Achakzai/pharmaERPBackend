@@ -18,4 +18,14 @@ const createSettlementSchema = Joi.object({
   grossCompanyToDistributor: Joi.number().min(0)
 });
 
-module.exports = { createSettlementSchema };
+const updateSettlementSchema = Joi.object({
+  date: Joi.date(),
+  notes: Joi.string().trim().allow(''),
+  referenceNumber: Joi.string().trim().allow('')
+}).min(1);
+
+const reverseSettlementSchema = Joi.object({
+  reversalReason: Joi.string().trim().max(500).allow('', null)
+});
+
+module.exports = { createSettlementSchema, updateSettlementSchema, reverseSettlementSchema };

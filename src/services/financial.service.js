@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Ledger = require('../models/Ledger');
 const Collection = require('../models/Collection');
+const Voucher = require('../models/Voucher');
 const Settlement = require('../models/Settlement');
 const SettlementAllocation = require('../models/SettlementAllocation');
 const DeliveryRecord = require('../models/DeliveryRecord');
@@ -14,10 +15,15 @@ const {
   LEDGER_REFERENCE_TYPE,
   COLLECTOR_TYPE,
   SETTLEMENT_DIRECTION,
-  LEDGER_COLLECTION_PORTION
+  LEDGER_COLLECTION_PORTION,
+  GL_SOURCE_MODULE,
+  VOUCHER_STATUS
 } = require('../constants/enums');
 const glBridge = require('./glBridge.service');
+const glPosting = require('./glPosting.service');
 const moneyAccountService = require('./moneyAccount.service');
+
+const nd = { isDeleted: { $ne: true } };
 
 const oid = (id) => new mongoose.Types.ObjectId(id);
 
@@ -502,6 +508,135 @@ const createCollection = async (companyId, data, reqUser, session) => {
   return collection;
 };
 
+const softDeleteWithSession = async (doc, userId, session) => {
+  doc.isDeleted = true;
+  doc.deletedAt = new Date();
+  doc.deletedBy = userId || null;
+  await doc.save({ session });
+};
+
+const findCollectionGlVoucher = async (companyId, collectionId, session) =>
+  Voucher.findOne({
+    companyId: oid(companyId),
+    sourceModule: GL_SOURCE_MODULE.COLLECTION,
+    sourceRefId: oid(collectionId),
+    status: VOUCHER_STATUS.POSTED,
+    reversedVoucherId: null,
+    ...nd
+  }).session(session || null);
+
+const assertNoSettlementAgainstCollection = async (companyId, collectionId, session) => {
+  const ledgerRows = await Ledger.find({
+    companyId: oid(companyId),
+    referenceType: LEDGER_REFERENCE_TYPE.COLLECTION,
+    referenceId: oid(collectionId),
+    ...nd
+  })
+    .session(session || null)
+    .select('_id');
+  if (!ledgerRows.length) return;
+  const ledgerIds = ledgerRows.map((r) => r._id);
+  const allocCount = await SettlementAllocation.countDocuments({
+    companyId: oid(companyId),
+    ledgerEntryId: { $in: ledgerIds },
+    ...nd
+  }).session(session || null);
+  if (allocCount > 0) {
+    throw new ApiError(
+      409,
+      'Cannot reverse: a settlement already allocated against this collection. Reverse the settlement first.'
+    );
+  }
+};
+
+/**
+ * Safe metadata edit only — amount, pharmacy, collector, and money account cannot change after posting.
+ */
+const updateCollection = async (companyId, id, body, reqUser, session) => {
+  const forbidden = ['amount', 'pharmacyId', 'collectorType', 'distributorId', 'paymentMethod', 'moneyAccountId'];
+  if (forbidden.some((k) => body[k] !== undefined)) {
+    throw new ApiError(
+      400,
+      'Amount, pharmacy, collector, and accounts cannot be changed — reverse and record a new collection'
+    );
+  }
+
+  const collection = await Collection.findOne({ _id: oid(id), companyId: oid(companyId) }).session(session);
+  if (!collection) throw new ApiError(404, 'Collection not found');
+
+  if (body.date !== undefined) collection.date = new Date(body.date);
+  if (body.notes !== undefined) {
+    collection.notes =
+      body.notes != null && String(body.notes).trim() !== '' ? String(body.notes).trim() : undefined;
+  }
+  if (body.referenceNumber !== undefined) {
+    collection.referenceNumber =
+      body.referenceNumber != null && String(body.referenceNumber).trim() !== ''
+        ? String(body.referenceNumber).trim()
+        : undefined;
+  }
+
+  collection.updatedBy = reqUser.userId;
+  await collection.save({ session });
+
+  if (body.date !== undefined) {
+    await Ledger.updateMany(
+      {
+        companyId: oid(companyId),
+        referenceType: LEDGER_REFERENCE_TYPE.COLLECTION,
+        referenceId: collection._id,
+        ...nd
+      },
+      { $set: { date: collection.date, updatedBy: reqUser.userId } },
+      { session }
+    );
+  }
+
+  const voucher = await findCollectionGlVoucher(companyId, collection._id, session);
+  if (voucher) {
+    if (body.date !== undefined) voucher.date = collection.date;
+    if (body.notes !== undefined) voucher.narration = collection.notes || 'Pharmacy collection';
+    voucher.updatedBy = reqUser.userId;
+    await voucher.save({ session });
+  }
+
+  return collection;
+};
+
+/**
+ * Undo FIFO allocation, ledger clearing, and GL for a collection (soft-delete + voucher reversal).
+ */
+const reverseCollection = async (companyId, id, body, reqUser, session) => {
+  const collection = await Collection.findOne({ _id: oid(id), companyId: oid(companyId) }).session(session);
+  if (!collection) throw new ApiError(404, 'Collection not found');
+
+  await assertNoSettlementAgainstCollection(companyId, id, session);
+
+  const voucher = await findCollectionGlVoucher(companyId, collection._id, session);
+  if (voucher) {
+    await glPosting.reverseVoucher(companyId, voucher._id, reqUser, session);
+  }
+
+  const ledgerRows = await Ledger.find({
+    companyId: oid(companyId),
+    referenceType: LEDGER_REFERENCE_TYPE.COLLECTION,
+    referenceId: collection._id,
+    ...nd
+  }).session(session);
+
+  for (const row of ledgerRows) {
+    await softDeleteWithSession(row, reqUser.userId, session);
+  }
+
+  await softDeleteWithSession(collection, reqUser.userId, session);
+
+  return {
+    reversed: true,
+    collectionId: collection._id,
+    reversalReason: body?.reversalReason || null
+  };
+};
+
 /** Sum of settlement allocations applied to a ledger line for a given settlement direction. */
 const sumAllocatedForLine = async (companyId, distributorId, ledgerEntryId, settlementDirection, session) => {
   const agg = await SettlementAllocation.aggregate([
@@ -711,6 +846,97 @@ const createSettlement = async (companyId, data, reqUser, session) => {
 };
 
 /**
+ * Safe metadata edit only — amount, distributor, direction, and payment method cannot change after posting.
+ */
+const updateSettlement = async (companyId, id, body, reqUser, session) => {
+  const forbidden = [
+    'amount',
+    'distributorId',
+    'direction',
+    'paymentMethod',
+    'isNetSettlement',
+    'grossDistributorToCompany',
+    'grossCompanyToDistributor'
+  ];
+  if (forbidden.some((k) => body[k] !== undefined)) {
+    throw new ApiError(
+      400,
+      'Amount, distributor, direction, and payment method cannot be changed — reverse and record a new settlement'
+    );
+  }
+
+  const settlement = await Settlement.findOne({ _id: oid(id), companyId: oid(companyId) }).session(session);
+  if (!settlement) throw new ApiError(404, 'Settlement not found');
+
+  if (body.date !== undefined) settlement.date = new Date(body.date);
+  if (body.notes !== undefined) {
+    settlement.notes =
+      body.notes != null && String(body.notes).trim() !== '' ? String(body.notes).trim() : undefined;
+  }
+  if (body.referenceNumber !== undefined) {
+    settlement.referenceNumber =
+      body.referenceNumber != null && String(body.referenceNumber).trim() !== ''
+        ? String(body.referenceNumber).trim()
+        : undefined;
+  }
+
+  settlement.updatedBy = reqUser.userId;
+  await settlement.save({ session });
+
+  if (body.date !== undefined) {
+    await Ledger.updateMany(
+      {
+        companyId: oid(companyId),
+        referenceType: LEDGER_REFERENCE_TYPE.SETTLEMENT,
+        referenceId: settlement._id,
+        ...nd
+      },
+      { $set: { date: settlement.date, updatedBy: reqUser.userId } },
+      { session }
+    );
+  }
+
+  return settlement;
+};
+
+/**
+ * Undo FIFO allocation links and distributor-clearing ledger for a settlement.
+ */
+const reverseSettlement = async (companyId, id, body, reqUser, session) => {
+  const settlement = await Settlement.findOne({ _id: oid(id), companyId: oid(companyId) }).session(session);
+  if (!settlement) throw new ApiError(404, 'Settlement not found');
+
+  const allocations = await SettlementAllocation.find({
+    companyId: oid(companyId),
+    settlementId: settlement._id,
+    ...nd
+  }).session(session);
+
+  for (const alloc of allocations) {
+    await softDeleteWithSession(alloc, reqUser.userId, session);
+  }
+
+  const ledgerRows = await Ledger.find({
+    companyId: oid(companyId),
+    referenceType: LEDGER_REFERENCE_TYPE.SETTLEMENT,
+    referenceId: settlement._id,
+    ...nd
+  }).session(session);
+
+  for (const row of ledgerRows) {
+    await softDeleteWithSession(row, reqUser.userId, session);
+  }
+
+  await softDeleteWithSession(settlement, reqUser.userId, session);
+
+  return {
+    reversed: true,
+    settlementId: settlement._id,
+    reversalReason: body?.reversalReason || null
+  };
+};
+
+/**
  * Reverse proportional clearing for a return (RETURN_CLEARING_ADJ).
  */
 const postReturnClearingAdjustment = async (session, ctx) => {
@@ -854,7 +1080,11 @@ module.exports = {
   computePharmacyReceivableState,
   fifoAllocateCollection,
   createCollection,
+  updateCollection,
+  reverseCollection,
   createSettlement,
+  updateSettlement,
+  reverseSettlement,
   postReturnClearingAdjustment,
   getDistributorClearingBalance,
   getDistributorObligations,

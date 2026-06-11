@@ -21,4 +21,14 @@ const createCollectionSchema = Joi.object({
   notes: Joi.string().trim().allow('')
 });
 
-module.exports = { createCollectionSchema };
+const updateCollectionSchema = Joi.object({
+  date: Joi.date(),
+  notes: Joi.string().trim().allow(''),
+  referenceNumber: Joi.string().trim().allow('')
+}).min(1);
+
+const reverseCollectionSchema = Joi.object({
+  reversalReason: Joi.string().trim().max(500).allow('', null)
+});
+
+module.exports = { createCollectionSchema, updateCollectionSchema, reverseCollectionSchema };
