@@ -16,7 +16,7 @@ router.use(authenticate, companyScope);
 router.get('/group-types', checkPermission('accounts.view'), c.groupTypes);
 router.get('/simple-types', checkPermissionAny('reports.view', 'accounts.view', 'payments.create', 'expenses.view'), c.simpleTypes);
 router.get('/business-view', checkPermissionAny('reports.view', 'accounts.view', 'payments.view', 'expenses.view'), c.businessView);
-router.get('/money-accounts', checkPermissionAny('payments.view', 'payments.create', 'accounts.view', 'vouchers.create'), c.listMoneyAccounts);
+router.get('/money-accounts', checkPermissionAny('payments.view', 'payments.create', 'accounts.view', 'vouchers.create', 'expenses.approve'), c.listMoneyAccounts);
 router.get('/tree', checkPermission('accounts.view'), c.tree);
 router.get('/', checkPermission('accounts.view'), c.list);
 router.get('/:id', checkPermission('accounts.view'), c.getById);

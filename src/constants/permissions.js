@@ -7,6 +7,8 @@ const PERMISSIONS = {
   pharmacies:   ['view', 'create', 'edit', 'delete'],
   /** `assign` = change territoryId / assignedRepId / monthlyVisitTarget / tier on a doctor. */
   doctors:      ['view', 'create', 'edit', 'delete', 'assign'],
+  /** Manager review of rep-submitted doctor GPS suggestions before geo-fencing applies. */
+  doctorLocations: ['review'],
   orders:       ['view', 'create', 'edit', 'deliver', 'return'],
   payments:     ['view', 'create'],
   ledger:       ['view'],

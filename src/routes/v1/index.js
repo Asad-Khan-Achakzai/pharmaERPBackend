@@ -41,6 +41,7 @@ const mobileAuthRoutes = require('./mobileAuth.routes');
 const syncRoutes = require('./sync.routes');
 const mediaRoutes = require('./media.routes');
 const notificationRoutes = require('./notification.routes');
+const doctorLocationSuggestionRoutes = require('./doctorLocationSuggestion.routes');
 const announcementRoutes = require('./announcement.routes');
 
 router.use('/auth/mobile', mobileAuthRoutes);
@@ -61,6 +62,7 @@ router.use('/pharmacies', pharmacyRoutes);
 // doesn't try to resolve "import" as an ObjectId.
 router.use('/doctors/import', doctorImportRoutes);
 router.use('/doctors', doctorRoutes);
+router.use('/doctor-location-suggestions', doctorLocationSuggestionRoutes);
 router.use('/doctor-activities', doctorActivityRoutes);
 router.use('/orders', orderRoutes);
 router.use('/payments', paymentRoutes);

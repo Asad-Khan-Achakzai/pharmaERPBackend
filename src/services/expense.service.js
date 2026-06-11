@@ -5,7 +5,10 @@ const User = require('../models/User');
 const Transaction = require('../models/Transaction');
 const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
-const { TRANSACTION_TYPE, EXPENSE_STATUS } = require('../constants/enums');
+const Account = require('../models/Account');
+const { ACCOUNT_CODES } = require('../constants/coaTemplate');
+const { TRANSACTION_TYPE, EXPENSE_STATUS, EXPENSE_CATEGORY } = require('../constants/enums');
+const coaSeed = require('./coaSeed.service');
 const { roundPKR } = require('../utils/currency');
 const auditService = require('./audit.service');
 const moneyAccountService = require('./moneyAccount.service');
@@ -22,6 +25,49 @@ const {
 
 const nd = { isDeleted: { $ne: true } };
 const oid = (id) => new mongoose.Types.ObjectId(id);
+
+const expenseCategoryToAccountCode = (category) => {
+  switch (category) {
+    case EXPENSE_CATEGORY.SALARY:
+      return ACCOUNT_CODES.SALARY_EXPENSE;
+    case EXPENSE_CATEGORY.RENT:
+      return ACCOUNT_CODES.RENT_EXPENSE;
+    case EXPENSE_CATEGORY.LOGISTICS:
+      return ACCOUNT_CODES.LOGISTICS_EXPENSE;
+    case EXPENSE_CATEGORY.OFFICE:
+    case EXPENSE_CATEGORY.DOCTOR_INVESTMENT:
+    case EXPENSE_CATEGORY.OTHER:
+    default:
+      return ACCOUNT_CODES.OPERATING_EXPENSE;
+  }
+};
+
+const resolveAccountIdByCode = async (companyId, code, session = null) => {
+  await coaSeed.ensureCoaForCompany(companyId, session ? { session } : {});
+  const acc = await Account.findOne({
+    companyId: oid(companyId),
+    code,
+    isActive: true,
+    isGroup: { $ne: true },
+    ...nd
+  }).session(session || null);
+  if (!acc) throw new ApiError(400, `Account ${code} is not configured for this company`);
+  return acc._id;
+};
+
+/** Web sends COA ids; mobile sends category — normalize before posting. */
+const resolveCreatePayload = async (companyId, data, session = null) => {
+  const payload = { ...data };
+  if (!payload.expenseAccountId) {
+    if (!payload.category) throw new ApiError(400, 'expenseAccountId or category is required');
+    const code = expenseCategoryToAccountCode(payload.category);
+    payload.expenseAccountId = await resolveAccountIdByCode(companyId, code, session);
+  }
+  if (!payload.moneyAccountId) {
+    payload.moneyAccountId = await resolveAccountIdByCode(companyId, ACCOUNT_CODES.CASH, session);
+  }
+  return payload;
+};
 
 const populateOpts = [
   { path: 'expenseAccountId', select: 'code name' },
@@ -119,11 +165,12 @@ const create = async (companyId, data, reqUser) => {
   let created;
   try {
     await session.withTransaction(async () => {
-      const expAcc = await assertExpenseAccount(companyId, data.expenseAccountId, session);
-      const moneyAcc = await moneyAccountService.assertMoneyAccount(companyId, data.moneyAccountId, session);
-      const amount = roundPKR(data.amount);
-      const expenseDate = data.date ? new Date(data.date) : new Date();
-      const narration = data.description?.trim() || `Expense: ${expAcc.name}`;
+      const resolved = await resolveCreatePayload(companyId, data, session);
+      const expAcc = await assertExpenseAccount(companyId, resolved.expenseAccountId, session);
+      const moneyAcc = await moneyAccountService.assertMoneyAccount(companyId, resolved.moneyAccountId, session);
+      const amount = roundPKR(resolved.amount);
+      const expenseDate = resolved.date ? new Date(resolved.date) : new Date();
+      const narration = resolved.description?.trim() || `Expense: ${expAcc.name}`;
 
       const status = approvalRequired ? EXPENSE_STATUS.PENDING : EXPENSE_STATUS.APPROVED;
 
@@ -131,14 +178,15 @@ const create = async (companyId, data, reqUser) => {
         [
           {
             companyId,
+            category: resolved.category || null,
             expenseAccountId: expAcc._id,
             moneyAccountId: moneyAcc._id,
             amount,
-            description: data.description || '',
+            description: resolved.description || '',
             date: expenseDate,
-            distributorId: data.distributorId || undefined,
-            doctorId: data.doctorId || undefined,
-            employeeId: data.employeeId || reqUser.userId,
+            distributorId: resolved.distributorId || undefined,
+            doctorId: resolved.doctorId || undefined,
+            employeeId: resolved.employeeId || reqUser.userId,
             approvedBy: approvalRequired ? undefined : reqUser.userId,
             status,
             createdBy: reqUser.userId
@@ -226,23 +274,25 @@ const inbox = async (companyId, reqUser, query = {}) => {
   return { docs, total, page, limit };
 };
 
-const approve = async (companyId, id, reqUser) => {
+const approve = async (companyId, id, data, reqUser) => {
   const expense = await Expense.findOne({ _id: id, companyId, ...nd });
   if (!expense) throw new ApiError(404, 'Expense not found');
   if (expense.status !== EXPENSE_STATUS.PENDING) throw new ApiError(400, 'Expense is not pending approval');
   if (expense.voucherId) throw new ApiError(400, 'Expense already posted');
+  if (!data?.moneyAccountId) throw new ApiError(400, 'Paid-from money account is required');
 
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
       const expAcc = await assertExpenseAccount(companyId, expense.expenseAccountId, session);
-      const moneyAcc = await moneyAccountService.assertMoneyAccount(companyId, expense.moneyAccountId, session);
+      const moneyAcc = await moneyAccountService.assertMoneyAccount(companyId, data.moneyAccountId, session);
       const amount = roundPKR(expense.amount);
       const expenseDate = expense.date || new Date();
       const narration = expense.description?.trim() || `Expense: ${expAcc.name}`;
 
       expense.status = EXPENSE_STATUS.APPROVED;
       expense.approvedBy = reqUser.userId;
+      expense.moneyAccountId = moneyAcc._id;
       await expense.save({ session });
       await postExpenseLedger(session, companyId, expense, expAcc, moneyAcc, amount, expenseDate, narration, reqUser);
     });
@@ -256,7 +306,7 @@ const approve = async (companyId, id, reqUser) => {
     action: 'expense.approve',
     entityType: 'Expense',
     entityId: expense._id,
-    changes: { after: { status: EXPENSE_STATUS.APPROVED } }
+    changes: { after: { status: EXPENSE_STATUS.APPROVED, moneyAccountId: expense.moneyAccountId } }
   });
 
   if (expense.employeeId) {

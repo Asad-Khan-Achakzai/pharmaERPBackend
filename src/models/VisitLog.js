@@ -16,6 +16,15 @@ const visitLogSchema = new mongoose.Schema(
       lat: { type: Number },
       lng: { type: Number }
     },
+    /** Meters from verified doctor coordinates when geo-fence evaluated. */
+    distanceFromDoctor: { type: Number, default: null },
+    geoFenceResult: {
+      type: String,
+      enum: ['NOT_APPLICABLE', 'INSIDE_RADIUS', 'OUTSIDE_RADIUS'],
+      default: 'NOT_APPLICABLE'
+    },
+    /** Device-reported GPS accuracy (meters) at visit completion. */
+    gpsAccuracy: { type: Number, default: null },
     notes: { type: String, trim: true, maxlength: 2000 },
     orderTaken: { type: Boolean, default: false },
     /** Products discussed during visit (MRep execution). */

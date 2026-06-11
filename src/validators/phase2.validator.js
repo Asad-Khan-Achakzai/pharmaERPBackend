@@ -27,9 +27,14 @@ const rejectExpenseSchema = Joi.object({
   reason: Joi.string().required().trim().min(3).max(500)
 });
 
+const approveExpenseSchema = Joi.object({
+  moneyAccountId: Joi.string().required()
+});
+
 module.exports = {
   createAnnouncementSchema,
   heartbeatSchema,
   optimizeRouteSchema,
-  rejectExpenseSchema
+  rejectExpenseSchema,
+  approveExpenseSchema
 };

@@ -12,6 +12,7 @@ const planExecution = require('../utils/planExecution.util');
 const attendanceService = require('./attendance.service');
 const auditService = require('./audit.service');
 const coverageService = require('./coverage.service');
+const doctorLocationWorkflow = require('./doctorLocationWorkflow.service');
 const env = require('../config/env');
 
 const normalizePlanItemDate = (input, timeZone) => {
@@ -367,6 +368,15 @@ const markVisit = async (companyId, planItemId, body, reqUser, timeZone, company
       samplesQty = n;
     }
 
+    const geoFields = await doctorLocationWorkflow.applyDoctorLocationOnVisitComplete({
+      companyId,
+      companyDoc,
+      doctorId,
+      body,
+      submittedByEmployeeId: reqUser.userId,
+      session
+    });
+
     const [visitLog] = await VisitLog.create(
       [
         {
@@ -377,10 +387,10 @@ const markVisit = async (companyId, planItemId, body, reqUser, timeZone, company
           visitTime,
           checkInTime: body.checkInTime != null ? parseOpt(body.checkInTime) : undefined,
           checkOutTime: body.checkOutTime != null ? parseOpt(body.checkOutTime) : undefined,
-          location:
-            body.location?.lat != null && body.location?.lng != null
-              ? { lat: body.location.lat, lng: body.location.lng }
-              : undefined,
+          location: geoFields.location,
+          distanceFromDoctor: geoFields.distanceFromDoctor,
+          geoFenceResult: geoFields.geoFenceResult,
+          gpsAccuracy: geoFields.gpsAccuracy,
           notes: body.notes,
           orderTaken: Boolean(body.orderTaken),
           productsDiscussed: pDiscussed,
@@ -586,7 +596,7 @@ const nextSequenceForDay = async (companyId, employeeId, dateDoc) => {
   return max + 1;
 };
 
-const createUnplannedAsPlanItem = async (companyId, body, reqUser, timeZone) => {
+const createUnplannedAsPlanItem = async (companyId, body, reqUser, timeZone, companyDoc = null) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   const { doctorId, notes, orderTaken, location, visitTime, checkInTime, checkOutTime, unplannedReason } = body;
   if (!doctorId) throw new ApiError(400, 'Doctor is required for an unplanned visit');
@@ -653,6 +663,15 @@ const createUnplannedAsPlanItem = async (companyId, body, reqUser, timeZone) => 
     );
     const pi = item[0];
 
+    const geoFields = await doctorLocationWorkflow.applyDoctorLocationOnVisitComplete({
+      companyId,
+      companyDoc,
+      doctorId,
+      body,
+      submittedByEmployeeId: reqUser.userId,
+      session
+    });
+
     const [visitLog] = await VisitLog.create(
       [
         {
@@ -663,8 +682,10 @@ const createUnplannedAsPlanItem = async (companyId, body, reqUser, timeZone) => 
           visitTime: vt,
           checkInTime: checkInTime != null ? parseOpt(checkInTime) : undefined,
           checkOutTime: checkOutTime != null ? parseOpt(checkOutTime) : undefined,
-          location:
-            location?.lat != null && location?.lng != null ? { lat: location.lat, lng: location.lng } : undefined,
+          location: geoFields.location,
+          distanceFromDoctor: geoFields.distanceFromDoctor,
+          geoFenceResult: geoFields.geoFenceResult,
+          gpsAccuracy: geoFields.gpsAccuracy,
           notes,
           orderTaken: Boolean(orderTaken),
           productsDiscussed: pDiscussed,

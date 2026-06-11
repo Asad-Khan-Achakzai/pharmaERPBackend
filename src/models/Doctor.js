@@ -39,7 +39,21 @@ const doctorSchema = new mongoose.Schema(
     /** Numeric monthly visit target (replaces free-text `frequency` over time). */
     monthlyVisitTarget: { type: Number, min: 0, max: 31, default: null },
     /** Optional doctor tier ('A' | 'B' | 'C' …); coexists with legacy `grade`. */
-    tier: { type: String, trim: true, maxlength: 16, default: null }
+    tier: { type: String, trim: true, maxlength: 16, default: null },
+    /**
+     * Progressive GPS verification for visit geo-fencing.
+     * Existing doctors default UNVERIFIED — geo-fence applies only when VERIFIED.
+     */
+    locationStatus: {
+      type: String,
+      enum: ['UNVERIFIED', 'SUGGESTED', 'VERIFIED'],
+      default: 'UNVERIFIED',
+      index: true
+    },
+    latitude: { type: Number, default: null },
+    longitude: { type: Number, default: null },
+    locationVerifiedAt: { type: Date, default: null },
+    locationVerifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
   },
   { timestamps: true }
 );
@@ -48,6 +62,7 @@ doctorSchema.index({ companyId: 1, pharmacyId: 1 });
 doctorSchema.index({ companyId: 1, isActive: 1 });
 doctorSchema.index({ companyId: 1, territoryId: 1, isActive: 1 });
 doctorSchema.index({ companyId: 1, assignedRepId: 1, isActive: 1 });
+doctorSchema.index({ companyId: 1, locationStatus: 1 });
 
 doctorSchema.plugin(softDeletePlugin);
 

@@ -107,6 +107,17 @@ const companySchema = new mongoose.Schema(
     doctorApprovalRequired: { type: Boolean, default: false },
     liveTrackingEnabled: { type: Boolean, default: false },
     /**
+     * Visit geo-fencing for doctors with locationStatus = VERIFIED.
+     * Defaults keep existing visit workflows unchanged until opted in.
+     */
+    geoFencingEnabled: { type: Boolean, default: false },
+    geoFenceRadiusMeters: { type: Number, default: 150, min: 25, max: 5000 },
+    geoFenceMode: {
+      type: String,
+      enum: ['OFF', 'SOFT', 'STRICT'],
+      default: 'OFF'
+    },
+    /**
      * When true, field expenses from mobile stay PENDING until a manager approves
      * and GL is posted. Default false — existing tenants auto-post on create.
      */

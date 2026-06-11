@@ -60,7 +60,9 @@ const DEFAULT_MEDICAL_REP_PERMISSIONS = [
   'attendance.mark',
   'attendance.request.create',
   'weeklyPlans.view',
-  'weeklyPlans.markVisit'
+  'weeklyPlans.markVisit',
+  'expenses.view',
+  'expenses.create'
 ];
 
 /**
@@ -73,12 +75,16 @@ const DEFAULT_ASM_PERMISSIONS = [
   'weeklyPlans.view',
   'weeklyPlans.review',
   'weeklyPlans.approve',
+  'doctorLocations.review',
   'team.view',
   'team.viewAllReports',
   'targets.view',
   'attendance.request.create',
   'attendance.approve.direct',
-  'attendance.governance.view'
+  'attendance.governance.view',
+  'expenses.view',
+  'expenses.create',
+  'expenses.approve'
 ];
 
 const DEFAULT_RM_PERMISSIONS = [

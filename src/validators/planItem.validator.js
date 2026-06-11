@@ -27,7 +27,8 @@ const markVisitSchema = Joi.object({
   checkOutTime: Joi.date(),
   location: Joi.object({
     lat: Joi.number(),
-    lng: Joi.number()
+    lng: Joi.number(),
+    accuracy: Joi.number().min(0).allow(null)
   }),
   doctorId: Joi.string().allow(null, ''),
   productsDiscussed: Joi.array().items(Joi.string().hex().length(24)).max(50),
@@ -50,7 +51,8 @@ const unplannedVisitSchema = Joi.object({
   checkOutTime: Joi.date(),
   location: Joi.object({
     lat: Joi.number(),
-    lng: Joi.number()
+    lng: Joi.number(),
+    accuracy: Joi.number().min(0).allow(null)
   }),
   productsDiscussed: Joi.array().items(Joi.string().hex().length(24)).max(50),
   primaryProductId: Joi.string().hex().length(24).allow(null, ''),

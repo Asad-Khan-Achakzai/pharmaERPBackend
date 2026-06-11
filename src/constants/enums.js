@@ -193,6 +193,38 @@ const UNPLANNED_VISIT_REASON = {
   OTHER: 'OTHER'
 };
 
+/** Progressive doctor coordinate lifecycle for visit geo-fencing. */
+const DOCTOR_LOCATION_STATUS = {
+  UNVERIFIED: 'UNVERIFIED',
+  SUGGESTED: 'SUGGESTED',
+  VERIFIED: 'VERIFIED'
+};
+
+const DOCTOR_LOCATION_SUGGESTION_SOURCE = {
+  VISIT_COMPLETION: 'VISIT_COMPLETION',
+  MANUAL_PIN: 'MANUAL_PIN'
+};
+
+const DOCTOR_LOCATION_SUGGESTION_STATUS = {
+  PENDING: 'PENDING',
+  APPROVED: 'APPROVED',
+  REJECTED: 'REJECTED'
+};
+
+/** Company visit geo-fence enforcement mode (only applies when geoFencingEnabled). */
+const GEO_FENCE_MODE = {
+  OFF: 'OFF',
+  SOFT: 'SOFT',
+  STRICT: 'STRICT'
+};
+
+/** Stored on VisitLog after visit completion geo evaluation. */
+const GEO_FENCE_RESULT = {
+  NOT_APPLICABLE: 'NOT_APPLICABLE',
+  INSIDE_RADIUS: 'INSIDE_RADIUS',
+  OUTSIDE_RADIUS: 'OUTSIDE_RADIUS'
+};
+
 /** MRep 3-level org territory tree (single collection, self-referencing). */
 const TERRITORY_KIND = {
   ZONE: 'ZONE',
@@ -371,6 +403,11 @@ module.exports = {
   PLAN_ITEM_STATUS,
   DAY_EXECUTION_STATE,
   UNPLANNED_VISIT_REASON,
+  DOCTOR_LOCATION_STATUS,
+  DOCTOR_LOCATION_SUGGESTION_SOURCE,
+  DOCTOR_LOCATION_SUGGESTION_STATUS,
+  GEO_FENCE_MODE,
+  GEO_FENCE_RESULT,
   TERRITORY_KIND,
   TERRITORY_PARENT_KIND,
   DOCTOR_ACTIVITY_STATUS,
