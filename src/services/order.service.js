@@ -342,6 +342,7 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts
       const physicalQty = dItem.quantity;
       const paidThisBatch = paidUnitsInDeliveryBatch(orderItem, alreadyDelivered, physicalQty);
       const snap = financialService.computeLineSnapshot(orderItem, paidThisBatch, distributor);
+      const grossTpLineTotal = roundPKR((orderItem.tpAtTime || 0) * physicalQty);
       commissionPctSnapshot = snap.commissionPct;
 
       const avgCostAtTime = inv.avgCostPerUnit;
@@ -368,7 +369,7 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts
         finalSellingPrice,
         profitPerUnit,
         totalProfit,
-        tpLineTotal: snap.tpLineTotal,
+        tpLineTotal: grossTpLineTotal,
         distributorShare: snap.distributorShare,
         linePharmacyNet: snap.linePharmacyNet,
         companyShare: snap.companyShare
@@ -376,7 +377,7 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts
 
       const lineNet = linePharmacyNet;
       totalAmount += lineNet;
-      tpSubtotal += snap.tpLineTotal;
+      tpSubtotal += grossTpLineTotal;
       distributorShareTotal += snap.distributorShare;
       companyShareTotal += snap.companyShare;
       totalCost += lineCost;

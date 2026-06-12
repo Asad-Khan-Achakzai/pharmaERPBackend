@@ -44,6 +44,21 @@ function generatePayslipPdf({ stream, companyName, payroll, employee }) {
   doc.text(`Daily Allowance:                 PKR ${fmtMoney(payroll.dailyAllowanceTotal || 0)}`);
   doc.text(`Allowances (total):              PKR ${fmtMoney(allowanceSum)}`);
   doc.text(`Commission:                      PKR ${fmtMoney(commissionAmt)}`);
+  const productIncentiveAmt = payroll.productIncentiveTotal || 0;
+  doc.text(`Product incentives (total):      PKR ${fmtMoney(productIncentiveAmt)}`);
+  if ((payroll.productIncentiveLines || []).length > 0) {
+    doc.moveDown(0.3);
+    for (const line of payroll.productIncentiveLines) {
+      const slab = line.matchedSlab;
+      const slabLabel = slab
+        ? `slab ${slab.fromPacks}-${slab.toPacks ?? '∞'} @ ${fmtMoney(slab.ratePerPack)}/pack`
+        : 'no matching slab';
+      doc.fontSize(9).text(
+        `  · ${line.productName || 'Product'}: ${line.deliveredQty} packs → PKR ${fmtMoney(line.amount)} (${slabLabel})`
+      );
+    }
+    doc.fontSize(10);
+  }
   doc.moveDown(0.8);
 
   section('Deductions');

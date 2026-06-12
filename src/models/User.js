@@ -39,6 +39,9 @@ const userSchema = new mongoose.Schema(
     attendanceApproveDelegateUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     /** Inclusive end of delegation (approvals invalidate after this instant). */
     attendanceApproveDelegateUntil: { type: Date, default: null },
+    /** Assigned reusable salary structure template for payroll. */
+    salaryStructureId: { type: mongoose.Schema.Types.ObjectId, ref: 'SalaryStructure', default: null, index: true },
+    salaryStructureAssignedAt: { type: Date, default: null }
   },
   { timestamps: true }
 );

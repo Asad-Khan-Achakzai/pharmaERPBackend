@@ -10,7 +10,8 @@ const {
   SalaryStructure,
   ReturnRecord,
   Transaction,
-  Order
+  Order,
+  User
 } = require('../../../src/models');
 const AuditLog = require('../../../src/models/AuditLog');
 const {
@@ -204,14 +205,18 @@ async function seedFieldAndAncillary(ctx) {
   }
 
   for (const who of [admin, ...medicalReps.slice(0, 3)]) {
-    await SalaryStructure.create({
+    const template = await SalaryStructure.create({
       companyId: company._id,
-      employeeId: who._id,
+      name: `${who.name} – Standard`,
+      isTemplate: true,
       basicSalary: randInt(rng, 55000, 110000),
       dailyAllowance: randInt(rng, 500, 2000),
-      effectiveFrom: dateWithRng(rng, 400, 8),
       isActive: true
     });
+    await User.updateOne(
+      { _id: who._id, companyId: company._id },
+      { $set: { salaryStructureId: template._id, salaryStructureAssignedAt: new Date() } }
+    );
   }
 
   const delOrder = await Order.findOne({

@@ -9,6 +9,7 @@ const { parsePagination } = require('../utils/pagination');
 const { roundPKR } = require('../utils/currency');
 const { DOCTOR_ACTIVITY_STATUS, ORDER_STATUS } = require('../constants/enums');
 const auditService = require('./audit.service');
+const { grossTpForDelivery } = require('./tpSalesRollup.service');
 
 const startOfDay = (d) => {
   const x = new Date(d);
@@ -108,7 +109,7 @@ const computeNetTpAchieved = async (companyId, doctorId, startDate, endDate) => 
       logFullyReturnedSkip(order, debugSkipTp);
       continue;
     }
-    deliveredTp += roundPKR(d.tpSubtotal || 0);
+    deliveredTp += grossTpForDelivery(d, order);
   }
   deliveredTp = roundPKR(deliveredTp);
 
@@ -204,7 +205,7 @@ const computeNetCastingAchieved = async (companyId, doctorId, startDate, endDate
 
 /**
  * Increment achievedSales on ACTIVE activities for TP delivered (order delivery).
- * Uses delivery.tpSubtotal (sum of TP × qty for delivered lines).
+ * Uses delivery TP × physical packs (paid + bonus) per line.
  */
 const applyDeliveryTp = async (session, companyId, { doctorId, tpAmount, deliveredAt }) => {
   if (!doctorId || !tpAmount || tpAmount <= 0) return;

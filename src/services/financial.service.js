@@ -76,13 +76,14 @@ const computeOrderLinePreview = (orderItem, distributor) => {
     throw new ApiError(400, 'Discount percentages must be zero or greater.');
   }
   const paidQty = Number(orderItem.quantity) || 0;
-  const snap = computeLineSnapshot(orderItem, paidQty, distributor);
-  const pharmacyDiscountAmount = roundPKR(snap.tpLineTotal - snap.linePharmacyNet);
   const bonusQty = Number(orderItem.bonusQuantity) || 0;
   const physicalQty = paidQty + bonusQty;
+  const snap = computeLineSnapshot(orderItem, paidQty, distributor);
+  const grossSnap = computeLineSnapshot(orderItem, physicalQty, distributor);
+  const pharmacyDiscountAmount = roundPKR(snap.tpLineTotal - snap.linePharmacyNet);
   const inventoryCostAmount = roundPKR((orderItem.castingAtTime || 0) * physicalQty);
   return {
-    grossAmount: snap.tpLineTotal,
+    grossAmount: grossSnap.tpLineTotal,
     pharmacyDiscountAmount,
     netAfterPharmacy: snap.linePharmacyNet,
     distributorCommissionAmount: snap.distributorShare,

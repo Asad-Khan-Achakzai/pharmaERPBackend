@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test src/utils/orderBackdate.test.js",
+    "test": "node --test src/utils/orderBackdate.test.js src/utils/productIncentiveCalculator.test.js",
     "dev": "nodemon server.js",
     "add-super-admin": "node scripts/addSuperAdmin.js",
     "migrate:tenant-safety-indexes": "node scripts/migrateTenantSafetyIndexes.js"

@@ -6,7 +6,7 @@ const deliveryItemSchema = new mongoose.Schema(
     productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
     /** Physical packs shipped in this delivery (paid + bonus). */
     quantity: { type: Number, required: true },
-    /** Paid packs in this batch — drives TP×qty; legacy docs may omit (PDF treats all qty as paid). */
+    /** Paid packs drive pharmacy net / commission; gross TP uses physical (paid + bonus) packs. */
     paidQuantity: { type: Number },
     /** Bonus/free packs in this batch (omit on legacy rows — PDF infers from TP vs physical qty). */
     bonusQuantity: { type: Number },
@@ -14,7 +14,7 @@ const deliveryItemSchema = new mongoose.Schema(
     finalSellingPrice: { type: Number },
     profitPerUnit: { type: Number },
     totalProfit: { type: Number },
-    /** TP × qty (before pharmacy discount) — base for distributor share */
+    /** TP × physical qty (paid + bonus) — base for Gross Sales (TP) rollups */
     tpLineTotal: { type: Number },
     /** Frozen distributor share on TP line (PKR) */
     distributorShare: { type: Number },
@@ -35,7 +35,7 @@ const deliveryRecordSchema = new mongoose.Schema(
     totalAmount: { type: Number },
     totalCost: { type: Number },
     totalProfit: { type: Number },
-    /** Sum of TP×qty for delivered lines */
+    /** Sum of TP×physical qty for delivered lines (paid + bonus) */
     tpSubtotal: { type: Number, default: 0 },
     /** Sum of distributor shares (PKR) */
     distributorShareTotal: { type: Number, default: 0 },

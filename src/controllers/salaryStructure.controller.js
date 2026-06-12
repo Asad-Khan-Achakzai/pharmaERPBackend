@@ -11,8 +11,31 @@ const getById = asyncHandler(async (req, res) => {
 });
 
 const getActive = asyncHandler(async (req, res) => {
-  const doc = await salaryStructureService.getActiveForEmployee(req.companyId, req.params.employeeId);
+  const doc = await salaryStructureService.getStructureForEmployee(req.companyId, req.params.employeeId);
   ApiResponse.success(res, doc);
+});
+
+const listAssignedEmployees = asyncHandler(async (req, res) => {
+  ApiResponse.success(
+    res,
+    await salaryStructureService.listAssignedEmployees(req.companyId, req.params.id)
+  );
+});
+
+const assignEmployees = asyncHandler(async (req, res) => {
+  ApiResponse.success(
+    res,
+    await salaryStructureService.assignEmployees(req.companyId, req.params.id, req.body.employeeIds, req.user),
+    'Employees assigned'
+  );
+});
+
+const unassignEmployees = asyncHandler(async (req, res) => {
+  ApiResponse.success(
+    res,
+    await salaryStructureService.unassignEmployees(req.companyId, req.params.id, req.body.employeeIds, req.user),
+    'Employees unassigned'
+  );
 });
 
 const create = asyncHandler(async (req, res) => {
@@ -27,4 +50,13 @@ const update = asyncHandler(async (req, res) => {
   );
 });
 
-module.exports = { list, getById, getActive, create, update };
+module.exports = {
+  list,
+  getById,
+  getActive,
+  listAssignedEmployees,
+  assignEmployees,
+  unassignEmployees,
+  create,
+  update
+};

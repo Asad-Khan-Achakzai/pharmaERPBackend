@@ -12,6 +12,10 @@ const { roundPKR } = require('../utils/currency');
 const auditService = require('./audit.service');
 const salaryStructureService = require('./salaryStructure.service');
 const attendanceService = require('./attendance.service');
+const { deliveredPacksByProduct } = require('./repDeliveredPacksByProduct.service');
+const { monthCalendarUtcRange } = require('./medRepTargetAchieved.service');
+const { calculateProductIncentives } = require('../utils/productIncentiveCalculator');
+const { snapshotProductPackIncentives } = require('../utils/productPackIncentiveNormalize');
 const { generatePayslipPdf } = require('../utils/payslipPdf');
 const { DateTime } = require('luxon');
 const businessTime = require('../utils/businessTime');
@@ -49,7 +53,36 @@ const sumMedicalRepSalesForMonth = async (companyId, employeeId, monthStr, timeZ
   return roundPKR(agg[0]?.total || 0);
 };
 
-const buildFromStructure = (structure, salesTotal, attendanceStats) => {
+const resolvePayrollPeriod = (monthStr, timeZone) => {
+  const range = monthCalendarUtcRange(monthStr, timeZone);
+  return {
+    range,
+    periodFrom: range.$gte,
+    periodTo: range.$lte
+  };
+};
+
+const computeProductIncentivesForStructure = async (companyId, employeeId, structure, monthStr, timeZone) => {
+  const rules = structure.productPackIncentives || [];
+  if (!rules.length) {
+    return {
+      productIncentiveLines: [],
+      productIncentiveTotal: 0,
+      productIncentiveRulesSnapshot: []
+    };
+  }
+  const { range } = resolvePayrollPeriod(monthStr, timeZone);
+  const { byProductId, rows } = await deliveredPacksByProduct(companyId, employeeId, range);
+  const nameMap = new Map(rows.map((r) => [r.productId, { name: r.productName, composition: r.composition }]));
+  const { lines, total } = calculateProductIncentives(rules, byProductId, nameMap);
+  return {
+    productIncentiveLines: lines,
+    productIncentiveTotal: total,
+    productIncentiveRulesSnapshot: snapshotProductPackIncentives(rules)
+  };
+};
+
+const buildFromStructure = (structure, salesTotal, attendanceStats, productIncentiveResult = {}) => {
   const basic = structure.basicSalary;
   const totalDaysInMonth = attendanceStats.totalDaysInMonth;
 
@@ -87,7 +120,13 @@ const buildFromStructure = (structure, salesTotal, attendanceStats) => {
     amount: commissionAmount
   };
 
-  const grossSalary = roundPKR(basic + allowancesSum + commissionAmount + dailyAllowanceTotal);
+  const productIncentiveTotal = roundPKR(productIncentiveResult.productIncentiveTotal || 0);
+  const productIncentiveLines = productIncentiveResult.productIncentiveLines || [];
+  const productIncentiveRulesSnapshot = productIncentiveResult.productIncentiveRulesSnapshot || [];
+
+  const grossSalary = roundPKR(
+    basic + allowancesSum + commissionAmount + dailyAllowanceTotal + productIncentiveTotal
+  );
 
   /** No pay cut for absences until product supports configurable attendance deductions. */
   const attendanceDeduction = 0;
@@ -103,6 +142,9 @@ const buildFromStructure = (structure, salesTotal, attendanceStats) => {
     allowanceLines,
     deductionLines,
     commission,
+    productIncentiveTotal,
+    productIncentiveLines,
+    productIncentiveRulesSnapshot,
     calculationMode: 'structure',
     dailyAllowance: dailyAllowanceRate,
     presentDays,
@@ -130,6 +172,9 @@ const buildManual = (data) => {
     allowanceLines: [],
     deductionLines: [],
     commission: { type: 'percentage', value: 0, salesTotal: 0, amount: 0 },
+    productIncentiveTotal: 0,
+    productIncentiveLines: [],
+    productIncentiveRulesSnapshot: [],
     calculationMode: 'manual',
     dailyAllowance: 0,
     presentDays: 0,
@@ -155,9 +200,9 @@ const previewPayroll = async (companyId, body, timeZone) => {
     return { ...buildManual(body), employee };
   }
 
-  const structure = await salaryStructureService.getActiveForEmployee(companyId, employeeId);
+  const structure = await salaryStructureService.getStructureForEmployee(companyId, employeeId);
   if (!structure) {
-    throw new ApiError(400, 'No active salary structure. Pass manual: true with baseSalary, bonus, deductions or create a salary structure.');
+    throw new ApiError(400, 'No active salary structure. Pass manual: true with baseSalary, bonus, deductions or assign a salary structure template.');
   }
 
   const salesTotal = await sumMedicalRepSalesForMonth(companyId, employeeId, month, tz);
@@ -168,8 +213,24 @@ const previewPayroll = async (companyId, body, timeZone) => {
     businessTime.utcNow(),
     tz
   );
-  const calc = buildFromStructure(structure, salesTotal, attendanceStats);
-  return { ...calc, salaryStructureId: structure._id, employee, structure };
+  const productIncentiveResult = await computeProductIncentivesForStructure(
+    companyId,
+    employeeId,
+    structure,
+    month,
+    tz
+  );
+  const { periodFrom, periodTo } = resolvePayrollPeriod(month, tz);
+  const calc = buildFromStructure(structure, salesTotal, attendanceStats, productIncentiveResult);
+  return {
+    ...calc,
+    periodFrom,
+    periodTo,
+    salaryStructureId: structure._id,
+    salaryStructureNameSnapshot: structure.name || undefined,
+    employee,
+    structure
+  };
 };
 
 const applyPayrollListFilters = (filter, query, timeZone) => {
@@ -259,11 +320,11 @@ const create = async (companyId, data, reqUser, timeZone) => {
     return payroll.populate('employeeId', 'name email role');
   }
 
-  const structure = await salaryStructureService.getActiveForEmployee(companyId, data.employeeId);
+  const structure = await salaryStructureService.getStructureForEmployee(companyId, data.employeeId);
   if (!structure) {
     throw new ApiError(
       400,
-      'No active salary structure. Use manual mode (manual: true with baseSalary, bonus, deductions) or create an active salary structure.'
+      'No active salary structure. Use manual mode (manual: true with baseSalary, bonus, deductions) or assign a salary structure template.'
     );
   }
 
@@ -275,12 +336,22 @@ const create = async (companyId, data, reqUser, timeZone) => {
     businessTime.utcNow(),
     tz
   );
-  const built = buildFromStructure(structure, salesTotal, attendanceStats);
+  const productIncentiveResult = await computeProductIncentivesForStructure(
+    companyId,
+    data.employeeId,
+    structure,
+    data.month,
+    tz
+  );
+  const { periodFrom, periodTo } = resolvePayrollPeriod(data.month, tz);
+  const built = buildFromStructure(structure, salesTotal, attendanceStats, productIncentiveResult);
 
   const payroll = await Payroll.create({
     companyId,
     employeeId: data.employeeId,
     month: data.month,
+    periodFrom,
+    periodTo,
     baseSalary: built.baseSalary,
     bonus: built.bonus,
     deductions: built.deductions,
@@ -289,8 +360,12 @@ const create = async (companyId, data, reqUser, timeZone) => {
     allowanceLines: built.allowanceLines,
     deductionLines: built.deductionLines,
     commission: built.commission,
+    productIncentiveTotal: built.productIncentiveTotal,
+    productIncentiveLines: built.productIncentiveLines,
+    productIncentiveRulesSnapshot: built.productIncentiveRulesSnapshot,
     calculationMode: 'structure',
     salaryStructureId: structure._id,
+    salaryStructureNameSnapshot: structure.name || undefined,
     dailyAllowance: built.dailyAllowance,
     presentDays: built.presentDays,
     absentDays: built.absentDays,
@@ -330,6 +405,9 @@ const update = async (companyId, id, data, reqUser) => {
     payroll.allowanceLines = [];
     payroll.deductionLines = [];
     payroll.commission = { type: 'percentage', value: 0, salesTotal: 0, amount: 0 };
+    payroll.productIncentiveTotal = 0;
+    payroll.productIncentiveLines = [];
+    payroll.productIncentiveRulesSnapshot = [];
     payroll.grossSalary = undefined;
     payroll.dailyAllowance = 0;
     payroll.presentDays = 0;
