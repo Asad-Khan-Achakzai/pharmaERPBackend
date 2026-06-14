@@ -536,8 +536,19 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
       const dLine = lastDelivery?.items?.find((i) => i.productId.toString() === rItem.productId);
       const avgCostAtTime = dLine?.avgCostAtTime || 0;
       const finalSellingPrice = dLine?.finalSellingPrice || 0;
-      const profitPerUnit = roundPKR(finalSellingPrice - avgCostAtTime);
-      const totalProfit = roundPKR(profitPerUnit * rItem.quantity);
+      const lineQty = dLine?.quantity > 0 ? dLine.quantity : rItem.quantity;
+      const linePharmacyNet =
+        dLine?.linePharmacyNet != null
+          ? roundPKR(dLine.linePharmacyNet)
+          : roundPKR(finalSellingPrice * lineQty);
+      /** Use delivery line pharmacy net proportionally — per-unit finalSellingPrice can drift by ₨0.01–0.05 on full returns. */
+      const returnLineAmount =
+        dLine?.linePharmacyNet != null
+          ? roundPKR((linePharmacyNet / lineQty) * rItem.quantity)
+          : roundPKR(finalSellingPrice * rItem.quantity);
+      const lineCost = roundPKR(avgCostAtTime * rItem.quantity);
+      const totalProfit = roundPKR(returnLineAmount - lineCost);
+      const profitPerUnit = rItem.quantity > 0 ? roundPKR(totalProfit / rItem.quantity) : 0;
 
       await DistributorInventory.updateOne(
         { companyId, distributorId: order.distributorId, productId: rItem.productId },
@@ -547,9 +558,6 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
 
       orderItem.returnedQty += rItem.quantity;
 
-      const returnLineAmount = roundPKR(finalSellingPrice * rItem.quantity);
-
-      const lineQty = dLine?.quantity > 0 ? dLine.quantity : rItem.quantity;
       const returnCompanyShare =
         dLine && dLine.companyShare != null
           ? roundPKR((dLine.companyShare / lineQty) * rItem.quantity)
@@ -577,6 +585,8 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
     }
 
     tpReturnTotal = roundPKR(tpReturnTotal);
+    totalAmount = roundPKR(totalAmount);
+    totalCost = roundPKR(totalCost);
 
     const totalProfit = roundPKR(totalAmount - totalCost);
 

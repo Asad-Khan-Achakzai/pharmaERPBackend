@@ -27,6 +27,11 @@ const flowMonthsQuerySchema = Joi.object({
   months: Joi.number().integer().min(1).max(36).default(12)
 });
 
+const monthlySummaryQuerySchema = Joi.object({
+  fiscalYearStart: Joi.number().integer().min(2000).max(2100),
+  fiscalYear: Joi.number().integer().min(2000).max(2100)
+});
+
 router.use(authenticate, companyScope);
 router.get('/visit-summary', checkPermission('reports.view'), validateQuery(visitSummaryQuerySchema), c.visitSummary);
 router.get('/visit-by-employee', checkPermission('reports.view'), validateQuery(visitByEmployeeQuerySchema), c.visitByEmployee);
@@ -66,6 +71,12 @@ router.get('/revenue', checkPermission('reports.view'), c.profitRevenue);
 router.get('/costs', checkPermission('reports.view'), c.profitCosts);
 router.get('/product-profitability', checkPermission('reports.view'), c.profitProductProfitability);
 router.get('/trends', checkPermission('reports.view'), c.profitTrends);
+router.get(
+  '/monthly-summary',
+  checkPermission('reports.view'),
+  validateQuery(monthlySummaryQuerySchema),
+  c.monthlySummary
+);
 
 /** MRep field KPIs & coverage (Phase 3 — self, team subtree, or explicit rep when allowed). */
 router.get(

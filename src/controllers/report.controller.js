@@ -2,6 +2,7 @@ const reportService = require('../services/report.service');
 const pharmacyWorkspaceService = require('../services/pharmacyWorkspace.service');
 const { buildPdfBuffer } = require('../services/pharmacyStatementPdf.service');
 const profitManagementService = require('../services/profitManagement.service');
+const monthlySummaryService = require('../services/monthlySummary.service');
 const visitReportService = require('../services/visitReport.service');
 const supplierService = require('../services/supplier.service');
 const ApiResponse = require('../utils/ApiResponse');
@@ -163,6 +164,13 @@ const profitTrends = asyncHandler(async (req, res) => {
   ApiResponse.success(res, await profitManagementService.trends(req.companyId, req.query, req.context.timeZone));
 });
 
+const monthlySummary = asyncHandler(async (req, res) => {
+  ApiResponse.success(
+    res,
+    await monthlySummaryService.monthlySummary(req.companyId, req.query, req.context.timeZone)
+  );
+});
+
 const pharmacyFinancialWorkspace = asyncHandler(async (req, res) => {
   const data = await pharmacyWorkspaceService.pharmacyFinancialWorkspace(
     req.companyId,
@@ -228,5 +236,6 @@ module.exports = {
   profitRevenue,
   profitCosts,
   profitProductProfitability,
-  profitTrends
+  profitTrends,
+  monthlySummary
 };
