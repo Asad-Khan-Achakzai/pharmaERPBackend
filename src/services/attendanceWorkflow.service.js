@@ -11,8 +11,11 @@ const {
   ATTENDANCE_CHECKIN_SOURCE,
   ATTENDANCE_CHECKOUT_SOURCE,
   ATTENDANCE_STATUS,
-  LATE_CHECKIN_APPROVAL_STATUS
+  LATE_CHECKIN_APPROVAL_STATUS,
+  NOTIFICATION_KIND,
+  ROLES
 } = require('../constants/enums');
+const notificationService = require('./notification.service');
 const attendancePolicyService = require('./attendancePolicy.service');
 const attendanceAuditService = require('./attendanceAudit.service');
 const { userHasPermission, userHasTenantWideAccess } = require('../utils/effectivePermissions');
@@ -96,6 +99,53 @@ const isActionableRequestStatus = (request) => {
   if (request.status === ATTENDANCE_REQUEST_STATUS.ESCALATED && request.adminPool) return true;
   return false;
 };
+
+async function notifyAttendanceRequestSubmitted({ companyId, request, requester, payload = {} }) {
+  const targets = new Set();
+  if (request.currentApproverId) {
+    targets.add(String(request.currentApproverId));
+  } else if (request.adminPool) {
+    const admins = await User.find({
+      companyId,
+      role: ROLES.ADMIN,
+      isActive: true,
+      isDeleted: { $ne: true }
+    })
+      .select('_id')
+      .lean();
+    admins.forEach((a) => targets.add(String(a._id)));
+  }
+  if (!targets.size) return;
+
+  const requesterName = requester?.name || 'Team member';
+  let title = 'Attendance request pending approval';
+  let body = `${requesterName}: ${String(request.type || 'request').replace(/_/g, ' ').toLowerCase()}`;
+
+  if (request.type === ATTENDANCE_REQUEST_TYPE.LATE_ARRIVAL) {
+    title = 'Late check-in pending approval';
+    const lateMinutes = payload?.lateMinutes;
+    body =
+      lateMinutes != null && Number(lateMinutes) > 0
+        ? `${requesterName} checked in ${lateMinutes} min late`
+        : `${requesterName} submitted a late check-in for approval`;
+  }
+
+  await Promise.all(
+    [...targets].map((userId) =>
+      notificationService
+        .createForUser({
+          companyId,
+          userId,
+          title,
+          body,
+          kind: NOTIFICATION_KIND.ATTENDANCE,
+          link: '/(manager)/approvals',
+          meta: { requestId: String(request._id), requestType: request.type }
+        })
+        .catch(() => null)
+    )
+  );
+}
 
 const logRequestWorkflowAudit = async ({ companyId, requestId, attendanceId, actorUserId, source, action, meta }) => {
   await attendanceAuditService.log({
@@ -356,7 +406,7 @@ const submitRequest = async ({ companyId, requesterId, type, reason, payload, at
     companyId,
     isDeleted: { $ne: true }
   })
-    .select('managerId companyId')
+    .select('managerId companyId name')
     .lean();
   if (!requester) throw new ApiError(404, 'User not found');
 
@@ -409,6 +459,13 @@ const submitRequest = async ({ companyId, requesterId, type, reason, payload, at
     source: 'USER',
     action: 'ATTENDANCE_REQUEST_CREATED',
     meta: { type, slaDueAt }
+  });
+
+  void notifyAttendanceRequestSubmitted({
+    companyId,
+    request: doc,
+    requester,
+    payload: payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}
   });
 
   return doc;
