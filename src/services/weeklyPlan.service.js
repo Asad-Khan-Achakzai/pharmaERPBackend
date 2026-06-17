@@ -13,12 +13,12 @@ const planExecution = require('../utils/planExecution.util');
 const { DateTime } = require('luxon');
 const { PLAN_ITEM_STATUS, WEEKLY_PLAN_STATUS } = require('../constants/enums');
 const { resolveSubtreeUserIds } = require('../utils/teamScope');
+const { applyOrderMedicalRepScope, assertOrderVisibleToUser } = require('../utils/orderScope.util');
 
 const list = async (companyId, query, timeZone = 'UTC', opts = {}) => {
   const { page, limit, skip, sort, search } = parsePagination(query);
   const searchTerm = qScalar(search);
   const filter = { companyId };
-  if (query.medicalRepId) filter.medicalRepId = query.medicalRepId;
   if (query.status) filter.status = query.status;
   if (searchTerm) {
     const rx = escapeRegex(searchTerm);
@@ -26,13 +26,7 @@ const list = async (companyId, query, timeZone = 'UTC', opts = {}) => {
   }
   applyCreatedAtRangeFromQuery(filter, query, timeZone);
   applyCreatedByFromQuery(filter, query);
-  /** Manager team scope (Phase 2A) — see doctor.service for the parallel implementation. */
-  if (Array.isArray(opts.scopedUserIds)) {
-    if (opts.scopedUserIds.length === 0) return { docs: [], total: 0, page, limit };
-    filter.medicalRepId = filter.medicalRepId
-      ? { $in: opts.scopedUserIds.filter((id) => String(id) === String(filter.medicalRepId)) }
-      : { $in: opts.scopedUserIds };
-  }
+  applyOrderMedicalRepScope(filter, opts.visibleRepIds, query.medicalRepId);
   const [docs, total] = await Promise.all([
     WeeklyPlan.find(filter).populate('medicalRepId', 'name').sort(sort).skip(skip).limit(limit),
     WeeklyPlan.countDocuments(filter)
@@ -54,7 +48,15 @@ const list = async (companyId, query, timeZone = 'UTC', opts = {}) => {
   return { docs: enriched, total, page, limit };
 };
 
-const create = async (companyId, data, reqUser) => {
+const create = async (companyId, data, reqUser, opts = {}) => {
+  const targetRepId = data.medicalRepId || reqUser.userId;
+  if (opts.visibleRepIds !== null && opts.visibleRepIds !== undefined) {
+    const allowed = opts.visibleRepIds.some((id) => String(id) === String(targetRepId));
+    if (!allowed) {
+      throw new ApiError(403, 'You cannot create a plan for this medical rep');
+    }
+  }
+
   /**
    * Phase 2B: inherit `approvalRequired` from the company flag if the caller didn't pass one.
    * Per-plan storage means flipping the company flag later doesn't mutate in-flight plans.
@@ -71,7 +73,7 @@ const create = async (companyId, data, reqUser) => {
     ...data,
     approvalRequired,
     companyId,
-    medicalRepId: data.medicalRepId || reqUser.userId,
+    medicalRepId: targetRepId,
     createdBy: reqUser.userId
   });
   await auditService.log({
@@ -85,10 +87,11 @@ const create = async (companyId, data, reqUser) => {
   return plan;
 };
 
-const update = async (companyId, id, data, reqUser, timeZone) => {
+const update = async (companyId, id, data, reqUser, timeZone, opts = {}) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   const plan = await WeeklyPlan.findOne({ _id: id, companyId });
   if (!plan) throw new ApiError(404, 'Weekly plan not found');
+  assertOrderVisibleToUser(plan, opts.visibleRepIds);
 
   const nItems = await PlanItem.countDocuments({ weeklyPlanId: id, companyId, isDeleted: { $ne: true } });
   if (nItems > 0 && !planExecution.isBeforePlanWeek(plan, tz)) {
@@ -115,17 +118,20 @@ const update = async (companyId, id, data, reqUser, timeZone) => {
   return plan;
 };
 
-const getByRep = async (companyId, repId) => {
-  return WeeklyPlan.find({ companyId, medicalRepId: repId }).sort({ weekStartDate: -1 });
+const getByRep = async (companyId, repId, opts = {}) => {
+  const filter = { companyId };
+  applyOrderMedicalRepScope(filter, opts.visibleRepIds, repId);
+  return WeeklyPlan.find(filter).sort({ weekStartDate: -1 });
 };
 
-const getById = async (companyId, id, timeZone) => {
+const getById = async (companyId, id, timeZone, opts = {}) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   const plan = await WeeklyPlan.findOne({ _id: id, companyId, isDeleted: { $ne: true } }).populate(
     'medicalRepId',
     'name email'
   );
   if (!plan) throw new ApiError(404, 'Weekly plan not found');
+  assertOrderVisibleToUser(plan, opts.visibleRepIds);
   const planItems = await planItemService.listByPlan(companyId, id);
   const metrics = planExecution.computePlanMetrics(planItems, tz);
   const businessTodayYmd = businessTime.nowInBusinessTime(tz).toISODate();
@@ -138,10 +144,11 @@ const getById = async (companyId, id, timeZone) => {
   };
 };
 
-const copyPreviousWeekIntoPlan = async (companyId, targetPlanId, reqUser, timeZone) => {
+const copyPreviousWeekIntoPlan = async (companyId, targetPlanId, reqUser, timeZone, opts = {}) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   const target = await WeeklyPlan.findOne({ _id: targetPlanId, companyId, isDeleted: { $ne: true } });
   if (!target) throw new ApiError(404, 'Weekly plan not found');
+  assertOrderVisibleToUser(target, opts.visibleRepIds);
   if (!planExecution.isBeforePlanWeek(target, tz)) {
     throw new ApiError(400, 'You can only copy into a plan before its week starts');
   }
@@ -406,12 +413,13 @@ function haversineKm(a, b) {
  * Basic nearest-neighbor reorder for one plan day. Uses optional client-supplied
  * coordinates; items without coords are appended sorted by city/location/name.
  */
-const optimizeRoute = async (companyId, planId, payload, reqUser, timeZone) => {
+const optimizeRoute = async (companyId, planId, payload, reqUser, timeZone, opts = {}) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   const { date: dateStr, startLat, startLng, itemCoordinates = {} } = payload;
 
   const plan = await WeeklyPlan.findOne({ _id: planId, companyId, isDeleted: { $ne: true } });
   if (!plan) throw new ApiError(404, 'Weekly plan not found');
+  assertOrderVisibleToUser(plan, opts.visibleRepIds);
 
   const dateDoc = businessTime.businessDayStartUtc(String(dateStr).trim(), tz);
   const items = await PlanItem.find({

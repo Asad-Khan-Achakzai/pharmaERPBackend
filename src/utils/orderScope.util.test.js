@@ -7,7 +7,8 @@ const mongoose = require('mongoose');
 const ApiError = require('./ApiError');
 const {
   applyOrderMedicalRepScope,
-  assertOrderVisibleToUser
+  assertOrderVisibleToUser,
+  narrowMedicalRepScopeForQuery
 } = require('./orderScope.util');
 
 describe('orderScope.util', () => {
@@ -79,5 +80,24 @@ describe('orderScope.util', () => {
       () => assertOrderVisibleToUser({ medicalRepId: other }, [repId]),
       (err) => err instanceof ApiError && err.statusCode === 404
     );
+  });
+
+  test('narrowMedicalRepScopeForQuery — admin bypass', () => {
+    const selfId = new mongoose.Types.ObjectId();
+    assert.equal(narrowMedicalRepScopeForQuery(null, 'self', String(selfId)), null);
+  });
+
+  test('narrowMedicalRepScopeForQuery — manager self scope', () => {
+    const selfId = new mongoose.Types.ObjectId();
+    const otherId = new mongoose.Types.ObjectId();
+    const narrowed = narrowMedicalRepScopeForQuery([selfId, otherId], 'self', String(selfId));
+    assert.deepEqual(narrowed.map(String), [String(selfId)]);
+  });
+
+  test('narrowMedicalRepScopeForQuery — team scope unchanged', () => {
+    const selfId = new mongoose.Types.ObjectId();
+    const otherId = new mongoose.Types.ObjectId();
+    const ids = [selfId, otherId];
+    assert.equal(narrowMedicalRepScopeForQuery(ids, 'team', String(selfId)), ids);
   });
 });

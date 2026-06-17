@@ -14,6 +14,7 @@ const auditService = require('./audit.service');
 const coverageService = require('./coverage.service');
 const doctorLocationWorkflow = require('./doctorLocationWorkflow.service');
 const env = require('../config/env');
+const { assertOrderVisibleToUser } = require('../utils/orderScope.util');
 
 const normalizePlanItemDate = (input, timeZone) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
@@ -187,12 +188,13 @@ const parseInstantFromBody = (raw, label = 'date') => {
   return d.toJSDate();
 };
 
-const bulkCreateForPlan = async (companyId, weeklyPlanId, items, reqUser, timeZone) => {
+const bulkCreateForPlan = async (companyId, weeklyPlanId, items, reqUser, timeZone, opts = {}) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   if (!items?.length) throw new ApiError(400, 'At least one plan item is required');
 
   const plan = await WeeklyPlan.findOne({ _id: weeklyPlanId, companyId, isDeleted: { $ne: true } });
   if (!plan) throw new ApiError(404, 'Weekly plan not found');
+  assertOrderVisibleToUser(plan, opts.visibleRepIds);
 
   const employeeId = plan.medicalRepId;
   const businessTodayYmd = businessTime.nowInBusinessTime(tz).toISODate();

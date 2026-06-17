@@ -24,17 +24,19 @@ const mark = asyncHandler(async (req, res) => {
 });
 
 const checkin = asyncHandler(async (req, res) => {
-  const doc = await attendanceService.checkIn(req.companyId, req.user.userId, tz(req), req.body || {});
+  await attendanceService.checkIn(req.companyId, req.user.userId, tz(req), req.body || {});
+  const doc = await attendanceService.getMeToday(req.companyId, req.user.userId, tz(req));
   ApiResponse.success(res, doc, 'Checked in');
 });
 
 const checkout = asyncHandler(async (req, res) => {
-  const doc = await attendanceService.checkOut(
+  await attendanceService.checkOut(
     req.companyId,
     req.user.userId,
     tz(req),
     req.body || {}
   );
+  const doc = await attendanceService.getMeToday(req.companyId, req.user.userId, tz(req));
   ApiResponse.success(res, doc, 'Checked out');
 });
 

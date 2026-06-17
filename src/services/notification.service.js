@@ -20,12 +20,14 @@ async function createForUser({ companyId, userId, title, body, kind = NOTIFICATI
 
   const company = await Company.findById(companyId).select('mobilePushEnabled').lean();
   if (company?.mobilePushEnabled) {
-    void pushService.sendToUser({
-      userId,
-      title,
-      body,
-      data: { notificationId: String(doc._id), kind, link: link || undefined }
-    });
+    void pushService
+      .sendToUser({
+        userId,
+        title,
+        body,
+        data: { notificationId: String(doc._id), kind, link: link || undefined }
+      })
+      .catch(() => null);
   }
 
   return doc.toObject();

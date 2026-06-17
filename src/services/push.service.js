@@ -19,7 +19,13 @@ function isPushConfigured() {
  * Send push to all active device sessions for a user. Best-effort; never throws.
  */
 async function sendToUser({ userId, title, body, data = {} }) {
-  if (!isPushConfigured()) return { sent: 0, skipped: true };
+  if (!isPushConfigured()) {
+    logger.warn('push.skipped_not_configured', {
+      userId: String(userId),
+      hint: 'Set EXPO_ACCESS_TOKEN on the backend (Expo account → Access tokens)'
+    });
+    return { sent: 0, skipped: true, reason: 'not_configured' };
+  }
 
   const Expo = ExpoSDK.Expo;
   const expo = new Expo({ accessToken: env.EXPO_ACCESS_TOKEN });
@@ -33,14 +39,23 @@ async function sendToUser({ userId, title, body, data = {} }) {
     .lean();
 
   const tokens = [...new Set(sessions.map((s) => s.pushToken).filter((t) => Expo.isExpoPushToken(t)))];
-  if (!tokens.length) return { sent: 0, skipped: false };
+  if (!tokens.length) {
+    logger.info('push.no_tokens', {
+      userId: String(userId),
+      sessionCount: sessions.length,
+      hint: 'User must log in on an EAS build, allow notifications, and have mobilePushEnabled on the company'
+    });
+    return { sent: 0, skipped: false, reason: 'no_tokens' };
+  }
 
   const messages = tokens.map((to) => ({
     to,
     sound: 'default',
     title: title || 'PharmaERP',
     body: body || '',
-    data
+    data,
+    priority: 'high',
+    channelId: 'default'
   }));
 
   const chunks = expo.chunkPushNotifications(messages);
@@ -48,10 +63,21 @@ async function sendToUser({ userId, title, body, data = {} }) {
   for (const chunk of chunks) {
     try {
       const receipts = await expo.sendPushNotificationsAsync(chunk);
-      sent += receipts.filter((r) => r.status === 'ok').length;
+      const ok = receipts.filter((r) => r.status === 'ok').length;
+      const errors = receipts.filter((r) => r.status === 'error');
+      sent += ok;
+      if (errors.length) {
+        logger.warn('push.receipt_errors', {
+          userId: String(userId),
+          errors: errors.map((e) => ({ message: e.message, details: e.details }))
+        });
+      }
     } catch (err) {
       logger.warn('push.send_failed', { userId: String(userId), err: err.message });
     }
+  }
+  if (sent > 0) {
+    logger.info('push.sent', { userId: String(userId), sent, tokenCount: tokens.length });
   }
   return { sent, skipped: false };
 }

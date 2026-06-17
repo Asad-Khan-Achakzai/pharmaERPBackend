@@ -97,8 +97,18 @@ const assertOrderVisibleToUser = (order, visibleRepIds) => {
   }
 };
 
+/**
+ * Optional `?scope=self` narrows a manager's default subtree to only the caller's own rows.
+ * Admin / tenant-wide callers (`visibleRepIds === null`) are unchanged.
+ */
+const narrowMedicalRepScopeForQuery = (visibleRepIds, scopeQuery, userId) => {
+  if (visibleRepIds === null || scopeQuery !== 'self' || !userId) return visibleRepIds;
+  return [new mongoose.Types.ObjectId(String(userId))];
+};
+
 module.exports = {
   resolveOrderVisibleMedicalRepIds,
   applyOrderMedicalRepScope,
-  assertOrderVisibleToUser
+  assertOrderVisibleToUser,
+  narrowMedicalRepScopeForQuery
 };
