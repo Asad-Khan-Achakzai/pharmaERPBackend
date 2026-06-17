@@ -7,7 +7,10 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 const Company = require('../src/models/Company');
-const { seedDefaultRolesForCompany } = require('../src/services/role.service');
+const {
+  seedDefaultRolesForCompany,
+  repairSystemRolePermissionsForCompany
+} = require('../src/services/role.service');
 
 async function main() {
   const uri = process.env.MONGODB_URI;
@@ -16,6 +19,7 @@ async function main() {
   const companies = await Company.find({ isDeleted: { $ne: true } }).select('_id name').lean();
   for (const c of companies) {
     await seedDefaultRolesForCompany(c._id);
+    await repairSystemRolePermissionsForCompany(c._id);
     console.log(`Repaired system roles for ${c.name}`);
   }
   await mongoose.disconnect();

@@ -13,7 +13,7 @@ const PERMISSIONS = {
   payments:     ['view', 'create'],
   ledger:       ['view'],
   accounts:     ['view', 'manage'],
-  vouchers:     ['view', 'create', 'post', 'reverse'],
+  vouchers:     ['view', 'create', 'post', 'reverse', 'transfer'],
   targets:      ['view', 'create', 'edit'],
   /** `review` lets a manager open a submitted plan; `approve` lets them activate or reject it. */
   weeklyPlans:  ['view', 'create', 'edit', 'markVisit', 'review', 'approve'],

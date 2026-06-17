@@ -10,7 +10,7 @@ const { createVoucherSchema, fundTransferSchema } = require('../../validators/vo
 router.use(authenticate, companyScope);
 router.get('/', checkPermission('vouchers.view'), c.list);
 router.post('/', checkPermission('vouchers.create'), validate(createVoucherSchema), c.create);
-router.post('/fund-transfer', checkPermission('vouchers.create'), validate(fundTransferSchema), c.fundTransfer);
+router.post('/fund-transfer', checkPermission('vouchers.transfer'), validate(fundTransferSchema), c.fundTransfer);
 router.get('/:id', checkPermission('vouchers.view'), c.getById);
 router.post('/:id/reverse', checkPermission('vouchers.reverse'), c.reverse);
 

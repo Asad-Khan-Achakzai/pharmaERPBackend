@@ -110,8 +110,9 @@ const assertPermissions = (arr) => {
 };
 
 /**
- * Add any catalog permissions missing from a system role vs its canonical defaults.
- * Never removes permissions (admins may have extended roles in the UI).
+ * Backfill catalog permissions missing from a system role vs canonical defaults.
+ * Only adds new keys — never removes. Intended for one-off repair scripts, not routine API reads
+ * (running on every list/getMe would undo admin edits in the Roles UI).
  */
 const syncSystemRolePermissions = async (companyId, code, defaults) => {
   const role = await Role.findOne({ companyId, code, isSystem: true, isDeleted: { $ne: true } });
@@ -129,6 +130,15 @@ const syncSystemRolePermissions = async (companyId, code, defaults) => {
     await role.save();
   }
   return role;
+};
+
+/** Explicit repair — run from scripts/repairSystemRolePermissions.js only. */
+const repairSystemRolePermissionsForCompany = async (companyId) => {
+  const cid = toCompanyObjectId(companyId);
+  if (!cid) return;
+  await syncSystemRolePermissions(cid, DEFAULT_MEDICAL_REP_CODE, DEFAULT_MEDICAL_REP_PERMISSIONS);
+  await syncSystemRolePermissions(cid, DEFAULT_ASM_CODE, DEFAULT_ASM_PERMISSIONS);
+  await syncSystemRolePermissions(cid, DEFAULT_RM_CODE, DEFAULT_RM_PERMISSIONS);
 };
 
 /**
@@ -181,10 +191,6 @@ const seedDefaultRolesForCompany = async (companyId, { createdBy = null } = {}) 
     });
   }
 
-  await syncSystemRolePermissions(cid, DEFAULT_MEDICAL_REP_CODE, DEFAULT_MEDICAL_REP_PERMISSIONS);
-  await syncSystemRolePermissions(cid, DEFAULT_ASM_CODE, DEFAULT_ASM_PERMISSIONS);
-  await syncSystemRolePermissions(cid, DEFAULT_RM_CODE, DEFAULT_RM_PERMISSIONS);
-
   return { adminRole, medicalRole, asmRole, rmRole };
 };
 
@@ -196,8 +202,6 @@ const list = async (companyId, query, timeZone = "UTC") => {
 
   const { page, limit, skip, sort, search } = parsePagination(query);
   const searchTerm = qScalar(search);
-
-  await seedDefaultRolesForCompany(cid);
 
   const filter = { companyId: cid, isDeleted: { $ne: true } };
   if (searchTerm) {
@@ -347,6 +351,7 @@ const ensureDefaultRolesForCompany = (companyId) => seedDefaultRolesForCompany(c
 module.exports = {
   seedDefaultRolesForCompany,
   ensureDefaultRolesForCompany,
+  repairSystemRolePermissionsForCompany,
   toCompanyObjectId,
   list,
   getById,
