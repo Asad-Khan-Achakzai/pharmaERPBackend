@@ -148,6 +148,7 @@ async function login({ email, password, device, ip }) {
           name: company.name,
           status: 'LIVE',
           mobileEnabled: company.mobileEnabled !== false,
+          mobilePushEnabled: !!company.mobilePushEnabled,
           attendanceGeofenceEnabled: !!company.attendanceGeofenceEnabled,
           doctorApprovalRequired: !!company.doctorApprovalRequired
         }
@@ -352,6 +353,48 @@ async function updatePushToken({ user, deviceId, pushToken }) {
   return { sessionId: result._id, pushToken: result.pushToken };
 }
 
+async function reportPushDiagnostic({ user, deviceId, platform, appVersion, step, result, detail, errorMessage, executionEnvironment, projectIdPresent }) {
+  logger.info('mobile.push_diagnostic', {
+    userId: String(user.userId),
+    companyId: user.companyId ? String(user.companyId) : null,
+    deviceId: deviceId || null,
+    platform: platform || null,
+    appVersion: appVersion || null,
+    step: step || 'unknown',
+    result: result || 'unknown',
+    executionEnvironment: executionEnvironment || null,
+    projectIdPresent: projectIdPresent === true,
+    errorMessage: errorMessage ? String(errorMessage).slice(0, 500) : null,
+    detail: detail && typeof detail === 'object' ? detail : null,
+    fix: resolvePushDiagnosticFix(step, result, errorMessage)
+  });
+  return { logged: true };
+}
+
+function resolvePushDiagnosticFix(step, result, errorMessage) {
+  if (result === 'success') return null;
+  if (result === 'skipped_disabled') {
+    return 'Enable mobile push for company in Super Admin';
+  }
+  if (result === 'permission_denied') {
+    return 'On phone: Settings → Apps → PharmaERP → Notifications → Allow';
+  }
+  if (result === 'missing_project_id') {
+    return 'Rebuild APK — app.json extra.eas.projectId missing from native build';
+  }
+  if (step === 'expo_token' || result === 'token_failed') {
+    const msg = String(errorMessage || '').toLowerCase();
+    if (msg.includes('fcm') || msg.includes('firebase') || msg.includes('credentials')) {
+      return 'Run `eas credentials -p android` → upload FCM V1 service account JSON, then rebuild APK';
+    }
+    return 'FCM likely not configured — run eas credentials for Android, rebuild, reinstall';
+  }
+  if (result === 'backend_failed') {
+    return 'Token obtained but backend rejected save — check active DeviceSession for deviceId';
+  }
+  return null;
+}
+
 async function changePassword({ userId, currentPassword, newPassword }) {
   const user = await User.findById(userId).select('+password');
   if (!user) throw new ApiError(404, 'User not found');
@@ -403,6 +446,7 @@ module.exports = {
   listSessions,
   revokeSession,
   updatePushToken,
+  reportPushDiagnostic,
   changePassword,
   switchCompany
 };

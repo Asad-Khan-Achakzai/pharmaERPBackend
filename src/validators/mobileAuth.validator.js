@@ -43,6 +43,18 @@ const mobileSwitchCompanySchema = Joi.object({
   device: deviceSchema.required()
 });
 
+const pushDiagnosticSchema = Joi.object({
+  deviceId: Joi.string().allow('', null).max(64),
+  platform: Joi.string().allow('', null).max(16),
+  appVersion: Joi.string().allow('', null).max(32),
+  step: Joi.string().required().max(64),
+  result: Joi.string().required().max(64),
+  detail: Joi.object().unknown(true).allow(null),
+  errorMessage: Joi.string().allow('', null).max(500),
+  executionEnvironment: Joi.string().allow('', null).max(32),
+  projectIdPresent: Joi.boolean().allow(null)
+});
+
 module.exports = {
   deviceSchema,
   mobileLoginSchema,
@@ -51,5 +63,6 @@ module.exports = {
   logoutSchema,
   updatePushTokenSchema,
   mobileChangePasswordSchema,
-  mobileSwitchCompanySchema
+  mobileSwitchCompanySchema,
+  pushDiagnosticSchema
 };

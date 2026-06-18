@@ -46,6 +46,22 @@ const revokeSession = asyncHandler(async (req, res) => {
   ApiResponse.success(res, null, 'Session revoked');
 });
 
+const reportPushDiagnostic = asyncHandler(async (req, res) => {
+  const data = await mobileAuthService.reportPushDiagnostic({
+    user: req.user,
+    deviceId: req.body.deviceId,
+    platform: req.body.platform,
+    appVersion: req.body.appVersion,
+    step: req.body.step,
+    result: req.body.result,
+    detail: req.body.detail,
+    errorMessage: req.body.errorMessage,
+    executionEnvironment: req.body.executionEnvironment,
+    projectIdPresent: req.body.projectIdPresent
+  });
+  ApiResponse.success(res, data, 'Diagnostic logged');
+});
+
 const updatePushToken = asyncHandler(async (req, res) => {
   const pushToken = req.body?.pushToken ? String(req.body.pushToken).trim() : null;
   logger.info('mobile.api.push_token', {
@@ -91,6 +107,7 @@ module.exports = {
   listSessions,
   revokeSession,
   updatePushToken,
+  reportPushDiagnostic,
   changePassword,
   switchCompany
 };
