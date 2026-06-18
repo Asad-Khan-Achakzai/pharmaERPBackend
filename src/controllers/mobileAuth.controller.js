@@ -1,6 +1,8 @@
 const asyncHandler = require('../middleware/asyncHandler');
 const ApiResponse = require('../utils/ApiResponse');
 const mobileAuthService = require('../services/mobileAuth.service');
+const logger = require('../utils/logger');
+const { maskPushToken, isValidExpoPushToken } = require('../utils/pushDiagnostics');
 
 const login = asyncHandler(async (req, res) => {
   const { email, password, device } = req.body;
@@ -9,6 +11,11 @@ const login = asyncHandler(async (req, res) => {
 });
 
 const registerDevice = asyncHandler(async (req, res) => {
+  logger.info('mobile.api.register_device', {
+    userId: String(req.user.userId),
+    deviceId: req.body?.device?.deviceId || null,
+    platform: req.body?.device?.platform || null
+  });
   const data = await mobileAuthService.registerDevice({
     user: req.user,
     device: req.body.device
@@ -40,12 +47,22 @@ const revokeSession = asyncHandler(async (req, res) => {
 });
 
 const updatePushToken = asyncHandler(async (req, res) => {
-  await mobileAuthService.updatePushToken({
+  const pushToken = req.body?.pushToken ? String(req.body.pushToken).trim() : null;
+  logger.info('mobile.api.push_token', {
+    userId: String(req.user.userId),
+    companyId: req.user.companyId ? String(req.user.companyId) : null,
+    deviceId: req.body?.deviceId || null,
+    tokenProvided: !!pushToken,
+    tokenPreview: pushToken ? maskPushToken(pushToken) : null,
+    tokenValidExpoFormat: pushToken ? isValidExpoPushToken(pushToken) : false,
+    ip: req.ip
+  });
+  const data = await mobileAuthService.updatePushToken({
     user: req.user,
     deviceId: req.body.deviceId,
     pushToken: req.body.pushToken
   });
-  ApiResponse.success(res, null, 'Push token updated');
+  ApiResponse.success(res, data, 'Push token updated');
 });
 
 const changePassword = asyncHandler(async (req, res) => {

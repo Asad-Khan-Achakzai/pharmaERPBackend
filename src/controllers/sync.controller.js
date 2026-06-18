@@ -2,10 +2,27 @@ const asyncHandler = require('../middleware/asyncHandler');
 const ApiResponse = require('../utils/ApiResponse');
 const env = require('../config/env');
 const { getMediaFlags } = require('../utils/mediaFlags');
+const logger = require('../utils/logger');
+const { getPushBackendStatus } = require('../utils/pushDiagnostics');
 
 const serverConfig = asyncHandler(async (req, res) => {
   const company = req.context && req.context.company ? req.context.company : null;
   const media = getMediaFlags(company);
+  const pushBackend = getPushBackendStatus();
+  const companyPushEnabled = !!(company && company.mobilePushEnabled);
+
+  if (companyPushEnabled && !pushBackend.backendReady) {
+    logger.warn('push.server_config_misconfigured', {
+      userId: String(req.user.userId),
+      companyId: company ? String(company._id) : null,
+      companyName: company?.name || null,
+      ...pushBackend,
+      fix: !pushBackend.expoSdkLoaded
+        ? 'Install expo-server-sdk on backend'
+        : 'Set EXPO_ACCESS_TOKEN on Render and redeploy'
+    });
+  }
+
   const payload = {
     serverTime: new Date().toISOString(),
     media,
@@ -25,7 +42,9 @@ const serverConfig = asyncHandler(async (req, res) => {
       pollIntervalMs: env.MOBILE_SYNC_POLL_INTERVAL_MS
     },
     push: {
-      enabled: !!(company && company.mobilePushEnabled)
+      enabled: companyPushEnabled,
+      backendReady: pushBackend.backendReady,
+      backend: pushBackend
     },
     liveTracking: {
       enabled: !!(company && company.liveTrackingEnabled),
@@ -46,6 +65,13 @@ const serverConfig = asyncHandler(async (req, res) => {
         }
       : null
   };
+  logger.debug('sync.server_config', {
+    userId: String(req.user.userId),
+    companyId: company ? String(company._id) : null,
+    pushEnabled: companyPushEnabled,
+    pushBackendReady: pushBackend.backendReady
+  });
+
   ApiResponse.success(res, payload);
 });
 
