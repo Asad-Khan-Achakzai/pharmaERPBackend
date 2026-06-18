@@ -232,10 +232,26 @@ async function revokeSession({ user, sessionId }) {
 
 async function updatePushToken({ user, deviceId, pushToken }) {
   if (!deviceId) throw new ApiError(400, 'deviceId is required');
-  await DeviceSession.findOneAndUpdate(
-    { userId: user.userId, deviceId },
-    { $set: { pushToken: pushToken || null, lastSeenAt: new Date() } }
+  const token = pushToken ? String(pushToken).trim() : null;
+
+  const result = await DeviceSession.findOneAndUpdate(
+    { userId: user.userId, deviceId, revokedAt: null },
+    { $set: { pushToken: token, lastSeenAt: new Date() } },
+    { new: true }
   );
+
+  if (!result) {
+    const anySession = await DeviceSession.findOne({ userId: user.userId, deviceId }).lean();
+    if (!anySession) {
+      throw new ApiError(
+        404,
+        'No active device session for this device — log out and log in again before registering push notifications'
+      );
+    }
+    throw new ApiError(400, 'Device session is revoked — log in again to register push notifications');
+  }
+
+  return { sessionId: result._id, pushToken: result.pushToken };
 }
 
 async function changePassword({ userId, currentPassword, newPassword }) {

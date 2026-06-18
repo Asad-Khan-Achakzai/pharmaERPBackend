@@ -6,6 +6,7 @@ const heartbeat = asyncHandler(async (req, res) => {
   const data = await liveTrackingService.recordHeartbeat({
     companyId: req.companyId,
     userId: req.user.userId,
+    timeZone: req.context.timeZone,
     lat: req.body.lat,
     lng: req.body.lng,
     accuracy: req.body.accuracy,
@@ -16,7 +17,12 @@ const heartbeat = asyncHandler(async (req, res) => {
 });
 
 const live = asyncHandler(async (req, res) => {
-  const data = await liveTrackingService.listLive(req.companyId, req.user, req.query);
+  const data = await liveTrackingService.listLive(
+    req.companyId,
+    req.user,
+    req.context.timeZone,
+    req.query
+  );
   ApiResponse.success(res, data);
 });
 

@@ -38,12 +38,16 @@ async function sendToUser({ userId, title, body, data = {} }) {
     .select('pushToken')
     .lean();
 
+  const activeSessions = await DeviceSession.countDocuments({ userId, revokedAt: null });
+
   const tokens = [...new Set(sessions.map((s) => s.pushToken).filter((t) => Expo.isExpoPushToken(t)))];
   if (!tokens.length) {
     logger.info('push.no_tokens', {
       userId: String(userId),
       sessionCount: sessions.length,
-      hint: 'User must log in on an EAS build, allow notifications, and have mobilePushEnabled on the company'
+      activeSessions,
+      hint:
+        'Manager must log in on the EAS APK, allow notifications when prompted, and see [push] token registered in device logs'
     });
     return { sent: 0, skipped: false, reason: 'no_tokens' };
   }
