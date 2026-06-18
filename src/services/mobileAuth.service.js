@@ -384,6 +384,9 @@ function resolvePushDiagnosticFix(step, result, errorMessage) {
   }
   if (step === 'expo_token' || result === 'token_failed') {
     const msg = String(errorMessage || '').toLowerCase();
+    if (msg.includes('firebaseapp is not initialized') || msg.includes('initializeapp')) {
+      return 'Download google-services.json from Firebase Console → add to pharERPMobile/google-services.json → app.json googleServicesFile is set → rebuild APK';
+    }
     if (msg.includes('fcm') || msg.includes('firebase') || msg.includes('credentials')) {
       return 'Run `eas credentials -p android` → upload FCM V1 service account JSON, then rebuild APK';
     }
