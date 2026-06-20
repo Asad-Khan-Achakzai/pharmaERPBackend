@@ -1,6 +1,18 @@
 const mongoose = require('mongoose');
 const { Info } = require('luxon');
+const { ATTENDANCE_SYSTEM_MODE } = require('../constants/enums');
 const { softDeletePlugin } = require('../plugins/softDelete');
+
+const checkInPolicySchema = new mongoose.Schema(
+  {
+    type: { type: String, default: 'COMPANY_DEFAULT' },
+    latitude: { type: Number, default: null },
+    longitude: { type: Number, default: null },
+    radiusMeters: { type: Number, default: 150, min: 25, max: 5000 },
+    locationName: { type: String, trim: true, maxlength: 200, default: '' }
+  },
+  { _id: false }
+);
 
 const companySchema = new mongoose.Schema(
   {
@@ -121,7 +133,23 @@ const companySchema = new mongoose.Schema(
      * When true, field expenses from mobile stay PENDING until a manager approves
      * and GL is posted. Default false — existing tenants auto-post on create.
      */
-    expenseApprovalRequired: { type: Boolean, default: false }
+    expenseApprovalRequired: { type: Boolean, default: false },
+    /**
+     * Attendance check-in mode (Super Admin only). LEGACY = unchanged production behaviour.
+     * CHECKIN_POLICY_V2 = company default + weekly plan overrides with zone metadata (non-blocking).
+     */
+    attendanceSystemMode: {
+      type: String,
+      enum: Object.values(ATTENDANCE_SYSTEM_MODE),
+      default: ATTENDANCE_SYSTEM_MODE.LEGACY
+    },
+    /** Company-wide default check-in point (used when mode = CHECKIN_POLICY_V2). */
+    checkInPolicy: { type: checkInPolicySchema, default: undefined },
+    /**
+     * Incremented when attendanceSystemMode or checkInPolicy changes.
+     * Clients compare to invalidate cached attendance config.
+     */
+    attendanceConfigVersion: { type: Number, default: 1, min: 1 }
   },
   { timestamps: true }
 );

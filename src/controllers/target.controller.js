@@ -1,6 +1,8 @@
 const targetService = require('../services/target.service');
+const mrepReportService = require('../services/mrepReport.service');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../middleware/asyncHandler');
+const { userHasPermission } = require('../utils/effectivePermissions');
 
 const list = asyncHandler(async (req, res) => { ApiResponse.paginated(res, await targetService.list(req.companyId, req.query, req.context.timeZone)); });
 const create = asyncHandler(async (req, res) => {
@@ -15,6 +17,9 @@ const getByRep = asyncHandler(async (req, res) => { ApiResponse.success(res, awa
 
 const packsBreakdown = asyncHandler(async (req, res) => {
   const { medicalRepId, month } = req.query;
+  if (!userHasPermission(req.user, 'targets.view') && !userHasPermission(req.user, 'admin.access')) {
+    await mrepReportService.assertCanViewRep(req.companyId, req.user, medicalRepId);
+  }
   ApiResponse.success(
     res,
     await targetService.packsBreakdownByProduct(req.companyId, medicalRepId, month, req.context.timeZone)

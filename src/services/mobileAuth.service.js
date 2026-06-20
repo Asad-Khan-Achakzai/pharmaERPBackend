@@ -10,12 +10,6 @@ const { effectiveUserType, normalizeAccessPayload } = require('../utils/jwtAcces
 const { hasAccessToCompany } = require('../utils/platformAccess.util');
 const { hashRefreshToken } = require('../middleware/clientUuid');
 const { USER_TYPES } = require('../constants/enums');
-const logger = require('../utils/logger');
-const {
-  isValidExpoPushToken,
-  maskPushToken,
-  summarizeUserPushSessions
-} = require('../utils/pushDiagnostics');
 
 /**
  * Mobile auth service. Issues per-device refresh tokens that are tracked in
@@ -53,7 +47,7 @@ async function issueDeviceSession({ user, companyId, device }) {
     homeCompanyId: user.companyId
   });
   const refreshTokenHash = hashRefreshToken(tokens.refreshToken);
-  const session = await DeviceSession.findOneAndUpdate(
+  await DeviceSession.findOneAndUpdate(
     { userId: user._id, deviceId: device.deviceId },
     {
       $set: {
@@ -73,19 +67,6 @@ async function issueDeviceSession({ user, companyId, device }) {
     },
     { upsert: true, new: true }
   );
-
-  logger.info('mobile.session.issued', {
-    userId: String(user._id),
-    companyId: companyId ? String(companyId) : null,
-    deviceId: device.deviceId,
-    platform: device.platform,
-    brand: device.brand,
-    model: device.model,
-    appVersion: device.appVersion,
-    sessionId: session?._id ? String(session._id) : null,
-    hadPushToken: !!(session?.pushToken && String(session.pushToken).trim())
-  });
-
   return tokens;
 }
 
@@ -117,23 +98,6 @@ async function login({ email, password, device, ip }) {
   const company = activeCompanyId
     ? await Company.findById(activeCompanyId).select('name mobilePushEnabled mobileEnabled').lean()
     : null;
-
-  logger.info('mobile.login.success', {
-    userId: String(user._id),
-    email: emailNorm,
-    companyId: activeCompanyId ? String(activeCompanyId) : null,
-    companyName: company?.name || null,
-    mobilePushEnabled: !!company?.mobilePushEnabled,
-    deviceId: dev.deviceId,
-    platform: dev.platform,
-    brand: dev.brand,
-    model: dev.model,
-    appVersion: dev.appVersion,
-    nextStep:
-      company?.mobilePushEnabled !== false
-        ? 'App should POST /auth/mobile/push-token after login'
-        : 'Push disabled for company — enable in Super Admin if needed'
-  });
 
   const u = await formatUserForClient(user._id, {
     resolvedTenantCompanyId: activeCompanyId ? String(activeCompanyId) : null
@@ -179,20 +143,6 @@ async function registerDevice({ user, device }) {
     userId: user.userId,
     deviceId: dev.deviceId
   }).lean();
-
-  logger.info('mobile.device.registered', {
-    userId: String(user.userId),
-    companyId: user.companyId ? String(user.companyId) : null,
-    deviceId: dev.deviceId,
-    platform: dev.platform,
-    brand: dev.brand,
-    model: dev.model,
-    appVersion: dev.appVersion,
-    sessionId: session?._id ? String(session._id) : null,
-    hasPushToken: !!(session?.pushToken && String(session.pushToken).trim()),
-    pushTokenPreview: session?.pushToken ? maskPushToken(session.pushToken) : null
-  });
-
   return { session };
 }
 
@@ -287,21 +237,6 @@ async function revokeSession({ user, sessionId }) {
 async function updatePushToken({ user, deviceId, pushToken }) {
   if (!deviceId) throw new ApiError(400, 'deviceId is required');
   const token = pushToken ? String(pushToken).trim() : null;
-  const tokenValid = token ? isValidExpoPushToken(token) : false;
-
-  logger.info('mobile.push_token.update_start', {
-    userId: String(user.userId),
-    companyId: user.companyId ? String(user.companyId) : null,
-    deviceId,
-    tokenProvided: !!token,
-    tokenLength: token ? token.length : 0,
-    tokenPreview: token ? maskPushToken(token) : null,
-    tokenValidExpoFormat: tokenValid,
-    warning:
-      token && !tokenValid
-        ? 'Token does not match ExponentPushToken[...] — FCM/EAS misconfiguration or wrong token type'
-        : null
-  });
 
   const result = await DeviceSession.findOneAndUpdate(
     { userId: user.userId, deviceId, revokedAt: null },
@@ -311,91 +246,16 @@ async function updatePushToken({ user, deviceId, pushToken }) {
 
   if (!result) {
     const anySession = await DeviceSession.findOne({ userId: user.userId, deviceId }).lean();
-    const sessionSummary = await summarizeUserPushSessions(user.userId);
-
     if (!anySession) {
-      logger.warn('mobile.push_token.no_session', {
-        userId: String(user.userId),
-        deviceId,
-        ...sessionSummary,
-        fix: 'User must log in on this device first — POST /auth/mobile/login creates DeviceSession'
-      });
       throw new ApiError(
         404,
         'No active device session for this device — log out and log in again before registering push notifications'
       );
     }
-
-    logger.warn('mobile.push_token.session_revoked', {
-      userId: String(user.userId),
-      deviceId,
-      revokedAt: anySession.revokedAt,
-      revokedReason: anySession.revokedReason,
-      fix: 'Log in again on this device to create a new active session'
-    });
     throw new ApiError(400, 'Device session is revoked — log in again to register push notifications');
   }
 
-  logger.info('mobile.push_token.saved', {
-    userId: String(user.userId),
-    companyId: user.companyId ? String(user.companyId) : null,
-    deviceId,
-    sessionId: String(result._id),
-    platform: result.platform,
-    tokenPreview: token ? maskPushToken(token) : null,
-    tokenValidExpoFormat: tokenValid,
-    readyForPush: tokenValid,
-    fix: tokenValid
-      ? null
-      : 'Token saved but invalid — rebuild APK with FCM credentials in EAS and grant notification permission'
-  });
-
   return { sessionId: result._id, pushToken: result.pushToken };
-}
-
-async function reportPushDiagnostic({ user, deviceId, platform, appVersion, step, result, detail, errorMessage, executionEnvironment, projectIdPresent }) {
-  logger.info('mobile.push_diagnostic', {
-    userId: String(user.userId),
-    companyId: user.companyId ? String(user.companyId) : null,
-    deviceId: deviceId || null,
-    platform: platform || null,
-    appVersion: appVersion || null,
-    step: step || 'unknown',
-    result: result || 'unknown',
-    executionEnvironment: executionEnvironment || null,
-    projectIdPresent: projectIdPresent === true,
-    errorMessage: errorMessage ? String(errorMessage).slice(0, 500) : null,
-    detail: detail && typeof detail === 'object' ? detail : null,
-    fix: resolvePushDiagnosticFix(step, result, errorMessage)
-  });
-  return { logged: true };
-}
-
-function resolvePushDiagnosticFix(step, result, errorMessage) {
-  if (result === 'success') return null;
-  if (result === 'skipped_disabled') {
-    return 'Enable mobile push for company in Super Admin';
-  }
-  if (result === 'permission_denied') {
-    return 'On phone: Settings → Apps → PharmaERP → Notifications → Allow';
-  }
-  if (result === 'missing_project_id') {
-    return 'Rebuild APK — app.json extra.eas.projectId missing from native build';
-  }
-  if (step === 'expo_token' || result === 'token_failed') {
-    const msg = String(errorMessage || '').toLowerCase();
-    if (msg.includes('firebaseapp is not initialized') || msg.includes('initializeapp')) {
-      return 'Download google-services.json from Firebase Console → add to pharERPMobile/google-services.json → app.json googleServicesFile is set → rebuild APK';
-    }
-    if (msg.includes('fcm') || msg.includes('firebase') || msg.includes('credentials')) {
-      return 'Run `eas credentials -p android` → upload FCM V1 service account JSON, then rebuild APK';
-    }
-    return 'FCM likely not configured — run eas credentials for Android, rebuild, reinstall';
-  }
-  if (result === 'backend_failed') {
-    return 'Token obtained but backend rejected save — check active DeviceSession for deviceId';
-  }
-  return null;
 }
 
 async function changePassword({ userId, currentPassword, newPassword }) {
@@ -449,7 +309,6 @@ module.exports = {
   listSessions,
   revokeSession,
   updatePushToken,
-  reportPushDiagnostic,
   changePassword,
   switchCompany
 };

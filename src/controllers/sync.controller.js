@@ -2,34 +2,29 @@ const asyncHandler = require('../middleware/asyncHandler');
 const ApiResponse = require('../utils/ApiResponse');
 const env = require('../config/env');
 const { getMediaFlags } = require('../utils/mediaFlags');
-const logger = require('../utils/logger');
-const { getPushBackendStatus } = require('../utils/pushDiagnostics');
+const pushService = require('../services/push.service');
 
 const serverConfig = asyncHandler(async (req, res) => {
   const company = req.context && req.context.company ? req.context.company : null;
   const media = getMediaFlags(company);
-  const pushBackend = getPushBackendStatus();
-  const companyPushEnabled = !!(company && company.mobilePushEnabled);
-
-  if (companyPushEnabled && !pushBackend.backendReady) {
-    logger.warn('push.server_config_misconfigured', {
-      userId: String(req.user.userId),
-      companyId: company ? String(company._id) : null,
-      companyName: company?.name || null,
-      ...pushBackend,
-      fix: !pushBackend.expoSdkLoaded
-        ? 'Install expo-server-sdk on backend'
-        : 'Set EXPO_ACCESS_TOKEN on Render and redeploy'
-    });
-  }
-
   const payload = {
     serverTime: new Date().toISOString(),
     media,
     attendance: {
       geofenceEnabled: !!(company && company.attendanceGovernanceEnabled),
       selfieEnabled: media.enableMediaUpload && media.enableVisitPhotos,
-      geofenceRadiusMeters: 150
+      geofenceRadiusMeters: 150,
+      systemMode:
+        company && company.attendanceSystemMode === 'CHECKIN_POLICY_V2'
+          ? 'CHECKIN_POLICY_V2'
+          : 'LEGACY',
+      configVersion: company && company.attendanceConfigVersion != null
+        ? Number(company.attendanceConfigVersion)
+        : 1,
+      configUpdatedAt:
+        company && company.updatedAt
+          ? new Date(company.updatedAt).toISOString()
+          : null
     },
     doctors: {
       approvalRequired:
@@ -42,9 +37,8 @@ const serverConfig = asyncHandler(async (req, res) => {
       pollIntervalMs: env.MOBILE_SYNC_POLL_INTERVAL_MS
     },
     push: {
-      enabled: companyPushEnabled,
-      backendReady: pushBackend.backendReady,
-      backend: pushBackend
+      enabled: !!(company && company.mobilePushEnabled),
+      backendReady: pushService.isPushConfigured()
     },
     liveTracking: {
       enabled: !!(company && company.liveTrackingEnabled),
@@ -65,13 +59,6 @@ const serverConfig = asyncHandler(async (req, res) => {
         }
       : null
   };
-  logger.debug('sync.server_config', {
-    userId: String(req.user.userId),
-    companyId: company ? String(company._id) : null,
-    pushEnabled: companyPushEnabled,
-    pushBackendReady: pushBackend.backendReady
-  });
-
   ApiResponse.success(res, payload);
 });
 

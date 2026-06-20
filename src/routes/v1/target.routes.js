@@ -3,14 +3,20 @@ const router = express.Router();
 const c = require('../../controllers/target.controller');
 const { authenticate } = require('../../middleware/auth');
 const { companyScope } = require('../../middleware/companyScope');
-const { checkPermission } = require('../../middleware/checkPermission');
+const { checkPermission, checkPermissionAny } = require('../../middleware/checkPermission');
 const { validate, validateQuery } = require('../../middleware/validate');
 const { createTargetSchema, updateTargetSchema, packsBreakdownQuerySchema } = require('../../validators/target.validator');
 
 router.use(authenticate, companyScope);
 router.get(
   '/packs-breakdown',
-  checkPermission('targets.view'),
+  checkPermissionAny(
+    'targets.view',
+    'weeklyPlans.view',
+    'weeklyPlans.markVisit',
+    'team.viewAllReports',
+    'admin.access'
+  ),
   validateQuery(packsBreakdownQuerySchema),
   c.packsBreakdown
 );

@@ -5,7 +5,6 @@ const { NOTIFICATION_KIND } = require('../constants/enums');
 const { parsePagination } = require('../utils/pagination');
 const pushService = require('./push.service');
 const logger = require('../utils/logger');
-const { getPushBackendStatus } = require('../utils/pushDiagnostics');
 
 async function createForUser({ companyId, userId, title, body, kind = NOTIFICATION_KIND.GENERAL, link, meta }) {
   const doc = await Notification.create({
@@ -18,62 +17,18 @@ async function createForUser({ companyId, userId, title, body, kind = NOTIFICATI
     meta: meta || null
   });
 
-  logger.info('notification.created', {
-    notificationId: String(doc._id),
-    companyId: String(companyId),
-    userId: String(userId),
-    kind,
-    title,
-    hasLink: !!link
-  });
-
-  const company = await Company.findById(companyId).select('mobilePushEnabled name').lean();
-
-  if (!company?.mobilePushEnabled) {
-    logger.info('push.skipped_company_flag_off', {
-      notificationId: String(doc._id),
-      companyId: String(companyId),
-      companyName: company?.name || null,
-      userId: String(userId),
-      fix: 'Super Admin → Companies → enable "Mobile push notifications" for this company'
-    });
-    return doc.toObject();
-  }
-
-  const backend = getPushBackendStatus();
-  logger.info('push.dispatching', {
-    notificationId: String(doc._id),
-    userId: String(userId),
-    companyId: String(companyId),
-    backendReady: backend.backendReady,
-    backend
-  });
-
-  try {
-    const result = await pushService.sendToUser({
-      userId,
-      title,
-      body,
-      data: { notificationId: String(doc._id), kind, link: link || undefined },
-      context: {
-        notificationId: String(doc._id),
-        kind,
-        source: 'notification.createForUser'
-      }
-    });
-
-    logger.info('push.dispatch_finished', {
-      notificationId: String(doc._id),
-      userId: String(userId),
-      result
-    });
-  } catch (err) {
-    logger.error('push.dispatch_unhandled_error', {
-      notificationId: String(doc._id),
-      userId: String(userId),
-      err: err.message,
-      stack: err.stack
-    });
+  const company = await Company.findById(companyId).select('mobilePushEnabled').lean();
+  if (company?.mobilePushEnabled) {
+    void pushService
+      .sendToUser({
+        userId,
+        title,
+        body,
+        data: { notificationId: String(doc._id), kind, link: link || undefined }
+      })
+      .catch((err) => {
+        logger.error('push.dispatch_failed', { userId: String(userId), err: err.message });
+      });
   }
 
   return doc.toObject();

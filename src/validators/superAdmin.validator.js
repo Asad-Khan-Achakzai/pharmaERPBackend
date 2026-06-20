@@ -1,5 +1,15 @@
 const Joi = require('joi');
 
+const { ATTENDANCE_SYSTEM_MODE } = require('../constants/enums');
+
+const checkInPolicySchema = Joi.object({
+  type: Joi.string().valid('COMPANY_DEFAULT').default('COMPANY_DEFAULT'),
+  latitude: Joi.number().min(-90).max(90).required(),
+  longitude: Joi.number().min(-180).max(180).required(),
+  radiusMeters: Joi.number().integer().min(25).max(5000).default(150),
+  locationName: Joi.string().trim().max(200).allow('')
+});
+
 const createCompanySchema = Joi.object({
   name: Joi.string().required().trim().min(1).max(200),
   address: Joi.string().trim().allow('', null),
@@ -25,7 +35,9 @@ const createCompanySchema = Joi.object({
   onboardingStrictValidation: Joi.boolean(),
   onboardingKillSwitch: Joi.boolean(),
   onboardingPilotCohort: Joi.string().trim().allow('', null).max(64),
-  isActive: Joi.boolean().default(true)
+  isActive: Joi.boolean().default(true),
+  attendanceSystemMode: Joi.string().valid(...Object.values(ATTENDANCE_SYSTEM_MODE)),
+  checkInPolicy: checkInPolicySchema
 });
 
 const updateCompanySchema = Joi.object({
@@ -53,7 +65,9 @@ const updateCompanySchema = Joi.object({
   onboardingStrictValidation: Joi.boolean(),
   onboardingKillSwitch: Joi.boolean(),
   onboardingPilotCohort: Joi.string().trim().allow('', null).max(64),
-  isActive: Joi.boolean()
+  isActive: Joi.boolean(),
+  attendanceSystemMode: Joi.string().valid(...Object.values(ATTENDANCE_SYSTEM_MODE)),
+  checkInPolicy: checkInPolicySchema
 })
   .min(1)
   .unknown(false);

@@ -15,6 +15,7 @@ const businessTime = require('../utils/businessTime');
 const attendancePolicyService = require('./attendancePolicy.service');
 const attendanceAuditService = require('./attendanceAudit.service');
 const attendanceWorkflowService = require('./attendanceWorkflow.service');
+const checkInPolicyServiceV2 = require('./checkInPolicyServiceV2');
 
 const round2 = (n) => Math.round(n * 100) / 100;
 
@@ -27,6 +28,26 @@ const SHIFT_CHECKIN_CLOSED_USER_MESSAGE =
 
 const isLateCheckInPendingApproval = (rec) =>
   rec && rec.lateCheckInApprovalStatus === LATE_CHECKIN_APPROVAL_STATUS.PENDING;
+
+/** V2 check-in policy enrichment — never blocks attendance; atomic update by id. */
+const enrichCheckInPolicyV2 = async (att, companyId, employeeId, ymd, tz, body) => {
+  if (!att?._id) return att;
+  try {
+    const updated = await checkInPolicyServiceV2.applyCheckInPolicyV2(att._id, {
+      companyId,
+      employeeId,
+      businessYmd: ymd,
+      timeZone: tz,
+      body: body || {}
+    });
+    return updated || att;
+  } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
+    // eslint-disable-next-line no-console
+    console.error('[attendance] enrichCheckInPolicyV2 failed', { companyId, employeeId, msg });
+    return att;
+  }
+};
 
 const todayYmd = (tz) => businessTime.nowInBusinessTime(tz).toISODate();
 const dateDocFromYmd = (ymd, tz) => businessTime.businessDayStartUtc(ymd, tz);
@@ -286,6 +307,7 @@ const checkIn = async (companyId, employeeId, timeZone, body = {}) => {
       throw err;
     }
 
+    await enrichCheckInPolicyV2(att, companyId, employeeId, ymd, tz, body);
     return att;
   }
 
@@ -349,6 +371,7 @@ const checkIn = async (companyId, employeeId, timeZone, body = {}) => {
     }
   }
 
+  await enrichCheckInPolicyV2(docToSave, companyId, employeeId, ymd, tz, body);
   return docToSave;
 };
 
@@ -486,20 +509,32 @@ const getMeToday = async (companyId, employeeId, timeZone) => {
     ? businessTime.toBusinessTime(doc.date, tz).toISODate()
     : ymd;
 
+  const checkInPolicyV2 = await checkInPolicyServiceV2.previewForEmployeeToday(
+    companyId,
+    employeeId,
+    tz
+  );
+  const policyV2Fields = checkInPolicyServiceV2.buildResponseFields(base);
+
   return {
     ...base,
+    ...policyV2Fields,
     canCheckIn,
     canCheckOut,
     uiStatus,
     businessDate,
     pstDate: businessDate,
+    checkInPolicyV2,
     governance: {
       attendanceGovernanceEnabled: flags.attendanceGovernanceEnabled,
       attendancePoliciesEnabled: flags.attendancePoliciesEnabled,
       attendanceApprovalsEnabled: flags.attendanceApprovalsEnabled,
       strictLateBlocking: flags.strictLateBlocking,
       allowCheckInWhenLate: flags.allowCheckInWhenLate,
-      autoRequestOnLateCheckIn: flags.autoRequestOnLateCheckIn
+      autoRequestOnLateCheckIn: flags.autoRequestOnLateCheckIn,
+      attendanceSystemMode: checkInPolicyV2.enabled
+        ? 'CHECKIN_POLICY_V2'
+        : 'LEGACY'
     },
     shiftCheckInClosed,
     shiftCheckInClosedMessage: shiftCheckInClosed ? SHIFT_CHECKIN_CLOSED_USER_MESSAGE : undefined,
@@ -538,13 +573,15 @@ const listToday = async (companyId, timeZone, visibleUserIds = null) => {
   }).lean();
 
   const byEmp = new Map(recs.map((r) => [r.employeeId.toString(), r]));
+  const companyV2 = await checkInPolicyServiceV2.getCompanyForCheckInPolicy(companyId);
+  const v2Enabled = checkInPolicyServiceV2.isV2Mode(companyV2);
 
   const employees = users.map((u) => {
     const r = byEmp.get(u._id.toString());
     const status = dashboardLabel(r);
     const hasCheckedOut = Boolean(r?.checkOutTime);
     const lateMinutes = r?.lateMinutes != null ? r.lateMinutes : null;
-    return {
+    const row = {
       employeeId: u._id,
       name: u.name,
       role: u.role,
@@ -554,6 +591,10 @@ const listToday = async (companyId, timeZone, visibleUserIds = null) => {
       checkOutTime: businessTime.formatHmBusiness(r?.checkOutTime, tz),
       hasCheckedOut
     };
+    if (v2Enabled && r) {
+      Object.assign(row, checkInPolicyServiceV2.buildResponseFields(r));
+    }
+    return row;
   });
 
   let presentPayroll = 0;
@@ -564,6 +605,8 @@ const listToday = async (companyId, timeZone, visibleUserIds = null) => {
   let leave = 0;
   let lateRecords = 0;
   let missingCheckout = 0;
+  let outOfZoneToday = 0;
+  let withinZoneToday = 0;
 
   for (const e of employees) {
     if (e.status === 'NOT_MARKED') {
@@ -584,6 +627,8 @@ const listToday = async (companyId, timeZone, visibleUserIds = null) => {
     if (!r) continue;
     if ((r.lateMinutes || 0) > 0 && e.status !== 'LATE_CHECKIN_PENDING') lateRecords += 1;
     if (r.checkInTime && !r.checkOutTime && e.status !== 'LATE_CHECKIN_PENDING') missingCheckout += 1;
+    if (v2Enabled && r?.attendanceLocationStatus === 'OUT_OF_ZONE') outOfZoneToday += 1;
+    if (v2Enabled && r?.attendanceLocationStatus === 'WITHIN_ZONE') withinZoneToday += 1;
   }
 
   const flags = await attendancePolicyService.getCompanyFlags(companyId);
@@ -625,6 +670,7 @@ const listToday = async (companyId, timeZone, visibleUserIds = null) => {
 
   return {
     businessDate: ymd,
+    attendanceSystemMode: v2Enabled ? 'CHECKIN_POLICY_V2' : 'LEGACY',
     employees: employees.map((e) => {
       const m = shiftMetaByEmp.get(e.employeeId.toString());
       return {
@@ -637,7 +683,14 @@ const listToday = async (companyId, timeZone, visibleUserIds = null) => {
         hasCheckedOut: e.hasCheckedOut,
         shiftId: m?.shiftId ?? null,
         shiftName: m?.shiftName ?? null,
-        scheduleLabel: m?.scheduleLabel ?? null
+        scheduleLabel: m?.scheduleLabel ?? null,
+        ...(v2Enabled
+          ? {
+              attendanceLocationStatus: e.attendanceLocationStatus,
+              distanceFromCheckInPoint: e.distanceFromCheckInPoint,
+              requiredCheckInLocation: e.requiredCheckInLocation
+            }
+          : {})
       };
     }),
     summary: {
@@ -648,6 +701,7 @@ const listToday = async (companyId, timeZone, visibleUserIds = null) => {
       notMarked,
       absent,
       totalEmployees: employees.length,
+      ...(v2Enabled ? { outOfZoneToday, withinZoneToday } : {}),
       /** @deprecated Use presentPayroll (payroll-aligned). */
       present: presentPayroll
     },
@@ -776,7 +830,7 @@ const runAutoCheckoutTick = async () => {
 
 const report = async (companyId, query, timeZone) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
-  const { employeeId, startDate, endDate } = query;
+  const { employeeId, startDate, endDate, attendanceLocationStatus } = query;
   if (!employeeId || !startDate || !endDate) {
     throw new ApiError(400, 'employeeId, startDate, and endDate are required');
   }
@@ -823,12 +877,24 @@ const report = async (companyId, query, timeZone) => {
 
   const records = candidates.filter((r) => ymdSet.has(businessTime.businessDayKeyFromUtcInstant(r.date, tz)));
 
+  const companyV2 = await checkInPolicyServiceV2.getCompanyForCheckInPolicy(companyId);
+  const v2Enabled = checkInPolicyServiceV2.isV2Mode(companyV2);
+
+  let filteredRecords = records;
+  if (v2Enabled && attendanceLocationStatus) {
+    filteredRecords = records.filter(
+      (r) => r.attendanceLocationStatus === attendanceLocationStatus
+    );
+  }
+
   let presentDays = 0;
   let absentDays = 0;
   let halfDays = 0;
   let leaveDays = 0;
+  let outOfZoneDays = 0;
+  let withinZoneDays = 0;
 
-  for (const r of records) {
+  for (const r of filteredRecords) {
     switch (r.status) {
       case ATTENDANCE_STATUS.PRESENT:
         if (r.lateCheckInApprovalStatus === LATE_CHECKIN_APPROVAL_STATUS.PENDING) {
@@ -849,6 +915,8 @@ const report = async (companyId, query, timeZone) => {
       default:
         break;
     }
+    if (v2Enabled && r.attendanceLocationStatus === 'OUT_OF_ZONE') outOfZoneDays += 1;
+    if (v2Enabled && r.attendanceLocationStatus === 'WITHIN_ZONE') withinZoneDays += 1;
   }
 
   const sa = DateTime.fromISO(startYmd, { zone: tz }).toMillis();
@@ -856,13 +924,15 @@ const report = async (companyId, query, timeZone) => {
   const totalDays = Math.floor((sb - sa) / 86400000) + 1;
 
   return {
-    records,
+    records: filteredRecords,
+    attendanceSystemMode: v2Enabled ? 'CHECKIN_POLICY_V2' : 'LEGACY',
     summary: {
       totalDays,
       presentDays,
       absentDays,
       halfDays,
-      leaveDays
+      leaveDays,
+      ...(v2Enabled ? { outOfZoneDays, withinZoneDays } : {})
     }
   };
 };

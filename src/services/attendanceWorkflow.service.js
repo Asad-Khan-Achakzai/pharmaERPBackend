@@ -3,6 +3,7 @@ const ApprovalMatrix = require('../models/ApprovalMatrix');
 const AttendanceRequest = require('../models/AttendanceRequest');
 const Attendance = require('../models/Attendance');
 const User = require('../models/User');
+const Role = require('../models/Role');
 const Company = require('../models/Company');
 const ApiError = require('../utils/ApiError');
 const {
@@ -15,11 +16,13 @@ const {
   NOTIFICATION_KIND,
   ROLES
 } = require('../constants/enums');
+const { ADMIN_ACCESS, DEFAULT_ADMIN_CODE } = require('../constants/rbac');
 const notificationService = require('./notification.service');
 const attendancePolicyService = require('./attendancePolicy.service');
 const attendanceAuditService = require('./attendanceAudit.service');
 const { userHasPermission, userHasTenantWideAccess } = require('../utils/effectivePermissions');
 const { resolveAttendanceVisibleUserIds } = require('../utils/attendanceScope.util');
+const { formatLateDuration } = require('../utils/formatLateDuration');
 
 /** Config-free default when no ApprovalMatrix document exists. */
 const BUILTIN_STEPS = [
@@ -100,38 +103,91 @@ const isActionableRequestStatus = (request) => {
   return false;
 };
 
-async function notifyAttendanceRequestSubmitted({ companyId, request, requester, payload = {} }) {
-  const targets = new Set();
+/** ObjectId or populated `{ _id, name, … }` from inbox/governance list APIs. */
+const normalizeObjectIdRef = (ref) => {
+  if (ref == null || ref === '') return null;
+  if (typeof ref === 'object' && ref._id != null) return String(ref._id);
+  return String(ref);
+};
+
+/** Users who can act on admin-pool attendance requests (matches inbox `isAdmin` / `admin.access`). */
+async function findCompanyAdminCapableUserIds(companyId) {
+  const adminRoles = await Role.find({
+    companyId,
+    isDeleted: { $ne: true },
+    $or: [{ code: DEFAULT_ADMIN_CODE }, { permissions: ADMIN_ACCESS }]
+  })
+    .select('_id')
+    .lean();
+  const roleIds = adminRoles.map((r) => r._id);
+
+  const or = [{ role: ROLES.ADMIN }];
+  if (roleIds.length) {
+    or.push({ roleId: { $in: roleIds } });
+  }
+
+  const users = await User.find({
+    companyId,
+    isActive: true,
+    isDeleted: { $ne: true },
+    $or: or
+  })
+    .select('_id')
+    .lean();
+
+  return [...new Set(users.map((u) => String(u._id)))];
+}
+
+/**
+ * Resolve notification recipients from the request's current routing state
+ * (same approver/admin-pool rules as the inbox — not hardcoded by role name).
+ */
+async function resolveNotificationTargetUserIds(companyId, request) {
   if (request.currentApproverId) {
-    targets.add(String(request.currentApproverId));
-  } else if (request.adminPool) {
-    const admins = await User.find({
+    const uid = normalizeObjectIdRef(request.currentApproverId);
+    if (!uid) return [];
+    const approver = await User.findOne({
+      _id: uid,
       companyId,
-      role: ROLES.ADMIN,
       isActive: true,
       isDeleted: { $ne: true }
     })
       .select('_id')
       .lean();
-    admins.forEach((a) => targets.add(String(a._id)));
+    return approver ? [String(approver._id)] : [];
   }
-  if (!targets.size) return;
 
+  if (request.adminPool) {
+    return findCompanyAdminCapableUserIds(companyId);
+  }
+
+  return [];
+}
+
+async function notifyNextApprovers({ companyId, request, payload = {} }) {
+  const targetIds = await resolveNotificationTargetUserIds(companyId, request);
+  if (!targetIds.length) return;
+
+  const requester = await User.findById(request.requesterId).select('name').lean();
   const requesterName = requester?.name || 'Team member';
   let title = 'Attendance request pending approval';
   let body = `${requesterName}: ${String(request.type || 'request').replace(/_/g, ' ').toLowerCase()}`;
 
   if (request.type === ATTENDANCE_REQUEST_TYPE.LATE_ARRIVAL) {
-    title = 'Late check-in pending approval';
-    const lateMinutes = payload?.lateMinutes;
-    body =
-      lateMinutes != null && Number(lateMinutes) > 0
-        ? `${requesterName} checked in ${lateMinutes} min late`
-        : `${requesterName} submitted a late check-in for approval`;
+    title = 'Late check-in approval';
+    let lateMinutes = payload?.lateMinutes;
+    if (lateMinutes == null && request.attendanceId) {
+      const att = await Attendance.findById(request.attendanceId).select('lateMinutes').lean();
+      lateMinutes = att?.lateMinutes;
+    }
+    const lateLabel = formatLateDuration(lateMinutes);
+    body = lateLabel
+      ? `${requesterName} checked in ${lateLabel} late`
+      : `${requesterName} submitted a late check-in for approval`;
   }
 
   await Promise.all(
-    [...targets].map((userId) =>
+    targetIds.map((userId) =>
       notificationService
         .createForUser({
           companyId,
@@ -162,13 +218,6 @@ const computeNextSlaDueAt = (company, fromDate = new Date()) => {
   const h = company?.attendanceApprovalSlaHours;
   if (h == null || Number(h) <= 0) return null;
   return new Date(fromDate.getTime() + Math.min(336, Math.max(0.25, Number(h))) * 3600000);
-};
-
-/** ObjectId or populated `{ _id, name, … }` from inbox/governance list APIs. */
-const normalizeObjectIdRef = (ref) => {
-  if (ref == null || ref === '') return null;
-  if (typeof ref === 'object' && ref._id != null) return String(ref._id);
-  return String(ref);
 };
 
 /**
@@ -423,6 +472,9 @@ const submitRequest = async ({ companyId, requesterId, type, reason, payload, at
     const p = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
     const rawOut = p.checkOutTime != null && p.checkOutTime !== '' ? p.checkOutTime : p.proposedCheckOutTime;
     if (rawOut != null && rawOut !== '') storedPayload.checkOutTime = rawOut;
+  } else if (type === ATTENDANCE_REQUEST_TYPE.LATE_ARRIVAL) {
+    const p = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+    if (p.lateMinutes != null) storedPayload.lateMinutes = p.lateMinutes;
   }
 
   const company = await Company.findById(companyId).select(COMPANY_AUTOMATION_SELECT).lean();
@@ -461,10 +513,9 @@ const submitRequest = async ({ companyId, requesterId, type, reason, payload, at
     meta: { type, slaDueAt }
   });
 
-  void notifyAttendanceRequestSubmitted({
+  void notifyNextApprovers({
     companyId,
     request: doc,
-    requester,
     payload: payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}
   });
 
@@ -535,6 +586,8 @@ const approveRequest = async ({ companyId, requestId, actorUserId, isAdmin, comm
     action: 'ATTENDANCE_REQUEST_APPROVED_STEP',
     meta: { stepIndex: request.currentStepIndex }
   });
+
+  void notifyNextApprovers({ companyId, request });
 
   return request;
 };
@@ -654,6 +707,7 @@ const escalateRequest = async ({ companyId, requestId, actorUserId, isAdmin, com
       action: 'ATTENDANCE_REQUEST_ESCALATED_TO_ADMIN_POOL',
       meta: {}
     });
+    void notifyNextApprovers({ companyId, request });
     return request;
   }
 
@@ -683,6 +737,8 @@ const escalateRequest = async ({ companyId, requestId, actorUserId, isAdmin, com
     action: 'ATTENDANCE_REQUEST_ESCALATED',
     meta: { stepIndex: request.currentStepIndex }
   });
+
+  void notifyNextApprovers({ companyId, request });
 
   return request;
 };
@@ -985,6 +1041,8 @@ const applyAutomatedEscalation = async ({ requestId, companyId, action, auditKey
     action: 'ATTENDANCE_REQUEST_POLICY_ESCALATION',
     meta: { auditKey, policyAction: action }
   });
+
+  void notifyNextApprovers({ companyId, request });
 
   return { skipped: false };
 };

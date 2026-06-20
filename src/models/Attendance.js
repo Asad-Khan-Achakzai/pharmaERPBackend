@@ -4,9 +4,31 @@ const {
   ATTENDANCE_MARKED_BY,
   ATTENDANCE_CHECKIN_SOURCE,
   ATTENDANCE_CHECKOUT_SOURCE,
-  LATE_CHECKIN_APPROVAL_STATUS
+  LATE_CHECKIN_APPROVAL_STATUS,
+  ATTENDANCE_LOCATION_STATUS,
+  CHECKIN_POLICY_TYPE
 } = require('../constants/enums');
 const { softDeletePlugin } = require('../plugins/softDelete');
+
+const requiredCheckInLocationSchema = new mongoose.Schema(
+  {
+    name: { type: String, trim: true, maxlength: 200 },
+    latitude: { type: Number, default: null },
+    longitude: { type: Number, default: null }
+  },
+  { _id: false }
+);
+
+const resolvedCheckInPolicySchema = new mongoose.Schema(
+  {
+    type: { type: String, trim: true, maxlength: 64 },
+    locationName: { type: String, trim: true, maxlength: 200 },
+    latitude: { type: Number, default: null },
+    longitude: { type: Number, default: null },
+    radiusMeters: { type: Number, min: 0, default: null }
+  },
+  { _id: false }
+);
 
 const attendanceSchema = new mongoose.Schema(
   {
@@ -57,13 +79,34 @@ const attendanceSchema = new mongoose.Schema(
     /** GPS captured at check-out (mobile offline sync). */
     checkOutLat: { type: Number, default: null },
     checkOutLng: { type: Number, default: null },
-    checkOutAccuracy: { type: Number, default: null }
+    checkOutAccuracy: { type: Number, default: null },
+    /** V2 check-in policy metadata (additive; unset on legacy rows). */
+    attendanceLocationStatus: {
+      type: String,
+      enum: Object.values(ATTENDANCE_LOCATION_STATUS),
+      default: undefined
+    },
+    distanceFromCheckInPoint: { type: Number, default: null, min: 0 },
+    /** Canonical V2 required location (name + coordinates). */
+    requiredCheckInLocation: { type: requiredCheckInLocationSchema, default: undefined },
+    /** Immutable snapshot at first V2 check-in (never overwritten). */
+    resolvedCheckInPolicy: { type: resolvedCheckInPolicySchema, default: undefined },
+    /** @deprecated — read compat only; use requiredCheckInLocation / resolvedCheckInPolicy. */
+    requiredCheckInLocationName: { type: String, trim: true, maxlength: 200, default: undefined },
+    /** @deprecated — read compat only; use resolvedCheckInPolicy.type. */
+    resolvedCheckInPolicyType: {
+      type: String,
+      enum: Object.values(CHECKIN_POLICY_TYPE),
+      default: undefined
+    }
   },
   { timestamps: true }
 );
 
 attendanceSchema.index({ companyId: 1, employeeId: 1, date: 1 }, { unique: true });
 attendanceSchema.index({ companyId: 1, date: 1 });
+attendanceSchema.index({ companyId: 1, attendanceLocationStatus: 1, createdAt: -1 });
+attendanceSchema.index({ companyId: 1, createdAt: -1 });
 
 attendanceSchema.plugin(softDeletePlugin);
 

@@ -1,6 +1,29 @@
 const mongoose = require('mongoose');
-const { WEEKLY_PLAN_STATUS } = require('../constants/enums');
+const { WEEKLY_PLAN_STATUS, CHECKIN_POLICY_TYPE } = require('../constants/enums');
 const { softDeletePlugin } = require('../plugins/softDelete');
+
+const checkInCustomLocationSchema = new mongoose.Schema(
+  {
+    locationName: { type: String, trim: true, maxlength: 200, default: '' },
+    latitude: { type: Number, default: null },
+    longitude: { type: Number, default: null },
+    radiusMeters: { type: Number, default: 150, min: 25, max: 5000 }
+  },
+  { _id: false }
+);
+
+const checkInConfigurationSchema = new mongoose.Schema(
+  {
+    policyType: {
+      type: String,
+      enum: Object.values(CHECKIN_POLICY_TYPE),
+      default: CHECKIN_POLICY_TYPE.COMPANY_DEFAULT
+    },
+    doctorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Doctor', default: null },
+    customLocation: { type: checkInCustomLocationSchema, default: undefined }
+  },
+  { _id: false }
+);
 
 const visitSchema = new mongoose.Schema(
   {
@@ -33,6 +56,8 @@ const weeklyPlanSchema = new mongoose.Schema(
     approvedAt: { type: Date, default: null },
     approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     rejectedReason: { type: String, trim: true, maxlength: 1000, default: null },
+    /** Check-in point override for this week (V2 only; ignored when company mode = LEGACY). */
+    checkInConfiguration: { type: checkInConfigurationSchema, default: undefined },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   },

@@ -10,7 +10,6 @@ const {
   mobileRefreshSchema,
   logoutSchema,
   updatePushTokenSchema,
-  pushDiagnosticSchema,
   mobileChangePasswordSchema,
   mobileSwitchCompanySchema
 } = require('../../validators/mobileAuth.validator');
@@ -25,12 +24,6 @@ router.post('/logout', authenticate, validate(logoutSchema), controller.logout);
 router.get('/sessions', authenticate, controller.listSessions);
 router.delete('/sessions/:id', authenticate, controller.revokeSession);
 router.post('/push-token', authenticate, validate(updatePushTokenSchema), controller.updatePushToken);
-router.post(
-  '/push-diagnostic',
-  authenticate,
-  validate(pushDiagnosticSchema),
-  controller.reportPushDiagnostic
-);
 router.post(
   '/change-password',
   authenticate,

@@ -60,6 +60,12 @@ const updateCompany = async (id, payload) => {
     delete patch.timeZone;
   }
   Object.assign(company, patch);
+  const attendanceConfigTouched =
+    Object.prototype.hasOwnProperty.call(payload, 'attendanceSystemMode') ||
+    Object.prototype.hasOwnProperty.call(payload, 'checkInPolicy');
+  if (attendanceConfigTouched) {
+    company.attendanceConfigVersion = (Number(company.attendanceConfigVersion) || 1) + 1;
+  }
   const tzCheck = company.timeZone != null ? String(company.timeZone).trim() : '';
   if (!tzCheck || !Info.isValidIANAZone(tzCheck)) {
     throw new ApiError(422, 'Company timezone is not configured. Onboarding incomplete.');

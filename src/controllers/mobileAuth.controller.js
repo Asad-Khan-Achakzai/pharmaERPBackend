@@ -1,8 +1,6 @@
 const asyncHandler = require('../middleware/asyncHandler');
 const ApiResponse = require('../utils/ApiResponse');
 const mobileAuthService = require('../services/mobileAuth.service');
-const logger = require('../utils/logger');
-const { maskPushToken, isValidExpoPushToken } = require('../utils/pushDiagnostics');
 
 const login = asyncHandler(async (req, res) => {
   const { email, password, device } = req.body;
@@ -11,11 +9,6 @@ const login = asyncHandler(async (req, res) => {
 });
 
 const registerDevice = asyncHandler(async (req, res) => {
-  logger.info('mobile.api.register_device', {
-    userId: String(req.user.userId),
-    deviceId: req.body?.device?.deviceId || null,
-    platform: req.body?.device?.platform || null
-  });
   const data = await mobileAuthService.registerDevice({
     user: req.user,
     device: req.body.device
@@ -46,33 +39,7 @@ const revokeSession = asyncHandler(async (req, res) => {
   ApiResponse.success(res, null, 'Session revoked');
 });
 
-const reportPushDiagnostic = asyncHandler(async (req, res) => {
-  const data = await mobileAuthService.reportPushDiagnostic({
-    user: req.user,
-    deviceId: req.body.deviceId,
-    platform: req.body.platform,
-    appVersion: req.body.appVersion,
-    step: req.body.step,
-    result: req.body.result,
-    detail: req.body.detail,
-    errorMessage: req.body.errorMessage,
-    executionEnvironment: req.body.executionEnvironment,
-    projectIdPresent: req.body.projectIdPresent
-  });
-  ApiResponse.success(res, data, 'Diagnostic logged');
-});
-
 const updatePushToken = asyncHandler(async (req, res) => {
-  const pushToken = req.body?.pushToken ? String(req.body.pushToken).trim() : null;
-  logger.info('mobile.api.push_token', {
-    userId: String(req.user.userId),
-    companyId: req.user.companyId ? String(req.user.companyId) : null,
-    deviceId: req.body?.deviceId || null,
-    tokenProvided: !!pushToken,
-    tokenPreview: pushToken ? maskPushToken(pushToken) : null,
-    tokenValidExpoFormat: pushToken ? isValidExpoPushToken(pushToken) : false,
-    ip: req.ip
-  });
   const data = await mobileAuthService.updatePushToken({
     user: req.user,
     deviceId: req.body.deviceId,
@@ -107,7 +74,6 @@ module.exports = {
   listSessions,
   revokeSession,
   updatePushToken,
-  reportPushDiagnostic,
   changePassword,
   switchCompany
 };

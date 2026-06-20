@@ -10,6 +10,7 @@ const planItemService = require('./planItem.service');
 const { escapeRegex, qScalar, applyCreatedAtRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
 const businessTime = require('../utils/businessTime');
 const planExecution = require('../utils/planExecution.util');
+const checkInPolicyServiceV2 = require('./checkInPolicyServiceV2');
 const { DateTime } = require('luxon');
 const { PLAN_ITEM_STATUS, WEEKLY_PLAN_STATUS } = require('../constants/enums');
 const { resolveSubtreeUserIds } = require('../utils/teamScope');
@@ -104,9 +105,13 @@ const update = async (companyId, id, data, reqUser, timeZone, opts = {}) => {
   }
 
   const before = plan.toObject();
+  const checkInConfigTouched = Object.prototype.hasOwnProperty.call(data, 'checkInConfiguration');
   Object.assign(plan, data);
   plan.updatedBy = reqUser.userId;
   await plan.save();
+  if (checkInConfigTouched) {
+    await checkInPolicyServiceV2.bumpAttendanceConfigVersion(companyId);
+  }
   await auditService.log({
     companyId,
     userId: reqUser.userId,
@@ -136,11 +141,15 @@ const getById = async (companyId, id, timeZone, opts = {}) => {
   const metrics = planExecution.computePlanMetrics(planItems, tz);
   const businessTodayYmd = businessTime.nowInBusinessTime(tz).toISODate();
   const beforeWeek = planExecution.isBeforePlanWeek(plan, tz);
+  const companyPolicy = await checkInPolicyServiceV2.getCompanyForCheckInPolicy(companyId);
   return {
     ...plan.toObject(),
     planItems,
     executionMetrics: metrics,
-    editLock: { beforePlanWeek: beforeWeek, businessTodayYmd }
+    editLock: { beforePlanWeek: beforeWeek, businessTodayYmd },
+    attendanceSystemMode: checkInPolicyServiceV2.isV2Mode(companyPolicy)
+      ? 'CHECKIN_POLICY_V2'
+      : 'LEGACY'
   };
 };
 

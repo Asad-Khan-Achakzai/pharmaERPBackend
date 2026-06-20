@@ -34,7 +34,11 @@ const reportQuerySchema = Joi.object({
     .required(),
   endDate: Joi.string()
     .pattern(/^\d{4}-\d{2}-\d{2}$/)
-    .required()
+    .required(),
+  /** V2 only — filter by check-in zone status */
+  attendanceLocationStatus: Joi.string()
+    .valid('WITHIN_ZONE', 'OUT_OF_ZONE')
+    .optional()
 });
 
 const monthlySummaryQuerySchema = Joi.object({
