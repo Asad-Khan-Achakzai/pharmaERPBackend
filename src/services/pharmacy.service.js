@@ -12,6 +12,22 @@ const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const auditService = require('./audit.service');
 const { escapeRegex, qScalar, applyCreatedAtRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
+const mediaAttach = require('./media.attach');
+
+/** Attach a transient signed imageUrl to pharmacy docs from MediaAsset (source of truth). */
+async function withPharmacyImages(companyId, docs) {
+  const list = Array.isArray(docs) ? docs : [docs];
+  const ids = list.filter(Boolean).map((d) => String(d._id));
+  const images = await mediaAttach.resolveEntityImages({ companyId, resource: 'pharmacies', ids });
+  const decorate = (d) => {
+    if (!d) return d;
+    const obj = typeof d.toObject === 'function' ? d.toObject() : d;
+    const img = images.get(String(obj._id));
+    obj.imageUrl = img ? img.url : null;
+    return obj;
+  };
+  return Array.isArray(docs) ? list.map(decorate) : decorate(docs);
+}
 
 const list = async (companyId, query, timeZone = "UTC") => {
   const { page, limit, skip, sort, search } = parsePagination(query);
@@ -31,14 +47,25 @@ const list = async (companyId, query, timeZone = "UTC") => {
     Pharmacy.find(filter).sort(sort).skip(skip).limit(limit),
     Pharmacy.countDocuments(filter)
   ]);
-  return { docs, total, page, limit };
+  const withUrls = await withPharmacyImages(companyId, docs);
+  return { docs: withUrls, total, page, limit };
 };
 
 const create = async (companyId, data, reqUser) => {
-  applyBonusSchemeInput(data);
-  const pharmacy = await Pharmacy.create({ ...data, companyId, createdBy: reqUser.userId });
+  const { assetId, ...pharmacyData } = data;
+  applyBonusSchemeInput(pharmacyData);
+  const pharmacy = await Pharmacy.create({ ...pharmacyData, companyId, createdBy: reqUser.userId });
+  if (assetId) {
+    await mediaAttach.attachEntityImage({
+      companyId,
+      uploadedBy: reqUser.userId,
+      resource: 'pharmacies',
+      id: pharmacy._id,
+      assetId
+    });
+  }
   await auditService.log({ companyId, userId: reqUser.userId, action: 'pharmacy.create', entityType: 'Pharmacy', entityId: pharmacy._id, changes: { after: pharmacy.toObject() } });
-  return pharmacy;
+  return withPharmacyImages(companyId, pharmacy);
 };
 
 const getById = async (companyId, id) => {
@@ -62,18 +89,29 @@ const getById = async (companyId, id) => {
   const balance = ledgerBalance[0] || { totalDebit: 0, totalCredit: 0 };
   const outstanding = Math.round((balance.totalDebit - balance.totalCredit) * 100) / 100;
 
-  return { ...pharmacy.toObject(), doctors, outstanding, ledgerSummary: balance };
+  const image = await mediaAttach.resolveEntityImage({ companyId, resource: 'pharmacies', id });
+  return { ...pharmacy.toObject(), doctors, outstanding, ledgerSummary: balance, imageUrl: image ? image.url : null };
 };
 
 const update = async (companyId, id, data, reqUser) => {
   const pharmacy = await Pharmacy.findOne({ _id: id, companyId });
   if (!pharmacy) throw new ApiError(404, 'Pharmacy not found');
   const before = pharmacy.toObject();
-  applyBonusSchemeInput(data);
-  Object.assign(pharmacy, { ...data, updatedBy: reqUser.userId });
+  const { assetId, ...pharmacyData } = data;
+  applyBonusSchemeInput(pharmacyData);
+  Object.assign(pharmacy, { ...pharmacyData, updatedBy: reqUser.userId });
   await pharmacy.save();
+  if (assetId) {
+    await mediaAttach.attachEntityImage({
+      companyId,
+      uploadedBy: reqUser.userId,
+      resource: 'pharmacies',
+      id: pharmacy._id,
+      assetId
+    });
+  }
   await auditService.log({ companyId, userId: reqUser.userId, action: 'pharmacy.update', entityType: 'Pharmacy', entityId: pharmacy._id, changes: { before, after: pharmacy.toObject() } });
-  return pharmacy;
+  return withPharmacyImages(companyId, pharmacy);
 };
 
 const remove = async (companyId, id, reqUser) => {

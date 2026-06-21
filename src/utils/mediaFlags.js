@@ -1,17 +1,31 @@
 const env = require('../config/env');
 
 /**
- * Resolve effective media flags. Env wins; future iterations can layer
- * Company-level overrides (e.g. Company.featureFlags.mobileMediaEnabled).
+ * Resolve effective media flags. Per-company overrides (Company.*Enabled) win
+ * over env defaults when set (non-null); otherwise the env flag is used. This
+ * lets a tenant be opted into media independently of the global env flag.
  */
-function getMediaFlags(_company) {
+function getMediaFlags(company) {
   const isOn = (v) => String(v) === '1';
-  const enableMediaUpload = isOn(env.ENABLE_MEDIA_UPLOAD);
+  // company override wins when it is an explicit boolean; null = inherit env.
+  const resolve = (override, envFlag) =>
+    typeof override === 'boolean' ? override : isOn(envFlag);
+
+  const enableMediaUpload = resolve(
+    company && company.mediaUploadEnabled,
+    env.ENABLE_MEDIA_UPLOAD
+  );
   return {
     enableMediaUpload,
-    enableVisitPhotos: enableMediaUpload && isOn(env.ENABLE_VISIT_PHOTOS),
-    enableExpenseReceipts: enableMediaUpload && isOn(env.ENABLE_EXPENSE_RECEIPTS),
-    enableProductMedia: enableMediaUpload && isOn(env.ENABLE_PRODUCT_MEDIA),
+    enableVisitPhotos:
+      enableMediaUpload &&
+      resolve(company && company.visitPhotosEnabled, env.ENABLE_VISIT_PHOTOS),
+    enableExpenseReceipts:
+      enableMediaUpload &&
+      resolve(company && company.expenseReceiptsEnabled, env.ENABLE_EXPENSE_RECEIPTS),
+    enableProductMedia:
+      enableMediaUpload &&
+      resolve(company && company.productMediaEnabled, env.ENABLE_PRODUCT_MEDIA),
     maxFileSize: env.MEDIA_MAX_FILE_SIZE,
     allowedMime: ['image/jpeg', 'image/png', 'image/webp', 'application/pdf']
   };

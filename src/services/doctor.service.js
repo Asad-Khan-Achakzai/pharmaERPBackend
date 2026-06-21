@@ -8,8 +8,24 @@ const { parsePagination } = require('../utils/pagination');
 const { escapeRegex, qScalar, applyCreatedAtRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
 const auditService = require('./audit.service');
 const mrepOwnership = require('./mrepOwnership.service');
+const mediaAttach = require('./media.attach');
 
 const doctorOwnershipAudit = require('./doctorOwnershipAudit.service');
+
+/** Attach a transient signed imageUrl to doctor docs from MediaAsset (source of truth). */
+async function withDoctorImages(companyId, docs) {
+  const arr = Array.isArray(docs) ? docs : [docs];
+  const ids = arr.filter(Boolean).map((d) => String(d._id));
+  const images = await mediaAttach.resolveEntityImages({ companyId, resource: 'doctors', ids });
+  const decorate = (d) => {
+    if (!d) return d;
+    const obj = typeof d.toObject === 'function' ? d.toObject() : d;
+    const img = images.get(String(obj._id));
+    obj.imageUrl = img ? img.url : null;
+    return obj;
+  };
+  return Array.isArray(docs) ? arr.map(decorate) : decorate(docs);
+}
 
 const toObjectIdOrNull = (v) => {
   if (v == null || v === '') return null;
@@ -150,17 +166,28 @@ const list = async (companyId, query, timeZone = "UTC", opts = {}) => {
       .limit(limit),
     Doctor.countDocuments(filter)
   ]);
-  return { docs, total, page, limit };
+  const withUrls = await withDoctorImages(companyId, docs);
+  return { docs: withUrls, total, page, limit };
 };
 
 const create = async (companyId, data, reqUser) => {
-  const payload = normalizeDoctorPayload(data);
+  const { assetId, ...rest } = data;
+  const payload = normalizeDoctorPayload(rest);
   if (payload.pharmacyId) {
     const pharmacy = await Pharmacy.findOne({ _id: payload.pharmacyId, companyId, isActive: true });
     if (!pharmacy) throw new ApiError(404, 'Pharmacy not found');
   }
   await applyAssignmentRefs(companyId, payload);
   const doctor = await Doctor.create({ ...payload, companyId, createdBy: reqUser.userId });
+  if (assetId) {
+    await mediaAttach.attachEntityImage({
+      companyId,
+      uploadedBy: reqUser.userId,
+      resource: 'doctors',
+      id: doctor._id,
+      assetId
+    });
+  }
   await auditService.log({ companyId, userId: reqUser.userId, action: 'doctor.create', entityType: 'Doctor', entityId: doctor._id, changes: { after: doctor.toObject() } });
   await doctorOwnershipAudit.recordAssignmentChanges({
     companyId,
@@ -169,7 +196,7 @@ const create = async (companyId, data, reqUser) => {
     before: { territoryId: null, assignedRepId: null },
     after: { territoryId: doctor.territoryId, assignedRepId: doctor.assignedRepId }
   });
-  return doctor;
+  return withDoctorImages(companyId, doctor);
 };
 
 const getById = async (companyId, id) => {
@@ -180,13 +207,16 @@ const getById = async (companyId, id) => {
   if (!doctor) throw new ApiError(404, 'Doctor not found');
   const o = doctor.toObject();
   o.mrepOwnership = mrepOwnership.summarizeDoctorDocument(o);
+  const image = await mediaAttach.resolveEntityImage({ companyId, resource: 'doctors', id });
+  o.imageUrl = image ? image.url : null;
   return o;
 };
 
 const update = async (companyId, id, data, reqUser) => {
   const doctor = await Doctor.findOne({ _id: id, companyId });
   if (!doctor) throw new ApiError(404, 'Doctor not found');
-  const patch = normalizeDoctorPayload(data);
+  const { assetId, ...rest } = data;
+  const patch = normalizeDoctorPayload(rest);
   if (patch.pharmacyId !== undefined && patch.pharmacyId) {
     const pharmacy = await Pharmacy.findOne({ _id: patch.pharmacyId, companyId, isActive: true });
       if (!pharmacy) throw new ApiError(404, 'Pharmacy not found');
@@ -195,6 +225,15 @@ const update = async (companyId, id, data, reqUser) => {
   const before = doctor.toObject();
   Object.assign(doctor, { ...patch, updatedBy: reqUser.userId });
   await doctor.save();
+  if (assetId) {
+    await mediaAttach.attachEntityImage({
+      companyId,
+      uploadedBy: reqUser.userId,
+      resource: 'doctors',
+      id: doctor._id,
+      assetId
+    });
+  }
   await auditService.log({ companyId, userId: reqUser.userId, action: 'doctor.update', entityType: 'Doctor', entityId: doctor._id, changes: { before, after: doctor.toObject() } });
   await doctorOwnershipAudit.recordAssignmentChanges({
     companyId,
@@ -203,7 +242,7 @@ const update = async (companyId, id, data, reqUser) => {
     before: { territoryId: before.territoryId, assignedRepId: before.assignedRepId },
     after: { territoryId: doctor.territoryId, assignedRepId: doctor.assignedRepId }
   });
-  return doctor;
+  return withDoctorImages(companyId, doctor);
 };
 
 /**

@@ -6,13 +6,14 @@ const { authenticate } = require('../../middleware/auth');
 const { companyScope } = require('../../middleware/companyScope');
 const { validate } = require('../../middleware/validate');
 const { clientUuid } = require('../../middleware/clientUuid');
-const { presignSchema, finalizeSchema, linkSchema } = require('../../validators/media.validator');
+const { presignSchema, finalizeSchema, linkSchema, attachSchema } = require('../../validators/media.validator');
 
 router.use(authenticate, companyScope, clientUuid());
 
 router.post('/presign', validate(presignSchema), controller.presign);
 router.post('/finalize', validate(finalizeSchema), controller.finalize);
 router.post('/link', validate(linkSchema), controller.link);
+router.post('/attach', validate(attachSchema), controller.attach);
 router.get('/:key(*)/signed-url', controller.signedUrl);
 
 module.exports = router;

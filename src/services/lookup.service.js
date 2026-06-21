@@ -10,6 +10,7 @@ const Doctor = require('../models/Doctor');
 const User = require('../models/User');
 const Supplier = require('../models/Supplier');
 const mrepOwnership = require('./mrepOwnership.service');
+const mediaAttach = require('./media.attach');
 const { escapeRegex, qScalar } = require('../utils/listQuery');
 const { ADMIN_ACCESS } = require('../constants/rbac');
 const { userHasTenantWideAccess } = require('../utils/effectivePermissions');
@@ -21,6 +22,22 @@ const clampLimit = (q) => {
   const n = parseInt(String(q?.limit || '100'), 10);
   if (Number.isNaN(n) || n < 1) return LOOKUP_MAX;
   return Math.min(n, LOOKUP_MAX);
+};
+
+/**
+ * Decorate lookup rows with a transient signed `imageUrl` from MediaAsset
+ * (source of truth). Batched (single query + one signed URL per asset) so
+ * dropdowns/pickers can show entity thumbnails without N+1 lookups.
+ */
+const attachLookupImages = async (companyId, resource, rows) => {
+  if (!Array.isArray(rows) || rows.length === 0) return rows;
+  const ids = rows.map((r) => String(r._id));
+  const images = await mediaAttach.resolveEntityImages({ companyId, resource, ids });
+  for (const r of rows) {
+    const img = images.get(String(r._id));
+    r.imageUrl = img ? img.url : null;
+  }
+  return rows;
 };
 
 /** @param {import('mongoose').FilterQuery} base */
@@ -68,14 +85,18 @@ const products = async (companyId, query = {}) => {
     .sort({ name: 1 })
     .limit(limit)
     .lean();
-  return rows.map((p) => ({
-    _id: p._id,
-    name: p.name,
-    composition: p.composition,
-    mrp: p.mrp,
-    tp: p.tp,
-    casting: p.casting
-  }));
+  return attachLookupImages(
+    companyId,
+    'products',
+    rows.map((p) => ({
+      _id: p._id,
+      name: p.name,
+      composition: p.composition,
+      mrp: p.mrp,
+      tp: p.tp,
+      casting: p.casting
+    }))
+  );
 };
 
 const pharmacies = async (companyId, query = {}) => {
@@ -94,12 +115,16 @@ const pharmacies = async (companyId, query = {}) => {
     .sort({ name: 1 })
     .limit(limit)
     .lean();
-  return rows.map((p) => ({
-    _id: p._id,
-    name: p.name,
-    discountOnTP: p.discountOnTP,
-    bonusScheme: p.bonusScheme
-  }));
+  return attachLookupImages(
+    companyId,
+    'pharmacies',
+    rows.map((p) => ({
+      _id: p._id,
+      name: p.name,
+      discountOnTP: p.discountOnTP,
+      bonusScheme: p.bonusScheme
+    }))
+  );
 };
 
 const doctors = async (companyId, query = {}) => {
@@ -141,18 +166,22 @@ const doctors = async (companyId, query = {}) => {
     .sort({ name: 1 })
     .limit(limit)
     .lean();
-  return rows.map((d) => ({
-    _id: d._id,
-    name: d.name,
-    pharmacyId: d.pharmacyId,
-    specialization: d.specialization ?? null,
-    doctorBrick: d.doctorBrick ?? null,
-    doctorCode: d.doctorCode ?? null,
-    city: d.city ?? null,
-    zone: d.zone ?? null,
-    territoryId: d.territoryId ?? null,
-    assignedRepId: d.assignedRepId ?? null
-  }));
+  return attachLookupImages(
+    companyId,
+    'doctors',
+    rows.map((d) => ({
+      _id: d._id,
+      name: d.name,
+      pharmacyId: d.pharmacyId,
+      specialization: d.specialization ?? null,
+      doctorBrick: d.doctorBrick ?? null,
+      doctorCode: d.doctorCode ?? null,
+      city: d.city ?? null,
+      zone: d.zone ?? null,
+      territoryId: d.territoryId ?? null,
+      assignedRepId: d.assignedRepId ?? null
+    }))
+  );
 };
 
 /** Same semantics as order assignable reps: active company users (minimal fields for dropdowns). */

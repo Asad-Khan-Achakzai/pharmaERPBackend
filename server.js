@@ -5,6 +5,7 @@ const logger = require('./src/utils/logger');
 const { startAttendanceAutoCheckoutJob } = require('./src/jobs/attendanceAutoCheckout.job');
 const { startAttendanceApprovalAutomationJob } = require('./src/jobs/attendanceApprovalAutomation.job');
 const { startPlanItemsMissedJob } = require('./src/jobs/planItemsMissed.job');
+const { startMediaRetentionCleanupJob } = require('./src/jobs/mediaRetentionCleanup.job');
 const { seedMrepRolesForAllCompanies } = require('./src/jobs/seedMrepRoles.bootstrap');
 
 const startServer = async () => {
@@ -14,6 +15,7 @@ const startServer = async () => {
     startAttendanceAutoCheckoutJob();
     startAttendanceApprovalAutomationJob();
     startPlanItemsMissedJob();
+    startMediaRetentionCleanupJob();
     /** Idempotent — ensures every company has DEFAULT_ASM + DEFAULT_RM seeded. */
     void seedMrepRolesForAllCompanies();
   }

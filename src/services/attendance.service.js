@@ -16,6 +16,7 @@ const attendancePolicyService = require('./attendancePolicy.service');
 const attendanceAuditService = require('./attendanceAudit.service');
 const attendanceWorkflowService = require('./attendanceWorkflow.service');
 const checkInPolicyServiceV2 = require('./checkInPolicyServiceV2');
+const mediaAttach = require('./media.attach');
 
 const round2 = (n) => Math.round(n * 100) / 100;
 
@@ -589,7 +590,8 @@ const listToday = async (companyId, timeZone, visibleUserIds = null) => {
       lateMinutes,
       checkInTime: businessTime.formatHmBusiness(r?.checkInTime, tz),
       checkOutTime: businessTime.formatHmBusiness(r?.checkOutTime, tz),
-      hasCheckedOut
+      hasCheckedOut,
+      attendanceId: r?._id ? String(r._id) : null
     };
     if (v2Enabled && r) {
       Object.assign(row, checkInPolicyServiceV2.buildResponseFields(r));
@@ -668,11 +670,28 @@ const listToday = async (companyId, timeZone, visibleUserIds = null) => {
     'Not marked': notMarked
   };
 
+  // Resolve check-in selfie previews (optional media). One batch query keyed by
+  // attendance record id; signed URLs only exist when media is enabled + uploaded.
+  let checkInImageByAttendanceId = new Map();
+  const attendanceIds = employees.map((e) => e.attendanceId).filter(Boolean);
+  if (attendanceIds.length) {
+    try {
+      checkInImageByAttendanceId = await mediaAttach.resolveEntityImages({
+        companyId,
+        resource: 'attendance',
+        ids: attendanceIds
+      });
+    } catch {
+      checkInImageByAttendanceId = new Map();
+    }
+  }
+
   return {
     businessDate: ymd,
     attendanceSystemMode: v2Enabled ? 'CHECKIN_POLICY_V2' : 'LEGACY',
     employees: employees.map((e) => {
       const m = shiftMetaByEmp.get(e.employeeId.toString());
+      const img = e.attendanceId ? checkInImageByAttendanceId.get(e.attendanceId) : null;
       return {
         employeeId: e.employeeId.toString(),
         name: e.name,
@@ -681,6 +700,7 @@ const listToday = async (companyId, timeZone, visibleUserIds = null) => {
         checkInTime: e.checkInTime,
         checkOutTime: e.checkOutTime,
         hasCheckedOut: e.hasCheckedOut,
+        checkInImageUrl: img?.url ?? null,
         shiftId: m?.shiftId ?? null,
         shiftName: m?.shiftName ?? null,
         scheduleLabel: m?.scheduleLabel ?? null,

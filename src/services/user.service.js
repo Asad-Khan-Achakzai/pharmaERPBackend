@@ -9,7 +9,26 @@ const { ALL_PERMISSIONS } = require('../constants/permissions');
 const { ROLES, TERRITORY_KIND } = require('../constants/enums');
 const { ADMIN_ACCESS } = require('../constants/rbac');
 const auditService = require('./audit.service');
+const mediaAttach = require('./media.attach');
 const mrepOwnership = require('./mrepOwnership.service');
+
+/**
+ * Attach a transient signed imageUrl to user docs (MediaAsset = source of truth).
+ * Uses toJSON() so sensitive fields (password hash) stay stripped.
+ */
+async function withUserImages(companyId, docs) {
+  const list = Array.isArray(docs) ? docs : [docs];
+  const ids = list.filter(Boolean).map((d) => String(d._id));
+  const images = await mediaAttach.resolveEntityImages({ companyId, resource: 'users', ids });
+  const decorate = (d) => {
+    if (!d) return d;
+    const obj = typeof d.toJSON === 'function' ? d.toJSON() : d;
+    const img = images.get(String(obj._id));
+    obj.imageUrl = img ? img.url : null;
+    return obj;
+  };
+  return Array.isArray(docs) ? list.map(decorate) : decorate(docs);
+}
 const { resolveSubtreeUserIds, assertNoCycle } = require('../utils/teamScope');
 const { userHasTenantWideAccess } = require('../utils/effectivePermissions');
 const { validateReportingHierarchy } = require('../utils/userReportingHierarchy.util');
@@ -182,7 +201,8 @@ const list = async (companyId, query, timeZone = "UTC") => {
     User.countDocuments(filter)
   ]);
 
-  return { docs, total, page, limit };
+  const withUrls = await withUserImages(companyId, docs);
+  return { docs: withUrls, total, page, limit };
 };
 
 const create = async (companyId, data, reqUser) => {
@@ -201,6 +221,7 @@ const create = async (companyId, data, reqUser) => {
 
   const payload = await applyRoleIdToUserPayload(companyId, { ...data, email });
   delete payload.coverageTerritoryIds;
+  delete payload.assetId;
 
   if (Object.prototype.hasOwnProperty.call(data, 'managerId')) {
     payload.managerId = await resolveManagerRef(companyId, data.managerId);
@@ -227,6 +248,16 @@ const create = async (companyId, data, reqUser) => {
     ...(extraCoverage !== undefined ? { coverageTerritoryIds: extraCoverage } : {})
   });
 
+  if (data.assetId) {
+    await mediaAttach.attachEntityImage({
+      companyId,
+      uploadedBy: reqUser.userId,
+      resource: 'users',
+      id: user._id,
+      assetId: data.assetId
+    });
+  }
+
   await auditService.log({
     companyId,
     userId: reqUser.userId,
@@ -236,7 +267,7 @@ const create = async (companyId, data, reqUser) => {
     changes: { after: user.toJSON() }
   });
 
-  return user;
+  return withUserImages(companyId, user);
 };
 
 const getById = async (companyId, id) => {
@@ -263,6 +294,8 @@ const getById = async (companyId, id) => {
     brickCount: eff.brickCount,
     previewBricks: eff.previewBricks
   };
+  const img = await mediaAttach.resolveEntityImage({ companyId, resource: 'users', id: plain._id });
+  plain.imageUrl = img ? img.url : null;
   return plain;
 };
 
@@ -292,6 +325,7 @@ const update = async (companyId, id, data, reqUser) => {
   }
   const payload = await applyRoleIdToUserPayload(companyId, toApply);
   delete payload.coverageTerritoryIds;
+  delete payload.assetId;
   if (payload.password === '' || payload.password == null) {
     delete payload.password;
   }
@@ -375,6 +409,16 @@ const update = async (companyId, id, data, reqUser) => {
   Object.assign(user, { ...payload, updatedBy: reqUser.userId });
   await user.save();
 
+  if (data.assetId) {
+    await mediaAttach.attachEntityImage({
+      companyId,
+      uploadedBy: reqUser.userId,
+      resource: 'users',
+      id: user._id,
+      assetId: data.assetId
+    });
+  }
+
   await auditService.log({
     companyId,
     userId: reqUser.userId,
@@ -384,7 +428,7 @@ const update = async (companyId, id, data, reqUser) => {
     changes: { before, after: user.toJSON() }
   });
 
-  return user;
+  return withUserImages(companyId, user);
 };
 
 /**

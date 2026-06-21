@@ -20,7 +20,8 @@ const createUserSchema = Joi.object({
   managerId: Joi.string().hex().length(24).allow(null, ''),
   territoryId: Joi.string().hex().length(24).allow(null, ''),
   employeeCode: Joi.string().trim().allow('', null).max(64),
-  coverageTerritoryIds: Joi.array().items(Joi.string().hex().length(24)).max(64)
+  coverageTerritoryIds: Joi.array().items(Joi.string().hex().length(24)).max(64),
+  assetId: Joi.string().trim().allow('', null)
 }).custom((obj, helpers) => {
   const hasRoleId = obj.roleId && String(obj.roleId).length === 24;
   if (!hasRoleId && !obj.role) {
@@ -43,7 +44,8 @@ const updateUserSchema = Joi.object({
   employeeCode: Joi.string().trim().allow('', null).max(64),
   coverageTerritoryIds: Joi.array().items(Joi.string().hex().length(24)).max(64),
   attendanceApproveDelegateUserId: Joi.string().hex().length(24).allow(null, ''),
-  attendanceApproveDelegateUntil: Joi.date().allow(null)
+  attendanceApproveDelegateUntil: Joi.date().allow(null),
+  assetId: Joi.string().trim().allow('', null)
 }).min(1);
 
 const updateUserStatusSchema = Joi.object({

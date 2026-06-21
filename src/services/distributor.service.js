@@ -4,6 +4,22 @@ const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const { escapeRegex, qScalar, applyCreatedAtRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
 const auditService = require('./audit.service');
+const mediaAttach = require('./media.attach');
+
+/** Attach a transient signed imageUrl to distributor docs (MediaAsset = source of truth). */
+async function withImages(companyId, docs) {
+  const list = Array.isArray(docs) ? docs : [docs];
+  const ids = list.filter(Boolean).map((d) => String(d._id));
+  const images = await mediaAttach.resolveEntityImages({ companyId, resource: 'distributors', ids });
+  const decorate = (d) => {
+    if (!d) return d;
+    const obj = typeof d.toObject === 'function' ? d.toObject() : d;
+    const img = images.get(String(obj._id));
+    obj.imageUrl = img ? img.url : null;
+    return obj;
+  };
+  return Array.isArray(docs) ? list.map(decorate) : decorate(docs);
+}
 
 const list = async (companyId, query, timeZone = "UTC") => {
   const { page, limit, skip, sort, search } = parsePagination(query);
@@ -23,13 +39,24 @@ const list = async (companyId, query, timeZone = "UTC") => {
     Distributor.find(filter).sort(sort).skip(skip).limit(limit),
     Distributor.countDocuments(filter)
   ]);
-  return { docs, total, page, limit };
+  const withUrls = await withImages(companyId, docs);
+  return { docs: withUrls, total, page, limit };
 };
 
 const create = async (companyId, data, reqUser) => {
-  const distributor = await Distributor.create({ ...data, companyId, createdBy: reqUser.userId });
+  const { assetId, ...distributorData } = data;
+  const distributor = await Distributor.create({ ...distributorData, companyId, createdBy: reqUser.userId });
+  if (assetId) {
+    await mediaAttach.attachEntityImage({
+      companyId,
+      uploadedBy: reqUser.userId,
+      resource: 'distributors',
+      id: distributor._id,
+      assetId
+    });
+  }
   await auditService.log({ companyId, userId: reqUser.userId, action: 'distributor.create', entityType: 'Distributor', entityId: distributor._id, changes: { after: distributor.toObject() } });
-  return distributor;
+  return withImages(companyId, distributor);
 };
 
 const getById = async (companyId, id) => {
@@ -39,17 +66,28 @@ const getById = async (companyId, id) => {
   const inventory = await DistributorInventory.find({ companyId, distributorId: id })
     .populate('productId', 'name composition');
 
-  return { ...distributor.toObject(), inventory };
+  const decorated = await withImages(companyId, distributor);
+  return { ...decorated, inventory };
 };
 
 const update = async (companyId, id, data, reqUser) => {
   const distributor = await Distributor.findOne({ _id: id, companyId });
   if (!distributor) throw new ApiError(404, 'Distributor not found');
   const before = distributor.toObject();
-  Object.assign(distributor, { ...data, updatedBy: reqUser.userId });
+  const { assetId, ...distributorData } = data;
+  Object.assign(distributor, { ...distributorData, updatedBy: reqUser.userId });
   await distributor.save();
+  if (assetId) {
+    await mediaAttach.attachEntityImage({
+      companyId,
+      uploadedBy: reqUser.userId,
+      resource: 'distributors',
+      id: distributor._id,
+      assetId
+    });
+  }
   await auditService.log({ companyId, userId: reqUser.userId, action: 'distributor.update', entityType: 'Distributor', entityId: distributor._id, changes: { before, after: distributor.toObject() } });
-  return distributor;
+  return withImages(companyId, distributor);
 };
 
 const remove = async (companyId, id, reqUser) => {

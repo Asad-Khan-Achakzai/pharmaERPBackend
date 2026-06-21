@@ -1,13 +1,5 @@
 const Joi = require('joi');
-
-const MEDIA_KINDS = [
-  'VISIT_PHOTO',
-  'ATTENDANCE_SELFIE',
-  'EXPENSE_RECEIPT',
-  'PAYMENT_RECEIPT',
-  'PRODUCT_VISUAL',
-  'OTHER'
-];
+const { MEDIA_KINDS, MEDIA_RESOURCES } = require('../models/MediaAsset');
 
 const presignSchema = Joi.object({
   kind: Joi.string()
@@ -27,10 +19,18 @@ const finalizeSchema = Joi.object({
 
 const linkSchema = Joi.object({
   resource: Joi.string()
-    .valid('visits', 'attendance', 'expenses', 'collections', 'payments', 'products')
+    .valid(...MEDIA_RESOURCES)
     .required(),
   id: Joi.string().required(),
   assetIds: Joi.array().items(Joi.string()).min(1).required()
 });
 
-module.exports = { presignSchema, finalizeSchema, linkSchema };
+const attachSchema = Joi.object({
+  resource: Joi.string()
+    .valid(...MEDIA_RESOURCES)
+    .required(),
+  id: Joi.string().required(),
+  assetId: Joi.string().required()
+});
+
+module.exports = { presignSchema, finalizeSchema, linkSchema, attachSchema };

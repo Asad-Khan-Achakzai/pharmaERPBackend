@@ -10,6 +10,24 @@ const checkInPolicySchema = Joi.object({
   locationName: Joi.string().trim().max(200).allow('')
 });
 
+/** Per-company temporary-file retention (days). null = never delete. */
+const retentionDays = () => Joi.number().integer().min(1).max(3650).allow(null);
+
+const mediaRetentionSchema = Joi.object({
+  checkinRetentionDays: retentionDays(),
+  visitRetentionDays: retentionDays(),
+  expenseReceiptRetentionDays: retentionDays()
+});
+
+/** Per-company media enable overrides. null = inherit env default. */
+const mediaFlagFields = {
+  mediaUploadEnabled: Joi.boolean().allow(null),
+  visitPhotosEnabled: Joi.boolean().allow(null),
+  expenseReceiptsEnabled: Joi.boolean().allow(null),
+  productMediaEnabled: Joi.boolean().allow(null),
+  mediaRetention: mediaRetentionSchema
+};
+
 const createCompanySchema = Joi.object({
   name: Joi.string().required().trim().min(1).max(200),
   address: Joi.string().trim().allow('', null),
@@ -37,7 +55,8 @@ const createCompanySchema = Joi.object({
   onboardingPilotCohort: Joi.string().trim().allow('', null).max(64),
   isActive: Joi.boolean().default(true),
   attendanceSystemMode: Joi.string().valid(...Object.values(ATTENDANCE_SYSTEM_MODE)),
-  checkInPolicy: checkInPolicySchema
+  checkInPolicy: checkInPolicySchema,
+  ...mediaFlagFields
 });
 
 const updateCompanySchema = Joi.object({
@@ -67,7 +86,8 @@ const updateCompanySchema = Joi.object({
   onboardingPilotCohort: Joi.string().trim().allow('', null).max(64),
   isActive: Joi.boolean(),
   attendanceSystemMode: Joi.string().valid(...Object.values(ATTENDANCE_SYSTEM_MODE)),
-  checkInPolicy: checkInPolicySchema
+  checkInPolicy: checkInPolicySchema,
+  ...mediaFlagFields
 })
   .min(1)
   .unknown(false);

@@ -7,7 +7,8 @@ const createSchema = Joi.object({
   address: Joi.string().trim().allow('', null),
   openingBalance: Joi.number().default(0),
   notes: Joi.string().trim().allow('', null),
-  isActive: Joi.boolean()
+  isActive: Joi.boolean(),
+  assetId: Joi.string().trim().allow('', null)
 });
 
 const updateSchema = Joi.object({
@@ -17,7 +18,8 @@ const updateSchema = Joi.object({
   address: Joi.string().trim().allow('', null),
   openingBalance: Joi.number(),
   notes: Joi.string().trim().allow('', null),
-  isActive: Joi.boolean()
+  isActive: Joi.boolean(),
+  assetId: Joi.string().trim().allow('', null)
 });
 
 /** Manual PURCHASE / liability (unchanged shape) */

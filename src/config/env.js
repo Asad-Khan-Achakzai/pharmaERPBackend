@@ -38,11 +38,28 @@ const schema = Joi.object({
    * Optional storage configuration. Only consulted when ENABLE_MEDIA_UPLOAD=1.
    * Leave blank to keep media disabled.
    */
-  MEDIA_STORAGE_PROVIDER: Joi.string().valid('none', 's3', 'gcs').default('none'),
+  MEDIA_STORAGE_PROVIDER: Joi.string().valid('none', 's3', 'gcs', 'r2').default('none'),
   MEDIA_BUCKET: Joi.string().allow('').default(''),
   MEDIA_REGION: Joi.string().allow('').default(''),
   MEDIA_PUBLIC_BASE_URL: Joi.string().allow('').default(''),
   MEDIA_MAX_FILE_SIZE: Joi.number().integer().default(5 * 1024 * 1024),
+  /**
+   * Cloudflare R2 (S3-compatible) configuration. Only consulted when
+   * MEDIA_STORAGE_PROVIDER=r2. Credentials are provided via environment.
+   * The bucket is private — all access is via short-lived presigned URLs.
+   */
+  R2_ACCOUNT_ID: Joi.string().allow('').default(''),
+  R2_ENDPOINT: Joi.string().allow('').default(''),
+  R2_ACCESS_KEY_ID: Joi.string().allow('').default(''),
+  R2_SECRET_ACCESS_KEY: Joi.string().allow('').default(''),
+  R2_BUCKET: Joi.string().allow('').default(''),
+  R2_REGION: Joi.string().allow('').default('auto'),
+  /**
+   * Signed URL TTLs (seconds). Short-lived access only — clients re-request a
+   * fresh URL on expiry rather than caching long-lived links.
+   */
+  MEDIA_UPLOAD_URL_TTL_SECONDS: Joi.number().integer().min(30).max(3600).default(300),
+  MEDIA_DOWNLOAD_URL_TTL_SECONDS: Joi.number().integer().min(30).max(3600).default(300),
   /** Mobile sync defaults. */
   MOBILE_SYNC_PAGE_SIZE: Joi.number().integer().min(10).max(500).default(50),
   MOBILE_SYNC_POLL_INTERVAL_MS: Joi.number().integer().min(15000).default(60000),

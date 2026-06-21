@@ -1,6 +1,7 @@
 const asyncHandler = require('../middleware/asyncHandler');
 const ApiResponse = require('../utils/ApiResponse');
 const mediaService = require('../services/media.service');
+const mediaAttach = require('../services/media.attach');
 
 const presign = asyncHandler(async (req, res) => {
   const { kind, mime, size } = req.body;
@@ -25,4 +26,21 @@ const link = asyncHandler(async (req, res) => {
   ApiResponse.success(res, data, 'Linked');
 });
 
-module.exports = { presign, finalize, signedUrl, link };
+/**
+ * Attach a single finalized asset as the current image of an entity
+ * (product/user/doctor/pharmacy/...). Reusable across modules.
+ */
+const attach = asyncHandler(async (req, res) => {
+  mediaService.ensureEnabled(req);
+  const { resource, id, assetId } = req.body;
+  const data = await mediaAttach.attachEntityImage({
+    companyId: req.companyId,
+    uploadedBy: req.user.userId,
+    resource,
+    id,
+    assetId
+  });
+  ApiResponse.success(res, data, 'Attached');
+});
+
+module.exports = { presign, finalize, signedUrl, link, attach };

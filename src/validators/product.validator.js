@@ -7,7 +7,9 @@ const createProductSchema = Joi.object({
   tp: Joi.number().required().min(0),
   tpPercent: Joi.number().min(0).max(100),
   casting: Joi.number().required().min(0),
-  castingPercent: Joi.number().min(0).max(100)
+  castingPercent: Joi.number().min(0).max(100),
+  /** Optional finalized MediaAsset id to attach as the product image. */
+  assetId: Joi.string()
 });
 
 const updateProductSchema = Joi.object({
@@ -18,7 +20,9 @@ const updateProductSchema = Joi.object({
   tpPercent: Joi.number().min(0).max(100),
   casting: Joi.number().min(0),
   castingPercent: Joi.number().min(0).max(100),
-  isActive: Joi.boolean()
+  isActive: Joi.boolean(),
+  /** Optional finalized MediaAsset id to attach/replace the product image. */
+  assetId: Joi.string()
 }).min(1);
 
 module.exports = { createProductSchema, updateProductSchema };

@@ -52,7 +52,9 @@ const doctorBodyFields = {
   territoryId: Joi.string().hex().length(24).allow(null, ''),
   assignedRepId: Joi.string().hex().length(24).allow(null, ''),
   monthlyVisitTarget: Joi.number().integer().min(0).max(31).allow(null),
-  tier: Joi.string().trim().allow('', null).max(16)
+  tier: Joi.string().trim().allow('', null).max(16),
+  /** Optional finalized MediaAsset id to attach as the doctor photo. */
+  assetId: Joi.string()
 };
 
 const createDoctorSchema = Joi.object({

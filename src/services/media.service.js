@@ -3,8 +3,10 @@ const env = require('../config/env');
 const ApiError = require('../utils/ApiError');
 const MediaAsset = require('../models/MediaAsset');
 const { getMediaFlags } = require('../utils/mediaFlags');
+const { resolveRetention } = require('../utils/mediaRetention');
+const r2 = require('./storage/r2.client');
 
-const SUPPORTED_RESOURCES = ['visits', 'attendance', 'expenses', 'collections', 'payments', 'products'];
+const SUPPORTED_RESOURCES = MediaAsset.MEDIA_RESOURCES;
 
 function ensureEnabled(req) {
   const flags = getMediaFlags(req.context && req.context.company);
@@ -33,20 +35,40 @@ async function presign({ req, kind, mime, size }) {
   const userId = String(req.user.userId);
   const key = buildKey({ companyId, userId, kind, mime });
 
+  const bucket =
+    env.MEDIA_STORAGE_PROVIDER === 'r2'
+      ? r2.getBucket()
+      : env.MEDIA_BUCKET || 'pharerp-default';
+
   const asset = await MediaAsset.create({
     companyId,
     uploadedBy: userId,
     kind,
-    bucket: env.MEDIA_BUCKET || 'pharerp-default',
+    bucket,
     key,
     mime,
     size,
     status: 'PENDING_UPLOAD'
   });
 
-  // NOTE: When MEDIA_STORAGE_PROVIDER is configured, replace this with a real
-  // S3/GCS V4 presign call. For now the URL is null so the mobile client
-  // surfaces a clear "media disabled or unconfigured" path.
+  // Real presigned PUT against the private R2 bucket. When R2 is not the active
+  // provider (or unconfigured) we return uploadUrl:null so clients surface a
+  // clear "media disabled or unconfigured" path without breaking.
+  if (env.MEDIA_STORAGE_PROVIDER === 'r2' && r2.isConfigured()) {
+    const { url, expiresIn } = await r2.getPresignedPutUrl({
+      key,
+      contentType: mime
+    });
+    return {
+      assetId: String(asset._id),
+      method: 'PUT',
+      key,
+      bucket: asset.bucket,
+      expiresIn,
+      uploadUrl: url
+    };
+  }
+
   return {
     assetId: String(asset._id),
     method: 'PUT',
@@ -57,7 +79,7 @@ async function presign({ req, kind, mime, size }) {
     note:
       env.MEDIA_STORAGE_PROVIDER === 'none'
         ? 'Storage provider not configured (MEDIA_STORAGE_PROVIDER=none). UI remains visible but uploads are no-ops.'
-        : 'Storage provider configured but presigning is not implemented in this build.'
+        : 'Storage provider configured but credentials are missing.'
   };
 }
 
@@ -74,6 +96,13 @@ async function finalize({ req, assetId, size, mime, width, height }) {
   if (mime) asset.mime = mime;
   if (width) asset.width = width;
   if (height) asset.height = height;
+
+  // Classify retention from company policy + kind at finalize time.
+  const company = req.context && req.context.company;
+  const { retentionClass, expiresAt } = resolveRetention(asset.kind, company);
+  asset.retentionClass = retentionClass;
+  asset.expiresAt = expiresAt;
+
   await asset.save();
   return asset.toObject();
 }
@@ -82,7 +111,14 @@ async function getSignedUrl({ req, key }) {
   ensureEnabled(req);
   const asset = await MediaAsset.findOne({ key, companyId: req.companyId }).lean();
   if (!asset) throw new ApiError(404, 'Asset not found');
-  // Placeholder; replace with provider-specific signed URL.
+  if (asset.deletedAt) {
+    throw new ApiError(410, 'Asset has been removed by the retention policy');
+  }
+  // Short-lived presigned GET against the private R2 bucket.
+  if (env.MEDIA_STORAGE_PROVIDER === 'r2' && r2.isConfigured()) {
+    const { url, expiresIn } = await r2.getPresignedGetUrl({ key: asset.key });
+    return { url, expiresIn, asset };
+  }
   return {
     url: env.MEDIA_PUBLIC_BASE_URL
       ? `${env.MEDIA_PUBLIC_BASE_URL.replace(/\/$/, '')}/${asset.key}`

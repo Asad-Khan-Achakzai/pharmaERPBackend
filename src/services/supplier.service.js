@@ -23,8 +23,24 @@ const {
 const auditService = require('./audit.service');
 const glBridge = require('./glBridge.service');
 const moneyAccountService = require('./moneyAccount.service');
+const mediaAttach = require('./media.attach');
 const logger = require('../utils/logger');
 const { generateSupplierPaymentPdf } = require('../utils/supplierPaymentPdf');
+
+/** Attach a transient signed imageUrl to supplier docs (MediaAsset = source of truth). */
+async function withImages(companyId, docs) {
+  const list = Array.isArray(docs) ? docs : [docs];
+  const ids = list.filter(Boolean).map((d) => String(d._id));
+  const images = await mediaAttach.resolveEntityImages({ companyId, resource: 'suppliers', ids });
+  const decorate = (d) => {
+    if (!d) return d;
+    const obj = typeof d.toObject === 'function' ? d.toObject() : d;
+    const img = images.get(String(obj._id));
+    obj.imageUrl = img ? img.url : null;
+    return obj;
+  };
+  return Array.isArray(docs) ? list.map(decorate) : decorate(docs);
+}
 
 /** Optional warning when recording very large payments (does not block save) */
 const PAYMENT_WARN_THRESHOLD = Number(process.env.SUPPLIER_PAYMENT_WARN_PKR) || 10_000_000;
@@ -50,13 +66,14 @@ const list = async (companyId, query = {}, timeZone = 'UTC') => {
     Supplier.find(filter).sort(sort).skip(skip).limit(limit).lean(),
     Supplier.countDocuments(filter)
   ]);
-  return { docs, total, page, limit };
+  const withUrls = await withImages(companyId, docs);
+  return { docs: withUrls, total, page, limit };
 };
 
 const getById = async (companyId, id) => {
   const s = await Supplier.findOne({ _id: id, companyId, isDeleted: { $ne: true } }).lean();
   if (!s) throw new ApiError(404, 'Supplier not found');
-  return s;
+  return withImages(companyId, s);
 };
 
 const create = async (companyId, data, reqUser) => {
@@ -71,6 +88,15 @@ const create = async (companyId, data, reqUser) => {
     isActive: data.isActive !== false,
     createdBy: reqUser.userId
   });
+  if (data.assetId) {
+    await mediaAttach.attachEntityImage({
+      companyId,
+      uploadedBy: reqUser.userId,
+      resource: 'suppliers',
+      id: row._id,
+      assetId: data.assetId
+    });
+  }
   await auditService.log({
     companyId,
     userId: reqUser.userId,
@@ -79,7 +105,7 @@ const create = async (companyId, data, reqUser) => {
     entityId: row._id,
     changes: { after: row.toObject() }
   });
-  return row;
+  return withImages(companyId, row);
 };
 
 const update = async (companyId, id, data, reqUser) => {
@@ -95,6 +121,15 @@ const update = async (companyId, id, data, reqUser) => {
   if (data.isActive !== undefined) s.isActive = data.isActive;
   s.updatedBy = reqUser.userId;
   await s.save();
+  if (data.assetId) {
+    await mediaAttach.attachEntityImage({
+      companyId,
+      uploadedBy: reqUser.userId,
+      resource: 'suppliers',
+      id: s._id,
+      assetId: data.assetId
+    });
+  }
   await auditService.log({
     companyId,
     userId: reqUser.userId,
@@ -103,7 +138,7 @@ const update = async (companyId, id, data, reqUser) => {
     entityId: s._id,
     changes: { before, after: s.toObject() }
   });
-  return s;
+  return withImages(companyId, s);
 };
 
 const remove = async (companyId, id, reqUser) => {

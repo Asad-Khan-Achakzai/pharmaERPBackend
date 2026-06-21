@@ -219,6 +219,19 @@ const getMe = async (userId, jwtAccess) => {
   if (!u) {
     throw new ApiError(404, 'User not found');
   }
+  if (resolved) {
+    try {
+      const mediaAttach = require('./media.attach');
+      const image = await mediaAttach.resolveEntityImage({
+        companyId: resolved,
+        resource: 'users',
+        id: userId
+      });
+      u.imageUrl = image ? image.url : null;
+    } catch (_err) {
+      u.imageUrl = null;
+    }
+  }
   return u;
 };
 

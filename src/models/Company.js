@@ -14,6 +14,20 @@ const checkInPolicySchema = new mongoose.Schema(
   { _id: false }
 );
 
+/**
+ * Per-company temporary-file retention (days). null = never delete (permanent).
+ * Defaults are null so enabling media uploads can never delete anything until an
+ * admin explicitly opts in to a retention window. Max 3650 (~10y) as a guard.
+ */
+const mediaRetentionSchema = new mongoose.Schema(
+  {
+    checkinRetentionDays: { type: Number, default: null, min: 1, max: 3650 },
+    visitRetentionDays: { type: Number, default: null, min: 1, max: 3650 },
+    expenseReceiptRetentionDays: { type: Number, default: null, min: 1, max: 3650 }
+  },
+  { _id: false }
+);
+
 const companySchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
@@ -145,6 +159,16 @@ const companySchema = new mongoose.Schema(
     },
     /** Company-wide default check-in point (used when mode = CHECKIN_POLICY_V2). */
     checkInPolicy: { type: checkInPolicySchema, default: undefined },
+    /**
+     * Per-company media flags (override env when set). null = inherit env default.
+     * Lets a tenant be opted into media uploads independently of the global env flag.
+     */
+    mediaUploadEnabled: { type: Boolean, default: null },
+    visitPhotosEnabled: { type: Boolean, default: null },
+    expenseReceiptsEnabled: { type: Boolean, default: null },
+    productMediaEnabled: { type: Boolean, default: null },
+    /** Per-company temporary-file retention policy (Super Admin configurable). */
+    mediaRetention: { type: mediaRetentionSchema, default: () => ({}) },
     /**
      * Incremented when attendanceSystemMode or checkInPolicy changes.
      * Clients compare to invalidate cached attendance config.
