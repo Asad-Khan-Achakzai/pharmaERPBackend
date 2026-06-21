@@ -30,7 +30,7 @@ const importJobRowSchema = new mongoose.Schema(
     source: { type: mongoose.Schema.Types.Mixed, default: {} },
     normalizedPayload: { type: mongoose.Schema.Types.Mixed, default: {} },
     dedupeKey: { type: String, trim: true, default: null },
-    errors: { type: [rowErrorSchema], default: [] },
+    rowErrors: { type: [rowErrorSchema], default: [] },
     commitResult: { type: mongoose.Schema.Types.Mixed, default: {} }
   },
   { timestamps: true }

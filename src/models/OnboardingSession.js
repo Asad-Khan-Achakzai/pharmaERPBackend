@@ -16,7 +16,7 @@ const stepProgressSchema = new mongoose.Schema(
 
 const onboardingSessionSchema = new mongoose.Schema(
   {
-    companyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', required: true, index: true },
+    companyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', required: true },
     status: {
       type: String,
       enum: Object.values(ONBOARDING_STATUS),

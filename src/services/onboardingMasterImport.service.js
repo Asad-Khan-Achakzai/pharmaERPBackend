@@ -419,7 +419,7 @@ const commitMasterImport = async ({
         status: IMPORT_ROW_STATUS.SKIPPED,
         source: r,
         normalizedPayload: {},
-        errors: []
+        rowErrors: []
       });
       continue;
     }
@@ -439,7 +439,7 @@ const commitMasterImport = async ({
         status: IMPORT_ROW_STATUS.INVALID,
         source: r,
         normalizedPayload: value || {},
-        errors: [{ field, code: 'VALIDATION_ERROR', message: msg }]
+        rowErrors: [{ field, code: 'VALIDATION_ERROR', message: msg }]
       });
       continue;
     }
@@ -464,7 +464,7 @@ const commitMasterImport = async ({
           source: r,
           normalizedPayload: value,
           dedupeKey: JSON.stringify(dFilter),
-          errors: []
+          rowErrors: []
         });
         continue;
       }
@@ -596,7 +596,7 @@ const commitMasterImport = async ({
           source: r,
           normalizedPayload: value,
           commitResult: { insertedId },
-          errors: []
+          rowErrors: []
         });
       } catch (err) {
         failed += 1;
@@ -610,7 +610,7 @@ const commitMasterImport = async ({
           status: IMPORT_ROW_STATUS.FAILED,
           source: r,
           normalizedPayload: value,
-          errors: [{ field: null, code: 'DB_ERROR', message: msg }]
+          rowErrors: [{ field: null, code: 'DB_ERROR', message: msg }]
         });
       }
     } else {
@@ -623,7 +623,7 @@ const commitMasterImport = async ({
         status: IMPORT_ROW_STATUS.VALID,
         source: r,
         normalizedPayload: value,
-        errors: []
+        rowErrors: []
       });
     }
   }
