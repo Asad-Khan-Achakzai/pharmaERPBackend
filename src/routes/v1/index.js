@@ -43,6 +43,7 @@ const mediaRoutes = require('./media.routes');
 const notificationRoutes = require('./notification.routes');
 const doctorLocationSuggestionRoutes = require('./doctorLocationSuggestion.routes');
 const announcementRoutes = require('./announcement.routes');
+const calendarRoutes = require('./calendar.routes');
 
 router.use('/auth/mobile', mobileAuthRoutes);
 router.use('/sync', syncRoutes);
@@ -73,6 +74,7 @@ router.use('/accounts', accountRoutes);
 router.use('/vouchers', voucherRoutes);
 router.use('/accounting-reports', accountingReportRoutes);
 router.use('/targets', targetRoutes);
+router.use('/calendar', calendarRoutes);
 router.use('/weekly-plans', weeklyPlanRoutes);
 router.use('/plan-items', planItemRoutes);
 router.use('/visits', visitRoutes);
