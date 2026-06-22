@@ -272,6 +272,70 @@ const list = async (companyId, query, timeZone) => {
   return { docs, total, page, limit };
 };
 
+const nd = { isDeleted: { $ne: true } };
+
+/**
+ * Who still needs salary action for a given month: unpaid payroll rows + employees on a
+ * salary structure with no payroll created yet.
+ */
+const pendingSummary = async (companyId, month) => {
+  if (!/^\d{4}-\d{2}$/.test(String(month || ''))) {
+    throw new ApiError(400, 'month must be YYYY-MM');
+  }
+
+  const cid = new mongoose.Types.ObjectId(companyId);
+
+  const [unpaidRows, payrollEmployeeIds, paidCount] = await Promise.all([
+    Payroll.find({ companyId: cid, month, status: PAYROLL_STATUS.PENDING, ...nd })
+      .populate('employeeId', 'name email role')
+      .lean(),
+    Payroll.find({ companyId: cid, month, ...nd }).distinct('employeeId'),
+    Payroll.countDocuments({ companyId: cid, month, status: PAYROLL_STATUS.PAID, ...nd })
+  ]);
+
+  const employeesMissingPayroll = await User.find({
+    companyId: cid,
+    isActive: true,
+    salaryStructureId: { $ne: null },
+    _id: { $nin: payrollEmployeeIds },
+    ...nd
+  })
+    .select('name email role salaryStructureId')
+    .populate('salaryStructureId', 'name')
+    .sort({ name: 1 })
+    .lean();
+
+  const readyToPay = unpaidRows
+    .map((p) => ({
+      payrollId: String(p._id),
+      employeeId: String(p.employeeId?._id ?? p.employeeId),
+      name: p.employeeId?.name ?? 'Unknown',
+      netSalary: roundPKR(p.netSalary),
+      status: p.status
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const missingPayroll = employeesMissingPayroll.map((u) => ({
+    employeeId: String(u._id),
+    name: u.name,
+    salaryStructureName: u.salaryStructureId?.name ?? null
+  }));
+
+  const unpaidTotal = roundPKR(readyToPay.reduce((sum, row) => sum + row.netSalary, 0));
+
+  return {
+    month,
+    summary: {
+      readyToPayCount: readyToPay.length,
+      unpaidTotal,
+      missingPayrollCount: missingPayroll.length,
+      paidCount
+    },
+    readyToPay,
+    missingPayroll
+  };
+};
+
 const create = async (companyId, data, reqUser, timeZone) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   const employee = await User.findOne({ _id: data.employeeId, companyId });
@@ -455,89 +519,126 @@ const pay = async (companyId, id, reqUser, body = {}) => {
   const { ACCOUNT_CODES } = require('../constants/coaTemplate');
   const coaSeed = require('./coaSeed.service');
   const glBridge = require('./glBridge.service');
-  const mongoose = require('mongoose');
 
-  payroll.status = PAYROLL_STATUS.PAID;
-  payroll.paidOn = new Date();
-  payroll.updatedBy = reqUser.userId;
+  // Setup reads/writes that touch many accounts must run outside an active transaction.
+  await coaSeed.ensureCoaForCompany(companyId);
+  const salaryAcc = await glPosting.getAccountByCode(companyId, ACCOUNT_CODES.SALARY_EXPENSE);
+  if (!salaryAcc) throw new ApiError(400, 'Salary expense account not found in Chart of Accounts');
 
-  const session = await mongoose.startSession();
+  const moneyAcc = await moneyAccountService.assertMoneyAccount(companyId, body.moneyAccountId);
+
+  const amount = roundPKR(payroll.netSalary);
+  const narration = `Salary for ${payroll.month}`;
   let expense;
-  try {
-    await session.withTransaction(async () => {
-      await payroll.save({ session });
-      await coaSeed.ensureCoaForCompany(companyId, { session });
-      const salaryAcc = await glPosting.getAccountByCode(companyId, ACCOUNT_CODES.SALARY_EXPENSE, session);
-      if (!salaryAcc) throw new ApiError(400, 'Salary expense account not found in Chart of Accounts');
 
-      let moneyAcc;
-      if (body.moneyAccountId) {
-        moneyAcc = await moneyAccountService.assertMoneyAccount(companyId, body.moneyAccountId, session);
-      } else {
-        const moneyAccounts = await moneyAccountService.listMoneyAccounts(companyId);
-        moneyAcc = moneyAccounts[0];
-      }
-      if (!moneyAcc) throw new ApiError(400, 'No cash or bank account found — add a money account before paying payroll');
+  const isRetryableTxnError = (err) =>
+    err?.code === 112 ||
+    err?.errorLabels?.includes('TransientTransactionError') ||
+    /Write conflict/i.test(String(err?.message || ''));
 
-      const paidOn = payroll.paidOn;
-      const amount = roundPKR(payroll.netSalary);
-      const narration = `Salary for ${payroll.month}`;
+  const maxAttempts = 3;
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        const payrollDoc = await Payroll.findOne({
+          _id: id,
+          companyId,
+          status: { $ne: PAYROLL_STATUS.PAID }
+        }).session(session);
+        if (!payrollDoc) throw new ApiError(400, 'Already paid');
 
-      [expense] = await Expense.create(
-        [
+        const paidOn = new Date();
+        payrollDoc.status = PAYROLL_STATUS.PAID;
+        payrollDoc.paidOn = paidOn;
+        payrollDoc.updatedBy = reqUser.userId;
+        await payrollDoc.save({ session });
+
+        const salaryAccInTxn = await glPosting.getAccountByCode(
+          companyId,
+          ACCOUNT_CODES.SALARY_EXPENSE,
+          session
+        );
+        if (!salaryAccInTxn) {
+          throw new ApiError(400, 'Salary expense account not found in Chart of Accounts');
+        }
+        const moneyAccInTxn = await moneyAccountService.assertMoneyAccount(
+          companyId,
+          moneyAcc._id,
+          session
+        );
+
+        [expense] = await Expense.create(
+          [
+            {
+              companyId,
+              category: EXPENSE_CATEGORY.SALARY,
+              expenseAccountId: salaryAccInTxn._id,
+              moneyAccountId: moneyAccInTxn._id,
+              amount,
+              description: narration,
+              date: paidOn,
+              employeeId: payrollDoc.employeeId,
+              approvedBy: reqUser.userId,
+              createdBy: reqUser.userId
+            }
+          ],
+          { session }
+        );
+
+        const voucher = await glBridge.postExpenseGl(
+          session,
+          companyId,
           {
-            companyId,
-            category: EXPENSE_CATEGORY.SALARY,
-            expenseAccountId: salaryAcc._id,
-            moneyAccountId: moneyAcc._id,
+            expenseId: expense._id,
+            expenseAccountId: salaryAccInTxn._id,
+            moneyAccountId: moneyAccInTxn._id,
             amount,
-            description: narration,
             date: paidOn,
-            employeeId: payroll.employeeId,
-            approvedBy: reqUser.userId,
-            createdBy: reqUser.userId
-          }
-        ],
-        { session }
-      );
+            narration
+          },
+          reqUser
+        );
+        if (!voucher) throw new ApiError(500, 'Failed to post payroll expense voucher');
 
-      const voucher = await glBridge.postExpenseGl(
-        session,
-        companyId,
-        {
-          expenseId: expense._id,
-          expenseAccountId: salaryAcc._id,
-          moneyAccountId: moneyAcc._id,
-          amount,
-          date: paidOn,
-          narration
-        },
-        reqUser
-      );
-      expense.voucherId = voucher._id;
-      await expense.save({ session });
+        await Expense.updateOne(
+          { _id: expense._id },
+          { $set: { voucherId: voucher._id } },
+          { session }
+        );
 
-      await Transaction.create(
-        [
-          {
-            companyId,
-            type: TRANSACTION_TYPE.EXPENSE,
-            referenceType: 'PAYROLL',
-            referenceId: payroll._id,
-            revenue: 0,
-            cost: amount,
-            profit: roundPKR(-amount),
-            date: paidOn,
-            description: `Salary payment - ${payroll.month}`,
-            createdBy: reqUser.userId
-          }
-        ],
-        { session }
-      );
-    });
-  } finally {
-    await session.endSession();
+        await Transaction.create(
+          [
+            {
+              companyId,
+              type: TRANSACTION_TYPE.EXPENSE,
+              referenceType: 'PAYROLL',
+              referenceId: payrollDoc._id,
+              revenue: 0,
+              cost: amount,
+              profit: roundPKR(-amount),
+              date: paidOn,
+              description: `Salary payment - ${payrollDoc.month}`,
+              createdBy: reqUser.userId
+            }
+          ],
+          { session }
+        );
+
+        payroll.status = payrollDoc.status;
+        payroll.paidOn = payrollDoc.paidOn;
+      });
+      lastError = null;
+      break;
+    } catch (err) {
+      lastError = err;
+      if (!isRetryableTxnError(err) || attempt === maxAttempts) throw err;
+    } finally {
+      await session.endSession();
+    }
   }
+  if (lastError) throw lastError;
 
   await auditService.log({
     companyId,
@@ -587,4 +688,4 @@ const streamPayslipPdf = async (companyId, id, res) => {
   });
 };
 
-module.exports = { list, create, update, pay, remove, preview: previewPayroll, streamPayslipPdf };
+module.exports = { list, create, update, pay, remove, preview: previewPayroll, streamPayslipPdf, pendingSummary };

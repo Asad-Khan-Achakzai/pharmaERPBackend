@@ -37,4 +37,18 @@ const previewPayrollSchema = Joi.object({
   return value;
 });
 
-module.exports = { createPayrollSchema, updatePayrollSchema, previewPayrollSchema };
+const payPayrollSchema = Joi.object({
+  moneyAccountId: Joi.string().hex().length(24).required()
+});
+
+const pendingSummaryQuerySchema = Joi.object({
+  month: Joi.string().required().pattern(/^\d{4}-\d{2}$/)
+});
+
+module.exports = {
+  createPayrollSchema,
+  updatePayrollSchema,
+  previewPayrollSchema,
+  payPayrollSchema,
+  pendingSummaryQuerySchema
+};

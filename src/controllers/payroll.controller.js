@@ -7,6 +7,9 @@ const tz = (req) => req.context.timeZone;
 const list = asyncHandler(async (req, res) => {
   ApiResponse.paginated(res, await payrollService.list(req.companyId, req.query, tz(req)));
 });
+const pendingSummary = asyncHandler(async (req, res) => {
+  ApiResponse.success(res, await payrollService.pendingSummary(req.companyId, req.query.month));
+});
 const preview = asyncHandler(async (req, res) => {
   ApiResponse.success(res, await payrollService.preview(req.companyId, req.body, tz(req)));
 });
@@ -20,10 +23,10 @@ const remove = asyncHandler(async (req, res) => {
   ApiResponse.success(res, await payrollService.remove(req.companyId, req.params.id, req.user), 'Payroll deleted');
 });
 const pay = asyncHandler(async (req, res) => {
-  ApiResponse.success(res, await payrollService.pay(req.companyId, req.params.id, req.user), 'Salary paid');
+  ApiResponse.success(res, await payrollService.pay(req.companyId, req.params.id, req.user, req.body), 'Salary paid');
 });
 const payslip = asyncHandler(async (req, res) => {
   await payrollService.streamPayslipPdf(req.companyId, req.params.id, res);
 });
 
-module.exports = { list, preview, create, update, remove, pay, payslip };
+module.exports = { list, preview, create, update, remove, pay, payslip, pendingSummary };

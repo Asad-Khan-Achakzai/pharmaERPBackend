@@ -221,7 +221,11 @@ async function main() {
   let payrollCreated;
   try {
     payrollCreated = dataOf(await req('POST', '/payroll', adminToken, { employeeId: repUser._id, month, manual: true, baseSalary: 50000 }));
-    await req('POST', `/payroll/${payrollCreated._id}/pay`, adminToken, {});
+    const moneyAccounts = dataOf(await req('GET', '/accounts/money-accounts', adminToken));
+    const payMoneyAccountId = moneyAccounts?.[0]?._id;
+    if (payMoneyAccountId) {
+      await req('POST', `/payroll/${payrollCreated._id}/pay`, adminToken, { moneyAccountId: payMoneyAccountId });
+    }
   } catch (e) {
     result.edgeCases.push({ label: 'duplicate payroll protection', status: e?.response?.status || 0, message: e?.response?.data?.message || e.message });
   }
