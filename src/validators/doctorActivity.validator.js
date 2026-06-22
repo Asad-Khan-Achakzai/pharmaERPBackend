@@ -4,6 +4,11 @@ const createDoctorActivitySchema = Joi.object({
   doctorId: Joi.string().required(),
   medicalRepId: Joi.string().optional().allow(null, ''),
   investedAmount: Joi.number().required().min(0),
+  moneyAccountId: Joi.when('investedAmount', {
+    is: Joi.number().greater(0),
+    then: Joi.string().hex().length(24).required(),
+    otherwise: Joi.string().hex().length(24).optional().allow(null, '')
+  }),
   commitmentAmount: Joi.number().required().min(0),
   startDate: Joi.date().required(),
   endDate: Joi.date().required().greater(Joi.ref('startDate'))

@@ -10,6 +10,7 @@ const createSettlementSchema = Joi.object({
   paymentMethod: Joi.string()
     .valid(...Object.values(PAYMENT_METHOD))
     .required(),
+  moneyAccountId: Joi.string().hex().length(24).required(),
   referenceNumber: Joi.string().trim().allow(''),
   date: Joi.date(),
   notes: Joi.string().trim().allow(''),

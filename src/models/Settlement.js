@@ -9,6 +9,8 @@ const settlementSchema = new mongoose.Schema(
     direction: { type: String, enum: Object.values(SETTLEMENT_DIRECTION), required: true },
     amount: { type: Number, required: true },
     paymentMethod: { type: String, enum: Object.values(PAYMENT_METHOD), required: true },
+    moneyAccountId: { type: mongoose.Schema.Types.ObjectId, ref: 'Account', default: null },
+    moneyAccountNature: { type: String, enum: ['CASH', 'BANK'], default: null },
     referenceNumber: { type: String },
     settledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     date: { type: Date, default: Date.now },

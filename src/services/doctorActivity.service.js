@@ -9,6 +9,7 @@ const { parsePagination } = require('../utils/pagination');
 const { roundPKR } = require('../utils/currency');
 const { DOCTOR_ACTIVITY_STATUS, ORDER_STATUS } = require('../constants/enums');
 const auditService = require('./audit.service');
+const moneyAccountService = require('./moneyAccount.service');
 const { grossTpForDelivery } = require('./tpSalesRollup.service');
 
 const startOfDay = (d) => {
@@ -326,12 +327,23 @@ const create = async (companyId, data, reqUser) => {
   if (startDate >= endDate) throw new ApiError(400, 'startDate must be before endDate');
 
   const achievedSales = await computeNetTpAchieved(companyId, data.doctorId, startDate, endDate);
+  const investedAmount = roundPKR(data.investedAmount);
+
+  let moneyAccountId = null;
+  let moneyAccountNature = null;
+  if (investedAmount > 0) {
+    const moneyAcc = await moneyAccountService.assertMoneyAccount(companyId, data.moneyAccountId);
+    moneyAccountId = moneyAcc._id;
+    moneyAccountNature = moneyAcc.moneyAccountNature || (moneyAcc.isBank ? 'BANK' : 'CASH');
+  }
 
   const activity = await DoctorActivity.create({
     companyId,
     doctorId: data.doctorId,
     medicalRepId,
-    investedAmount: roundPKR(data.investedAmount),
+    investedAmount,
+    moneyAccountId,
+    moneyAccountNature,
     commitmentAmount: roundPKR(data.commitmentAmount),
     achievedSales,
     startDate,

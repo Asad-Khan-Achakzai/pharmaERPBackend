@@ -781,7 +781,21 @@ const fifoSettlementCompanyToDistributor = async (companyId, distributorId, amou
 };
 
 const createSettlement = async (companyId, data, reqUser, session) => {
-  const { distributorId, direction, amount, paymentMethod, referenceNumber, date, notes, isNetSettlement, grossDistributorToCompany, grossCompanyToDistributor } = data;
+  const {
+    distributorId,
+    direction,
+    amount,
+    paymentMethod,
+    moneyAccountId,
+    referenceNumber,
+    date,
+    notes,
+    isNetSettlement,
+    grossDistributorToCompany,
+    grossCompanyToDistributor
+  } = data;
+
+  const moneyAcc = await moneyAccountService.assertMoneyAccount(companyId, moneyAccountId, session);
 
   const slices =
     direction === SETTLEMENT_DIRECTION.DISTRIBUTOR_TO_COMPANY
@@ -796,6 +810,8 @@ const createSettlement = async (companyId, data, reqUser, session) => {
         direction,
         amount: roundPKR(amount),
         paymentMethod,
+        moneyAccountId: moneyAcc._id,
+        moneyAccountNature: moneyAcc.moneyAccountNature || (moneyAcc.isBank ? 'BANK' : 'CASH'),
         referenceNumber,
         settledBy: reqUser.userId,
         date: date || new Date(),
@@ -855,6 +871,7 @@ const updateSettlement = async (companyId, id, body, reqUser, session) => {
     'distributorId',
     'direction',
     'paymentMethod',
+    'moneyAccountId',
     'isNetSettlement',
     'grossDistributorToCompany',
     'grossCompanyToDistributor'

@@ -7,6 +7,8 @@ const doctorActivitySchema = new mongoose.Schema(
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', required: true },
     doctorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Doctor', required: true },
     medicalRepId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    moneyAccountId: { type: mongoose.Schema.Types.ObjectId, ref: 'Account', default: null },
+    moneyAccountNature: { type: String, enum: ['CASH', 'BANK'], default: null },
     investedAmount: { type: Number, required: true },
     commitmentAmount: { type: Number, required: true },
     achievedSales: { type: Number, default: 0 },
