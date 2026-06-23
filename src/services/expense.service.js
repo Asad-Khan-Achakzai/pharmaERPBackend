@@ -35,7 +35,6 @@ const expenseCategoryToAccountCode = (category) => {
     case EXPENSE_CATEGORY.LOGISTICS:
       return ACCOUNT_CODES.LOGISTICS_EXPENSE;
     case EXPENSE_CATEGORY.OFFICE:
-    case EXPENSE_CATEGORY.DOCTOR_INVESTMENT:
     case EXPENSE_CATEGORY.OTHER:
     default:
       return ACCOUNT_CODES.OPERATING_EXPENSE;

@@ -9,6 +9,7 @@ const doctorActivitySchema = new mongoose.Schema(
     medicalRepId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     moneyAccountId: { type: mongoose.Schema.Types.ObjectId, ref: 'Account', default: null },
     moneyAccountNature: { type: String, enum: ['CASH', 'BANK'], default: null },
+    voucherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Voucher', default: null },
     investedAmount: { type: Number, required: true },
     commitmentAmount: { type: Number, required: true },
     achievedSales: { type: Number, default: 0 },

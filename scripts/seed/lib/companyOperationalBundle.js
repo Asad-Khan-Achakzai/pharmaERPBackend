@@ -720,8 +720,7 @@ async function seedCompanyOperationalBundle({ rng, code, index, company, admin, 
       EXPENSE_CATEGORY.LOGISTICS,
       EXPENSE_CATEGORY.OFFICE,
       EXPENSE_CATEGORY.RENT,
-      EXPENSE_CATEGORY.OTHER,
-      EXPENSE_CATEGORY.DOCTOR_INVESTMENT
+      EXPENSE_CATEGORY.OTHER
     ]);
     const amount =
       i % 11 === 0

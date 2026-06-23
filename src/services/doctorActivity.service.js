@@ -8,8 +8,11 @@ const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const { roundPKR } = require('../utils/currency');
 const { DOCTOR_ACTIVITY_STATUS, ORDER_STATUS } = require('../constants/enums');
+const { ACCOUNT_CODES } = require('../constants/coaTemplate');
 const auditService = require('./audit.service');
 const moneyAccountService = require('./moneyAccount.service');
+const glBridge = require('./glBridge.service');
+const glPosting = require('./glPosting.service');
 const { grossTpForDelivery } = require('./tpSalesRollup.service');
 
 const startOfDay = (d) => {
@@ -311,6 +314,32 @@ const getById = async (companyId, id) => {
   };
 };
 
+/**
+ * Posts the cash/bank outflow for a doctor investment:
+ *   Dr Doctor investment expense  /  Cr Cash or Bank money account
+ * This is what actually reduces the selected money account's balance.
+ */
+const postInvestmentGl = async (session, companyId, activity, doctor, reqUser) => {
+  const expAcc = await glPosting.getAccountByCode(companyId, ACCOUNT_CODES.OPERATING_EXPENSE, session);
+  if (!expAcc) throw new ApiError(400, 'Operating expense account is not configured in the Chart of Accounts');
+
+  const voucher = await glBridge.postExpenseGl(
+    session,
+    companyId,
+    {
+      expenseId: activity._id,
+      expenseAccountId: expAcc._id,
+      moneyAccountId: activity.moneyAccountId,
+      amount: roundPKR(activity.investedAmount),
+      date: activity.startDate,
+      narration: `Doctor investment: ${doctor?.name || 'doctor'}`
+    },
+    reqUser
+  );
+  if (!voucher) throw new ApiError(500, 'Failed to post doctor investment voucher');
+  return voucher;
+};
+
 const create = async (companyId, data, reqUser) => {
   const doctor = await Doctor.findOne({ _id: data.doctorId, companyId, isActive: true });
   if (!doctor) throw new ApiError(404, 'Doctor not found');
@@ -329,89 +358,126 @@ const create = async (companyId, data, reqUser) => {
   const achievedSales = await computeNetTpAchieved(companyId, data.doctorId, startDate, endDate);
   const investedAmount = roundPKR(data.investedAmount);
 
-  let moneyAccountId = null;
-  let moneyAccountNature = null;
-  if (investedAmount > 0) {
-    const moneyAcc = await moneyAccountService.assertMoneyAccount(companyId, data.moneyAccountId);
-    moneyAccountId = moneyAcc._id;
-    moneyAccountNature = moneyAcc.moneyAccountNature || (moneyAcc.isBank ? 'BANK' : 'CASH');
-  }
+  let createdActivity;
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      let moneyAccountId = null;
+      let moneyAccountNature = null;
+      if (investedAmount > 0) {
+        const moneyAcc = await moneyAccountService.assertMoneyAccount(companyId, data.moneyAccountId, session);
+        moneyAccountId = moneyAcc._id;
+        moneyAccountNature = moneyAcc.moneyAccountNature || (moneyAcc.isBank ? 'BANK' : 'CASH');
+      }
 
-  const activity = await DoctorActivity.create({
-    companyId,
-    doctorId: data.doctorId,
-    medicalRepId,
-    investedAmount,
-    moneyAccountId,
-    moneyAccountNature,
-    commitmentAmount: roundPKR(data.commitmentAmount),
-    achievedSales,
-    startDate,
-    endDate,
-    status: DOCTOR_ACTIVITY_STATUS.ACTIVE,
-    createdBy: reqUser.userId
-  });
-  applyStatus(activity);
-  await activity.save();
+      const [activity] = await DoctorActivity.create(
+        [
+          {
+            companyId,
+            doctorId: data.doctorId,
+            medicalRepId,
+            investedAmount,
+            moneyAccountId,
+            moneyAccountNature,
+            commitmentAmount: roundPKR(data.commitmentAmount),
+            achievedSales,
+            startDate,
+            endDate,
+            status: DOCTOR_ACTIVITY_STATUS.ACTIVE,
+            createdBy: reqUser.userId
+          }
+        ],
+        { session }
+      );
+      applyStatus(activity);
+
+      if (investedAmount > 0) {
+        const voucher = await postInvestmentGl(session, companyId, activity, doctor, reqUser);
+        activity.voucherId = voucher._id;
+      }
+      await activity.save({ session });
+      createdActivity = activity;
+    });
+  } finally {
+    await session.endSession();
+  }
 
   await auditService.log({
     companyId,
     userId: reqUser.userId,
     action: 'doctorActivity.create',
     entityType: 'DoctorActivity',
-    entityId: activity._id,
-    changes: { after: activity.toObject() }
+    entityId: createdActivity._id,
+    changes: { after: createdActivity.toObject() }
   });
-  return getById(companyId, activity._id);
+  return getById(companyId, createdActivity._id);
 };
 
 const update = async (companyId, id, data, reqUser) => {
   const activity = await DoctorActivity.findOne({ _id: id, companyId });
   if (!activity) throw new ApiError(404, 'Doctor activity not found');
   const before = activity.toObject();
+  const prevInvested = roundPKR(activity.investedAmount);
 
-  if (data.medicalRepId !== undefined) {
-    if (data.medicalRepId === null || data.medicalRepId === '') {
-      activity.medicalRepId = null;
-    } else {
-      const rep = await User.findOne({ _id: data.medicalRepId, companyId, isActive: true });
-      if (!rep) throw new ApiError(404, 'Medical rep not found');
-      activity.medicalRepId = data.medicalRepId;
-    }
-  }
-  if (data.investedAmount !== undefined) activity.investedAmount = roundPKR(data.investedAmount);
-  if (data.commitmentAmount !== undefined) activity.commitmentAmount = roundPKR(data.commitmentAmount);
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      if (data.medicalRepId !== undefined) {
+        if (data.medicalRepId === null || data.medicalRepId === '') {
+          activity.medicalRepId = null;
+        } else {
+          const rep = await User.findOne({ _id: data.medicalRepId, companyId, isActive: true }).session(session);
+          if (!rep) throw new ApiError(404, 'Medical rep not found');
+          activity.medicalRepId = data.medicalRepId;
+        }
+      }
+      if (data.investedAmount !== undefined) activity.investedAmount = roundPKR(data.investedAmount);
+      if (data.commitmentAmount !== undefined) activity.commitmentAmount = roundPKR(data.commitmentAmount);
 
-  let rangeChanged = false;
-  if (data.startDate !== undefined) {
-    activity.startDate = new Date(data.startDate);
-    rangeChanged = true;
-  }
-  if (data.endDate !== undefined) {
-    activity.endDate = new Date(data.endDate);
-    rangeChanged = true;
-  }
-  if (activity.startDate >= activity.endDate) throw new ApiError(400, 'startDate must be before endDate');
+      let rangeChanged = false;
+      if (data.startDate !== undefined) {
+        activity.startDate = new Date(data.startDate);
+        rangeChanged = true;
+      }
+      if (data.endDate !== undefined) {
+        activity.endDate = new Date(data.endDate);
+        rangeChanged = true;
+      }
+      if (activity.startDate >= activity.endDate) throw new ApiError(400, 'startDate must be before endDate');
 
-  if (data.doctorId !== undefined) {
-    const doctor = await Doctor.findOne({ _id: data.doctorId, companyId, isActive: true });
-    if (!doctor) throw new ApiError(404, 'Doctor not found');
-    activity.doctorId = data.doctorId;
-    rangeChanged = true;
-  }
+      if (data.doctorId !== undefined) {
+        const doctorDoc = await Doctor.findOne({ _id: data.doctorId, companyId, isActive: true }).session(session);
+        if (!doctorDoc) throw new ApiError(404, 'Doctor not found');
+        activity.doctorId = data.doctorId;
+        rangeChanged = true;
+      }
 
-  if (rangeChanged) {
-    activity.achievedSales = await computeNetTpAchieved(
-      companyId,
-      activity.doctorId,
-      activity.startDate,
-      activity.endDate
-    );
-  }
+      if (rangeChanged) {
+        activity.achievedSales = await computeNetTpAchieved(
+          companyId,
+          activity.doctorId,
+          activity.startDate,
+          activity.endDate
+        );
+      }
 
-  applyStatus(activity);
-  activity.updatedBy = reqUser.userId;
-  await activity.save();
+      const newInvested = roundPKR(activity.investedAmount);
+      if (newInvested !== prevInvested && (activity.voucherId || prevInvested > 0 || newInvested > 0)) {
+        // Money has already moved (or would need to) — keep the GL and the money-account
+        // balance authoritative. Mirrors expense.service: financial fields are locked after posting.
+        throw new ApiError(
+          400,
+          'Invested amount cannot be changed after the activity is created — create a new activity to record a different investment'
+        );
+      }
+
+      applyStatus(activity);
+      activity.updatedBy = reqUser.userId;
+      await activity.save({ session });
+    });
+  } finally {
+    await session.endSession();
+  }
 
   await auditService.log({
     companyId,
@@ -429,15 +495,37 @@ const recalculate = async (companyId, id, reqUser) => {
   if (!activity) throw new ApiError(404, 'Doctor activity not found');
   const before = activity.toObject();
 
-  activity.achievedSales = await computeNetTpAchieved(
+  const newAchieved = await computeNetTpAchieved(
     companyId,
     activity.doctorId,
     activity.startDate,
     activity.endDate
   );
-  applyStatus(activity);
-  activity.updatedBy = reqUser.userId;
-  await activity.save();
+
+  /**
+   * Backfill: activities created before money-account posting existed have an
+   * investedAmount + moneyAccountId but no voucher, so the cash/bank balance was
+   * never reduced. Post the missing outflow now. Idempotent via GL duplicate guard.
+   */
+  const needsInvestmentBackfill =
+    !activity.voucherId && roundPKR(activity.investedAmount) > 0 && activity.moneyAccountId;
+
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      activity.achievedSales = newAchieved;
+      if (needsInvestmentBackfill) {
+        const doctor = await Doctor.findOne({ _id: activity.doctorId, companyId }).session(session);
+        const voucher = await postInvestmentGl(session, companyId, activity, doctor, reqUser);
+        activity.voucherId = voucher._id;
+      }
+      applyStatus(activity);
+      activity.updatedBy = reqUser.userId;
+      await activity.save({ session });
+    });
+  } finally {
+    await session.endSession();
+  }
 
   await auditService.log({
     companyId,
