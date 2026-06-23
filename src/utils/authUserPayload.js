@@ -69,14 +69,17 @@ const formatUserForClient = async (userId, options = {}) => {
 
   if (companyIdForRole) {
     const tc = await Company.findById(companyIdForRole)
-      .select('weeklyPlanApprovalRequired strictVisitSequence mrepMultiTerritory mrepOwnershipAudit')
+      .select(
+        'weeklyPlanApprovalRequired strictVisitSequence mrepMultiTerritory mrepOwnershipAudit deviceControlEnabled'
+      )
       .lean();
     if (tc) {
       out.tenantCompanyFlags = {
         weeklyPlanApprovalRequired: !!tc.weeklyPlanApprovalRequired,
         strictVisitSequence: !!tc.strictVisitSequence,
         mrepMultiTerritory: !!tc.mrepMultiTerritory,
-        mrepOwnershipAudit: !!tc.mrepOwnershipAudit
+        mrepOwnershipAudit: !!tc.mrepOwnershipAudit,
+        deviceControlEnabled: !!tc.deviceControlEnabled
       };
     }
   }

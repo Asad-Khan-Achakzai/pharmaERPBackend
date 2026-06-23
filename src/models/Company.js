@@ -129,6 +129,14 @@ const companySchema = new mongoose.Schema(
      */
     mobileEnabled: { type: Boolean, default: true },
     mobilePushEnabled: { type: Boolean, default: false },
+    /**
+     * Device Control (single mobile device binding per field-force rep).
+     * Default false — production-safe. When false, mobile login behaves like a
+     * normal login with no device restriction. When true, each DEFAULT_MEDICAL_REP
+     * is bound to one active mobile device; logins from other devices are blocked
+     * pending an admin-approved device change. Web auth is NEVER affected.
+     */
+    deviceControlEnabled: { type: Boolean, default: false },
     attendanceGeofenceEnabled: { type: Boolean, default: false },
     doctorApprovalRequired: { type: Boolean, default: false },
     liveTrackingEnabled: { type: Boolean, default: false },

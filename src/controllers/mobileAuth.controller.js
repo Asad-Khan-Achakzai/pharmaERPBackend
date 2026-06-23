@@ -1,6 +1,7 @@
 const asyncHandler = require('../middleware/asyncHandler');
 const ApiResponse = require('../utils/ApiResponse');
 const mobileAuthService = require('../services/mobileAuth.service');
+const deviceControlService = require('../services/deviceControl.service');
 
 const login = asyncHandler(async (req, res) => {
   const { email, password, device } = req.body;
@@ -66,6 +67,35 @@ const switchCompany = asyncHandler(async (req, res) => {
   ApiResponse.success(res, data, 'Company switched');
 });
 
+// --- Device change request flow (authed by short-lived device-change token) ---
+
+const requestDeviceChange = asyncHandler(async (req, res) => {
+  const data = await deviceControlService.createDeviceChangeRequest({
+    userId: req.deviceChange.userId,
+    companyId: req.deviceChange.companyId,
+    tokenDeviceId: req.deviceChange.deviceId,
+    device: req.body.device,
+    reason: req.body.reason
+  });
+  ApiResponse.created(res, data, 'Device change request submitted');
+});
+
+const getDeviceChangeRequest = asyncHandler(async (req, res) => {
+  const data = await deviceControlService.getMyDeviceChangeRequest({
+    userId: req.deviceChange.userId,
+    companyId: req.deviceChange.companyId
+  });
+  ApiResponse.success(res, data);
+});
+
+const cancelDeviceChange = asyncHandler(async (req, res) => {
+  const data = await deviceControlService.cancelDeviceChangeRequest({
+    userId: req.deviceChange.userId,
+    companyId: req.deviceChange.companyId
+  });
+  ApiResponse.success(res, data, 'Device change request cancelled');
+});
+
 module.exports = {
   login,
   registerDevice,
@@ -75,5 +105,8 @@ module.exports = {
   revokeSession,
   updatePushToken,
   changePassword,
-  switchCompany
+  switchCompany,
+  requestDeviceChange,
+  getDeviceChangeRequest,
+  cancelDeviceChange
 };

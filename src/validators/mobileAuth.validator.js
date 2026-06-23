@@ -43,6 +43,11 @@ const mobileSwitchCompanySchema = Joi.object({
   device: deviceSchema.required()
 });
 
+const deviceChangeRequestSchema = Joi.object({
+  device: deviceSchema.required(),
+  reason: Joi.string().allow('', null).max(500)
+});
+
 module.exports = {
   deviceSchema,
   mobileLoginSchema,
@@ -51,5 +56,6 @@ module.exports = {
   logoutSchema,
   updatePushTokenSchema,
   mobileChangePasswordSchema,
-  mobileSwitchCompanySchema
+  mobileSwitchCompanySchema,
+  deviceChangeRequestSchema
 };

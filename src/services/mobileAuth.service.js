@@ -10,6 +10,7 @@ const { effectiveUserType, normalizeAccessPayload } = require('../utils/jwtAcces
 const { hasAccessToCompany } = require('../utils/platformAccess.util');
 const { hashRefreshToken } = require('../middleware/clientUuid');
 const { USER_TYPES } = require('../constants/enums');
+const deviceControlService = require('./deviceControl.service');
 
 /**
  * Mobile auth service. Issues per-device refresh tokens that are tracked in
@@ -93,11 +94,21 @@ async function login({ email, password, device, ip }) {
     activeCompanyId = user.activeCompanyId || null;
   }
 
-  const tokens = await issueDeviceSession({ user, companyId: activeCompanyId, device: dev });
-
   const company = activeCompanyId
-    ? await Company.findById(activeCompanyId).select('name mobilePushEnabled mobileEnabled').lean()
+    ? await Company.findById(activeCompanyId)
+        .select(
+          'name mobilePushEnabled mobileEnabled attendanceGeofenceEnabled doctorApprovalRequired deviceControlEnabled'
+        )
+        .lean()
     : null;
+
+  // Device Control gate (feature flag + field-force rep only). Throws
+  // DEVICE_NOT_REGISTERED before any session is issued when blocked.
+  if (company && company.deviceControlEnabled && (await deviceControlService.appliesToUser(user))) {
+    await deviceControlService.enforceLoginBinding({ user, company, device: dev });
+  }
+
+  const tokens = await issueDeviceSession({ user, companyId: activeCompanyId, device: dev });
 
   const u = await formatUserForClient(user._id, {
     resolvedTenantCompanyId: activeCompanyId ? String(activeCompanyId) : null
@@ -114,7 +125,8 @@ async function login({ email, password, device, ip }) {
           mobileEnabled: company.mobileEnabled !== false,
           mobilePushEnabled: !!company.mobilePushEnabled,
           attendanceGeofenceEnabled: !!company.attendanceGeofenceEnabled,
-          doctorApprovalRequired: !!company.doctorApprovalRequired
+          doctorApprovalRequired: !!company.doctorApprovalRequired,
+          deviceControlEnabled: !!company.deviceControlEnabled
         }
       : null
   };

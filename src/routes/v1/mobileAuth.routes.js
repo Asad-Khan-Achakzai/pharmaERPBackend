@@ -3,6 +3,7 @@ const router = express.Router();
 
 const controller = require('../../controllers/mobileAuth.controller');
 const { authenticate } = require('../../middleware/auth');
+const { deviceChangeAuth } = require('../../middleware/deviceChangeAuth');
 const { validate } = require('../../middleware/validate');
 const {
   mobileLoginSchema,
@@ -11,7 +12,8 @@ const {
   logoutSchema,
   updatePushTokenSchema,
   mobileChangePasswordSchema,
-  mobileSwitchCompanySchema
+  mobileSwitchCompanySchema,
+  deviceChangeRequestSchema
 } = require('../../validators/mobileAuth.validator');
 
 /**
@@ -36,5 +38,19 @@ router.post(
   validate(mobileSwitchCompanySchema),
   controller.switchCompany
 );
+
+/**
+ * Device change request flow — authenticated by the short-lived device-change
+ * token issued when a login was blocked (NOT the normal access token), so a
+ * rep whose device is unregistered can request a switch without a session.
+ */
+router.post(
+  '/device-change-request',
+  deviceChangeAuth,
+  validate(deviceChangeRequestSchema),
+  controller.requestDeviceChange
+);
+router.get('/device-change-request', deviceChangeAuth, controller.getDeviceChangeRequest);
+router.post('/device-change-request/cancel', deviceChangeAuth, controller.cancelDeviceChange);
 
 module.exports = router;

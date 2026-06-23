@@ -64,6 +64,13 @@ const PERMISSIONS = {
    * `manage` controls session/step transitions; `import` runs jobs; `approveGoLive` finalizes cutover.
    */
   onboarding:   ['view', 'manage', 'import', 'approveGoLive', 'rollback'],
+  /**
+   * Mobile device control administration (single-device binding feature).
+   * `manage` covers viewing active device bindings, reviewing device change
+   * requests, approving/rejecting them, and force-revoking a device.
+   * admin.access satisfies this; grant explicitly to non-admin roles if needed.
+   */
+  deviceControl: ['manage'],
   platform:     ['dashboard.view', 'companies.manage']
 };
 

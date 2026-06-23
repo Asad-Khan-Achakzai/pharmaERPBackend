@@ -38,6 +38,7 @@ const accountingReportRoutes = require('./accountingReport.routes');
 const accountRoutes = require('./account.routes');
 const voucherRoutes = require('./voucher.routes');
 const mobileAuthRoutes = require('./mobileAuth.routes');
+const deviceControlRoutes = require('./deviceControl.routes');
 const syncRoutes = require('./sync.routes');
 const mediaRoutes = require('./media.routes');
 const notificationRoutes = require('./notification.routes');
@@ -46,6 +47,7 @@ const announcementRoutes = require('./announcement.routes');
 const calendarRoutes = require('./calendar.routes');
 
 router.use('/auth/mobile', mobileAuthRoutes);
+router.use('/device-control', deviceControlRoutes);
 router.use('/sync', syncRoutes);
 router.use('/media', mediaRoutes);
 router.use('/notifications', notificationRoutes);

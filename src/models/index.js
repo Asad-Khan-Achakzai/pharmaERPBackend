@@ -43,6 +43,8 @@ module.exports = {
   MigrationAuditEvent: require('./MigrationAuditEvent'),
   HistoricalImportArchive: require('./HistoricalImportArchive'),
   DeviceSession: require('./DeviceSession'),
+  MobileDeviceBinding: require('./MobileDeviceBinding'),
+  DeviceChangeRequest: require('./DeviceChangeRequest'),
   IdempotencyRecord: require('./IdempotencyRecord'),
   MediaAsset: require('./MediaAsset'),
   Account: require('./Account'),

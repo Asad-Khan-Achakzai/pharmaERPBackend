@@ -31,6 +31,10 @@ const errorHandler = (err, req, res, _next) => {
     success: false,
     statusCode: error.statusCode,
     message: error.message,
+    // Stable machine-readable code (e.g. DEVICE_NOT_REGISTERED) when set on the ApiError.
+    ...(error.code ? { code: error.code } : {}),
+    // Optional structured payload for client handling (e.g. device-change token).
+    ...(error.data ? { data: error.data } : {}),
     ...(process.env.NODE_ENV === 'development' && { stack: error.stack })
   };
 

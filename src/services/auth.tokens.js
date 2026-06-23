@@ -41,4 +41,43 @@ const generateTokensLegacy = (userId, companyId) =>
     homeCompanyId: companyId
   });
 
-module.exports = { generateTokens, generateTokensLegacy };
+/** Short-lived token scope for device-change-request endpoints. */
+const DEVICE_CHANGE_SCOPE = 'device-change';
+const DEVICE_CHANGE_TOKEN_EXPIRY = '15m';
+
+/**
+ * Issued to a field-force rep when their mobile login is blocked because the
+ * device is not their bound device. It only authorizes the device-change-request
+ * endpoints (NOT normal APIs), so a blocked user can request a switch without a
+ * full session. Signed with the access secret + a `scope` claim.
+ */
+const generateDeviceChangeToken = ({ userId, companyId, deviceId }) =>
+  jwt.sign(
+    {
+      userId: String(userId),
+      companyId: companyId != null ? String(companyId) : null,
+      deviceId: String(deviceId),
+      scope: DEVICE_CHANGE_SCOPE
+    },
+    env.JWT_ACCESS_SECRET,
+    { expiresIn: DEVICE_CHANGE_TOKEN_EXPIRY }
+  );
+
+/** Verifies a device-change token and asserts the scope. Returns the decoded claims. */
+const verifyDeviceChangeToken = (token) => {
+  const decoded = jwt.verify(token, env.JWT_ACCESS_SECRET);
+  if (!decoded || decoded.scope !== DEVICE_CHANGE_SCOPE || !decoded.userId) {
+    const err = new Error('Invalid device-change token');
+    err.name = 'JsonWebTokenError';
+    throw err;
+  }
+  return decoded;
+};
+
+module.exports = {
+  generateTokens,
+  generateTokensLegacy,
+  generateDeviceChangeToken,
+  verifyDeviceChangeToken,
+  DEVICE_CHANGE_SCOPE
+};

@@ -8,6 +8,8 @@ const Company = require('../models/Company');
 const { Info } = require('luxon');
 const env = require('../config/env');
 const { hasAccessToCompany } = require('../utils/platformAccess.util');
+const { DEFAULT_MEDICAL_REP_CODE } = require('../constants/rbac');
+const deviceControlService = require('../services/deviceControl.service');
 const mongoose = require('mongoose');
 const asyncHandler = require('./asyncHandler');
 
@@ -76,6 +78,24 @@ const companyScope = asyncHandler(async (req, _res, next) => {
     name: userDoc.name,
     email: userDoc.email
   };
+
+  // Hard device-control enforcement: field-force reps hitting the API from a
+  // device that is no longer their bound device are cut off immediately (even
+  // if their access token has not yet expired). Web requests carry no
+  // X-Device-Id header and are never affected.
+  const deviceIdHeader = req.get('X-Device-Id');
+  if (deviceIdHeader && company.deviceControlEnabled && req.user.roleCode === DEFAULT_MEDICAL_REP_CODE) {
+    const bound = await deviceControlService.isRequestDeviceBound({
+      companyId: req.companyId,
+      userId: userDoc._id,
+      deviceId: deviceIdHeader
+    });
+    if (!bound) {
+      const error = new ApiError(401, 'This device is no longer registered. Please log in again.');
+      error.code = 'DEVICE_REBOUND';
+      return next(error);
+    }
+  }
 
   next();
 });

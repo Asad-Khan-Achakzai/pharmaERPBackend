@@ -395,6 +395,25 @@ const MONEY_ACCOUNT_NATURE = {
   BANK: 'BANK'
 };
 
+/**
+ * Device control (mobile single-device binding). Only enforced when
+ * Company.deviceControlEnabled is true and the user is a field-force rep
+ * (Role.code === DEFAULT_MEDICAL_REP). Web auth is never affected.
+ */
+const DEVICE_CHANGE_REQUEST_STATUS = {
+  PENDING: 'PENDING',
+  APPROVED: 'APPROVED',
+  REJECTED: 'REJECTED',
+  CANCELLED: 'CANCELLED'
+};
+
+/** How a MobileDeviceBinding became the active device (audit). */
+const DEVICE_BINDING_SOURCE = {
+  FIRST_LOGIN: 'FIRST_LOGIN',
+  ADMIN_APPROVAL: 'ADMIN_APPROVAL',
+  ADMIN_FORCE: 'ADMIN_FORCE'
+};
+
 module.exports = {
   ROLES,
   USER_TYPES,
@@ -449,5 +468,7 @@ module.exports = {
   VOUCHER_STATUS,
   SUB_LEDGER_SOURCE,
   GL_SOURCE_MODULE,
-  MONEY_ACCOUNT_NATURE
+  MONEY_ACCOUNT_NATURE,
+  DEVICE_CHANGE_REQUEST_STATUS,
+  DEVICE_BINDING_SOURCE
 };
