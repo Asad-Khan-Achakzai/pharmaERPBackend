@@ -1,5 +1,11 @@
 const mongoose = require('mongoose');
 const Account = require('../models/Account');
+const Voucher = require('../models/Voucher');
+const Collection = require('../models/Collection');
+const Expense = require('../models/Expense');
+const DoctorActivity = require('../models/DoctorActivity');
+const Settlement = require('../models/Settlement');
+const SupplierLedger = require('../models/SupplierLedger');
 const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const coaSeed = require('./coaSeed.service');
@@ -152,6 +158,30 @@ const setOpeningBalance = async (companyId, id, openingBalance, reqUser) => {
   return acc;
 };
 
+/**
+ * Returns true if the account is referenced by any financial transaction
+ * (vouchers, collections, expenses, doctor activities, settlements, supplier ledgers).
+ * Used to prevent deleting accounts that carry history — even when the balance is zero.
+ */
+const hasTransactionReferences = async (companyId, accountId) => {
+  const cid = oid(companyId);
+  const aid = oid(accountId);
+  const checks = [
+    Voucher.exists({
+      companyId: cid,
+      ...nd,
+      $or: [{ 'lines.accountId': aid }, { moneyAccountId: aid }, { toMoneyAccountId: aid }]
+    }),
+    Collection.exists({ companyId: cid, ...nd, moneyAccountId: aid }),
+    Expense.exists({ companyId: cid, ...nd, $or: [{ moneyAccountId: aid }, { expenseAccountId: aid }] }),
+    DoctorActivity.exists({ companyId: cid, ...nd, moneyAccountId: aid }),
+    Settlement.exists({ companyId: cid, ...nd, moneyAccountId: aid }),
+    SupplierLedger.exists({ companyId: cid, ...nd, moneyAccountId: aid })
+  ];
+  const results = await Promise.all(checks);
+  return results.some(Boolean);
+};
+
 const remove = async (companyId, id, reqUser) => {
   const acc = await getById(companyId, id);
   if (acc.isSystem) throw new ApiError(400, 'Cannot delete system account');
@@ -159,6 +189,9 @@ const remove = async (companyId, id, reqUser) => {
   if (acc.isGroup) throw new ApiError(400, 'Cannot delete category folders — use Advanced Accounting mode');
   const child = await Account.findOne({ companyId: oid(companyId), parentId: acc._id, ...nd });
   if (child) throw new ApiError(400, 'Account has child accounts');
+  if (await hasTransactionReferences(companyId, acc._id)) {
+    throw new ApiError(400, 'This account has transaction history and cannot be deleted. Please deactivate it instead.');
+  }
   if (Math.abs(acc.currentBalance || 0) > 0.001) {
     throw new ApiError(400, 'Account has non-zero balance');
   }
@@ -175,6 +208,9 @@ const remove = async (companyId, id, reqUser) => {
 
 const GROUP_TYPES = Object.values(ACCOUNT_GROUP_TYPE);
 
-const listMoneyAccounts = async (companyId) => moneyAccountService.listMoneyAccounts(companyId);
+const listMoneyAccounts = async (companyId, query = {}) =>
+  moneyAccountService.listMoneyAccounts(companyId, {
+    includeInactive: query.includeInactive === 'true' || query.includeInactive === true
+  });
 
 module.exports = { list, getTree, getById, create, update, setOpeningBalance, remove, GROUP_TYPES, listMoneyAccounts };

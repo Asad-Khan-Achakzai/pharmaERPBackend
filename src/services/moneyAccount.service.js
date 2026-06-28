@@ -21,18 +21,17 @@ const syncMoneyAccountFlags = async (companyId, session = null) => {
   );
 };
 
-const listMoneyAccounts = async (companyId) => {
+const listMoneyAccounts = async (companyId, { includeInactive = false } = {}) => {
   await coaSeed.ensureCoaForCompany(companyId);
   await syncMoneyAccountFlags(companyId);
-  return Account.find({
+  const filter = {
     companyId: oid(companyId),
     isMoneyAccount: true,
-    isActive: true,
     isGroup: { $ne: true },
     ...nd
-  })
-    .sort({ code: 1 })
-    .lean();
+  };
+  if (!includeInactive) filter.isActive = true;
+  return Account.find(filter).sort({ code: 1 }).lean();
 };
 
 /**

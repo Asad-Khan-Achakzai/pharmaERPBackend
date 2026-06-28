@@ -41,7 +41,7 @@ const groupTypes = asyncHandler(async (_req, res) => {
 });
 
 const listMoneyAccounts = asyncHandler(async (req, res) => {
-  ApiResponse.success(res, await accountService.listMoneyAccounts(req.companyId));
+  ApiResponse.success(res, await accountService.listMoneyAccounts(req.companyId, req.query));
 });
 
 const createSimple = asyncHandler(async (req, res) => {
