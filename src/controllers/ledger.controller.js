@@ -54,6 +54,10 @@ const getEmployeeStatement = asyncHandler(async (req, res) => {
   ApiResponse.success(res, await ledgerService.getEmployeeStatement(req.companyId, req.query, req.context.timeZone));
 });
 
+const getActivityLedger = asyncHandler(async (req, res) => {
+  ApiResponse.success(res, await ledgerService.getActivityLedger(req.companyId, req.query, req.context.timeZone));
+});
+
 module.exports = {
   list,
   getByPharmacy,
@@ -62,5 +66,6 @@ module.exports = {
   getClientStatement,
   getSupplierStatement,
   getExpenseLedger,
-  getEmployeeStatement
+  getEmployeeStatement,
+  getActivityLedger
 };

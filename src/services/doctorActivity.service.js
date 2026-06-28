@@ -8,11 +8,9 @@ const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const { roundPKR } = require('../utils/currency');
 const { DOCTOR_ACTIVITY_STATUS, ORDER_STATUS } = require('../constants/enums');
-const { ACCOUNT_CODES } = require('../constants/coaTemplate');
 const auditService = require('./audit.service');
 const moneyAccountService = require('./moneyAccount.service');
 const glBridge = require('./glBridge.service');
-const glPosting = require('./glPosting.service');
 const { grossTpForDelivery } = require('./tpSalesRollup.service');
 
 const startOfDay = (d) => {
@@ -285,7 +283,8 @@ const getById = async (companyId, id) => {
   await finalizeExpiredActivities(companyId);
   const activity = await DoctorActivity.findOne({ _id: id, companyId })
     .populate('doctorId', 'name specialization phone')
-    .populate('medicalRepId', 'name email');
+    .populate('medicalRepId', 'name email')
+    .populate('voucherId', 'voucherNumber voucherType status date narration');
   if (!activity) throw new ApiError(404, 'Doctor activity not found');
 
   const [achievedTp, achievedCasting] = await Promise.all([
@@ -320,15 +319,11 @@ const getById = async (companyId, id) => {
  * This is what actually reduces the selected money account's balance.
  */
 const postInvestmentGl = async (session, companyId, activity, doctor, reqUser) => {
-  const expAcc = await glPosting.getAccountByCode(companyId, ACCOUNT_CODES.OPERATING_EXPENSE, session);
-  if (!expAcc) throw new ApiError(400, 'Operating expense account is not configured in the Chart of Accounts');
-
-  const voucher = await glBridge.postExpenseGl(
+  const voucher = await glBridge.postDoctorActivityGl(
     session,
     companyId,
     {
-      expenseId: activity._id,
-      expenseAccountId: expAcc._id,
+      activityId: activity._id,
       moneyAccountId: activity.moneyAccountId,
       amount: roundPKR(activity.investedAmount),
       date: activity.startDate,

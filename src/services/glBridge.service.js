@@ -245,6 +245,49 @@ const postSupplierPaymentGl = async (session, companyId, ctx, reqUser) => {
 };
 
 /**
+ * Doctor activity investment: Dr Operating expense / Cr Cash or Bank money account.
+ */
+const postDoctorActivityGl = async (session, companyId, ctx, reqUser) => {
+  await ensureCoa(companyId, session);
+
+  const expAcc = ctx.expenseAccountId
+    ? await Account.findOne({
+        companyId: oid(companyId),
+        _id: oid(ctx.expenseAccountId),
+        groupType: 'EXPENSE',
+        isGroup: { $ne: true },
+        isControlAccount: { $ne: true },
+        isActive: true,
+        isDeleted: { $ne: true }
+      }).session(session || null)
+    : await glPosting.getAccountByCode(companyId, ACCOUNT_CODES.OPERATING_EXPENSE, session);
+
+  const cash = await moneyAccountService.assertMoneyAccount(companyId, ctx.moneyAccountId, session);
+
+  if (!expAcc || !cash) {
+    const ApiError = require('../utils/ApiError');
+    throw new ApiError(400, 'Expense or money account not found — ensure Chart of Accounts is set up');
+  }
+
+  const amount = roundPKR(ctx.amount);
+  return glPosting.postVoucher(
+    companyId,
+    {
+      voucherType: VOUCHER_TYPE.PV,
+      date: ctx.date,
+      narration: ctx.narration || 'Doctor activity investment',
+      lines: [line(expAcc._id, amount, 0), line(cash._id, 0, amount)],
+      sourceModule: GL_SOURCE_MODULE.DOCTOR_ACTIVITY,
+      sourceRefId: ctx.activityId,
+      moneyAccountId: cash._id,
+      moneyAccountNature: cash.moneyAccountNature || (cash.isBank ? 'BANK' : 'CASH')
+    },
+    reqUser,
+    session
+  );
+};
+
+/**
  * Expense payment voucher: Dr Expense account / Cr Cash or Bank money account.
  */
 const postExpenseGl = async (session, companyId, ctx, reqUser) => {
@@ -386,6 +429,7 @@ module.exports = {
   postCollectionGl,
   postPurchaseGl,
   postSupplierPaymentGl,
+  postDoctorActivityGl,
   postExpenseGl,
   postReturnGl,
   postFundTransferGl,

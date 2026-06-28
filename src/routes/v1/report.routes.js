@@ -32,6 +32,12 @@ const monthlySummaryQuerySchema = Joi.object({
   fiscalYear: Joi.number().integer().min(2000).max(2100)
 });
 
+const monthlySummaryProductPacksQuerySchema = Joi.object({
+  month: Joi.string().pattern(/^\d{4}-\d{2}$/).required(),
+  fiscalYearStart: Joi.number().integer().min(2000).max(2100),
+  fiscalYear: Joi.number().integer().min(2000).max(2100)
+});
+
 router.use(authenticate, companyScope);
 router.get('/visit-summary', checkPermission('reports.view'), validateQuery(visitSummaryQuerySchema), c.visitSummary);
 router.get('/visit-by-employee', checkPermission('reports.view'), validateQuery(visitByEmployeeQuerySchema), c.visitByEmployee);
@@ -76,6 +82,12 @@ router.get(
   checkPermission('reports.view'),
   validateQuery(monthlySummaryQuerySchema),
   c.monthlySummary
+);
+router.get(
+  '/monthly-summary/product-packs',
+  checkPermission('reports.view'),
+  validateQuery(monthlySummaryProductPacksQuerySchema),
+  c.monthlySummaryProductPacks
 );
 
 /** MRep field KPIs & coverage (Phase 3 — self, team subtree, or explicit rep when allowed). */

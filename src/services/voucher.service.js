@@ -19,6 +19,7 @@ const list = async (companyId, query, timeZone = 'UTC') => {
   const filter = { companyId: oid(companyId), ...nd };
   if (query.voucherType) filter.voucherType = query.voucherType;
   if (query.status) filter.status = query.status;
+  if (query.sourceModule) filter.sourceModule = query.sourceModule;
   applyDateFieldRangeFromQuery(filter, query, 'date', timeZone);
   if (searchTerm) {
     const rx = escapeRegex(searchTerm);

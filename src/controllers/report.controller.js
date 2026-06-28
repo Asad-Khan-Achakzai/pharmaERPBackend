@@ -171,6 +171,13 @@ const monthlySummary = asyncHandler(async (req, res) => {
   );
 });
 
+const monthlySummaryProductPacks = asyncHandler(async (req, res) => {
+  ApiResponse.success(
+    res,
+    await monthlySummaryService.productPackSalesForMonth(req.companyId, req.query, req.context.timeZone)
+  );
+});
+
 const pharmacyFinancialWorkspace = asyncHandler(async (req, res) => {
   const data = await pharmacyWorkspaceService.pharmacyFinancialWorkspace(
     req.companyId,
@@ -237,5 +244,6 @@ module.exports = {
   profitCosts,
   profitProductProfitability,
   profitTrends,
-  monthlySummary
+  monthlySummary,
+  monthlySummaryProductPacks
 };

@@ -1,6 +1,6 @@
 /**
  * Fiscal-year monthly summary (Aug → Jul) for Reports & Insights.
- * P/L = Net Sales − Distribution − Discount − Stock Purchase (supplier GRN/purchase) − Expenses (payroll + other).
+ * P/L = Net Sales − Distribution − Discount − Casting (sold products) − Expenses (payroll + other).
  * Marketing (doctor investment) is informational only.
  */
 const mongoose = require('mongoose');
@@ -11,17 +11,17 @@ const Payroll = require('../models/Payroll');
 const DoctorActivity = require('../models/DoctorActivity');
 const Expense = require('../models/Expense');
 const Ledger = require('../models/Ledger');
-const SupplierLedger = require('../models/SupplierLedger');
+const Product = require('../models/Product');
 const { roundPKR } = require('../utils/currency');
 const ApiError = require('../utils/ApiError');
 const businessTime = require('../utils/businessTime');
+const { qScalar } = require('../utils/listQuery');
 const {
   EXPENSE_CATEGORY,
   PAYROLL_STATUS,
   LEDGER_ENTITY_TYPE,
   LEDGER_TYPE,
-  LEDGER_REFERENCE_TYPE,
-  SUPPLIER_LEDGER_TYPE
+  LEDGER_REFERENCE_TYPE
 } = require('../constants/enums');
 
 const objectId = (id) => new mongoose.Types.ObjectId(id);
@@ -67,7 +67,7 @@ const computePl = (row) =>
     row.netSales -
       row.distribution -
       row.discount -
-      row.stockPurchaseExpenses -
+      row.castingCost -
       row.expenses
   );
 
@@ -83,7 +83,7 @@ const normalizeRow = (row) => {
     netSales: zeroDust(row.netSales),
     distribution: zeroDust(row.distribution),
     discount: zeroDust(row.discount),
-    stockPurchaseExpenses: zeroDust(row.stockPurchaseExpenses),
+    castingCost: zeroDust(row.castingCost),
     expenses: zeroDust(row.expenses),
     marketing: zeroDust(row.marketing)
   };
@@ -108,6 +108,40 @@ const monthlySummary = async (companyId, query = {}, timeZone) => {
   const ymOn = (field) => ({
     $dateToString: { format: ymFormat, date: field, timezone: tz }
   });
+
+  /** Net casting = order line castingAtTime × delivered/returned qty (by delivery/return month). */
+  const castingByMonthPipeline = (dateField, matchExtra = {}) => [
+    { $match: { companyId: cid, isDeleted: nd, [dateField]: dateRange, ...matchExtra } },
+    { $lookup: { from: 'orders', localField: 'orderId', foreignField: '_id', as: 'o' } },
+    { $unwind: '$o' },
+    { $unwind: '$items' },
+    {
+      $addFields: {
+        orderItem: {
+          $arrayElemAt: [
+            {
+              $filter: {
+                input: '$o.items',
+                as: 'oi',
+                cond: { $eq: ['$$oi.productId', '$items.productId'] }
+              }
+            },
+            0
+          ]
+        }
+      }
+    },
+    {
+      $group: {
+        _id: ymOn(`$${dateField}`),
+        casting: {
+          $sum: {
+            $multiply: [{ $ifNull: ['$orderItem.castingAtTime', 0] }, '$items.quantity']
+          }
+        }
+      }
+    }
+  ];
 
   const returnNetPipeline = [
     { $match: { companyId: cid, isDeleted: nd, returnedAt: dateRange } },
@@ -197,8 +231,8 @@ const monthlySummary = async (companyId, query = {}, timeZone) => {
     payrollByMonth,
     otherExpByMonth,
     marketingByMonth,
-    supplierPurchaseByMonth,
-    supplierPurchaseReturnByMonth
+    deliveryCastingByMonth,
+    returnCastingByMonth
   ] = await Promise.all([
     DeliveryRecord.aggregate([
       { $match: { companyId: cid, isDeleted: nd, deliveredAt: dateRange } },
@@ -394,44 +428,14 @@ const monthlySummary = async (companyId, query = {}, timeZone) => {
         }
       }
     ]),
-    SupplierLedger.aggregate([
-      {
-        $match: {
-          companyId: cid,
-          isDeleted: nd,
-          type: SUPPLIER_LEDGER_TYPE.PURCHASE,
-          date: dateRange
-        }
-      },
-      {
-        $group: {
-          _id: ymOn('$date'),
-          purchase: { $sum: '$amount' }
-        }
-      }
-    ]),
-    SupplierLedger.aggregate([
-      {
-        $match: {
-          companyId: cid,
-          isDeleted: nd,
-          type: SUPPLIER_LEDGER_TYPE.PURCHASE_RETURN,
-          date: dateRange
-        }
-      },
-      {
-        $group: {
-          _id: ymOn('$date'),
-          purchaseReturn: { $sum: '$amount' }
-        }
-      }
-    ])
+    DeliveryRecord.aggregate(castingByMonthPipeline('deliveredAt')),
+    ReturnRecord.aggregate(castingByMonthPipeline('returnedAt'))
   ]);
 
   const deliveryNetMap = mapByMonth(deliveryNetByMonth, 'net');
   const returnNetMap = mapByMonth(returnNetByMonth, 'returnNet');
-  const supplierPurMap = mapByMonth(supplierPurchaseByMonth, 'purchase');
-  const supplierPurRetMap = mapByMonth(supplierPurchaseReturnByMonth, 'purchaseReturn');
+  const deliveryCastingMap = mapByMonth(deliveryCastingByMonth, 'casting');
+  const returnCastingMap = mapByMonth(returnCastingByMonth, 'casting');
 
   const distDelMap = mapByMonth(commDeliveryByMonth, 'distribution');
   const distRevMap = mapByMonth(commReversalByMonth, 'commissionReversal');
@@ -445,8 +449,8 @@ const monthlySummary = async (companyId, query = {}, timeZone) => {
     const netSales = roundPKR((deliveryNetMap.get(month) || 0) - (returnNetMap.get(month) || 0));
     const distribution = roundPKR((distDelMap.get(month) || 0) - (distRevMap.get(month) || 0));
     const discount = roundPKR((delDiscMap.get(month) || 0) - (retDiscMap.get(month) || 0));
-    const stockPurchaseExpenses = roundPKR(
-      (supplierPurMap.get(month) || 0) - (supplierPurRetMap.get(month) || 0)
+    const castingCost = roundPKR(
+      (deliveryCastingMap.get(month) || 0) - (returnCastingMap.get(month) || 0)
     );
     const expenses = roundPKR((payrollMap.get(month) || 0) + (otherExpMap.get(month) || 0));
     const marketing = marketingMap.get(month) || 0;
@@ -456,7 +460,7 @@ const monthlySummary = async (companyId, query = {}, timeZone) => {
       netSales,
       distribution,
       discount,
-      stockPurchaseExpenses,
+      castingCost,
       expenses,
       marketing
     });
@@ -470,7 +474,7 @@ const monthlySummary = async (companyId, query = {}, timeZone) => {
         netSales: roundPKR(acc.netSales + r.netSales),
         distribution: roundPKR(acc.distribution + r.distribution),
         discount: roundPKR(acc.discount + r.discount),
-        stockPurchaseExpenses: roundPKR(acc.stockPurchaseExpenses + r.stockPurchaseExpenses),
+        castingCost: roundPKR(acc.castingCost + r.castingCost),
         expenses: roundPKR(acc.expenses + r.expenses),
         marketing: roundPKR(acc.marketing + r.marketing),
         pl: 0
@@ -481,7 +485,7 @@ const monthlySummary = async (companyId, query = {}, timeZone) => {
         netSales: 0,
         distribution: 0,
         discount: 0,
-        stockPurchaseExpenses: 0,
+        castingCost: 0,
         expenses: 0,
         marketing: 0,
         pl: 0
@@ -498,11 +502,11 @@ const monthlySummary = async (companyId, query = {}, timeZone) => {
     totals,
     meta: {
       plFormula:
-        'Net Sales − Distribution − Discount − Stock Purchase Expenses (supplier GRN/purchase) − Expenses (payroll + operating)',
+        'Net Sales − Distribution − Discount − Casting (products sold) − Expenses (payroll + operating)',
       dateBasis: {
         netSales: 'DeliveryRecord.pharmacyNetPayable minus proportional return pharmacy net (return month)',
-        stockPurchaseExpenses:
-          'SupplierLedger.date (type PURCHASE minus PURCHASE_RETURN — goods received, not cash payment)',
+        castingCost:
+          'Order line castingAtTime × delivered qty (delivery month) minus castingAtTime × returned qty (return month)',
         distribution: 'DeliveryRecord.deliveredAt minus return commission reversals (Ledger.date)',
         discount: 'Delivery tpSubtotal − pharmacyNetPayable; returns reduce by returned discount',
         expenses: 'Payroll.paidOn (PAID) + Expense.date (category ≠ SALARY)',
@@ -510,14 +514,173 @@ const monthlySummary = async (companyId, query = {}, timeZone) => {
       },
       notes: [
         'Marketing (doctor investment) is not included in P/L.',
-        'Stock Purchase reflects supplier goods receipt (GRN/manual purchase), not supplier payments or delivery COGS.',
-        'Supplier payments affect payables/cash only — they do not change this report.'
+        'Casting reflects company purchase price on products sold in each month, not supplier GRN receipts.',
+        'Supplier purchases and payments are tracked separately in procurement and payables.'
       ]
+    }
+  };
+};
+
+const monthYmPattern = /^\d{4}-\d{2}$/;
+
+const monthDateRange = (monthYm, tz) => {
+  const z = businessTime.requireCompanyIanaZone(tz);
+  const start = DateTime.fromFormat(monthYm, 'yyyy-MM', { zone: z }).startOf('month');
+  if (!start.isValid) throw new ApiError(400, 'Invalid month — use YYYY-MM');
+  const end = start.endOf('month');
+  return { $gte: start.toUTC().toJSDate(), $lte: end.toUTC().toJSDate() };
+};
+
+const deliveredPacksByProductAgg = (companyId, dateRange) => [
+  { $match: { companyId, isDeleted: nd, deliveredAt: dateRange } },
+  { $unwind: '$items' },
+  {
+    $group: {
+      _id: '$items.productId',
+      physicalQty: { $sum: '$items.quantity' },
+      paidQty: {
+        $sum: {
+          $cond: [
+            { $gt: [{ $ifNull: ['$items.paidQuantity', null] }, null] },
+            '$items.paidQuantity',
+            {
+              $subtract: ['$items.quantity', { $ifNull: ['$items.bonusQuantity', 0] }]
+            }
+          ]
+        }
+      },
+      bonusQty: {
+        $sum: {
+          $cond: [
+            { $gt: [{ $ifNull: ['$items.bonusQuantity', null] }, null] },
+            '$items.bonusQuantity',
+            0
+          ]
+        }
+      }
+    }
+  }
+];
+
+const returnedPacksByProductAgg = (companyId, dateRange) => [
+  { $match: { companyId, isDeleted: nd, returnedAt: dateRange } },
+  { $unwind: '$items' },
+  {
+    $group: {
+      _id: '$items.productId',
+      returnedQty: { $sum: '$items.quantity' }
+    }
+  }
+];
+
+/**
+ * Net pack sales by product for a calendar month (deliveries minus returns, by delivery/return month).
+ */
+const productPackSalesForMonth = async (companyId, query = {}, timeZone) => {
+  const monthYm = qScalar(query.month);
+  if (!monthYm || !monthYmPattern.test(monthYm)) {
+    throw new ApiError(400, 'month is required (YYYY-MM)');
+  }
+
+  const fiscalYearStart = query.fiscalYearStart ?? query.fiscalYear;
+  if (fiscalYearStart != null && fiscalYearStart !== '') {
+    const bounds = fiscalYearBounds(fiscalYearStart, timeZone);
+    if (!bounds.monthKeys.includes(monthYm)) {
+      throw new ApiError(400, 'month must fall within the selected fiscal year');
+    }
+  }
+
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const dateRange = monthDateRange(monthYm, tz);
+  const cid = objectId(companyId);
+
+  const [delivered, returned] = await Promise.all([
+    DeliveryRecord.aggregate(deliveredPacksByProductAgg(cid, dateRange)),
+    ReturnRecord.aggregate(returnedPacksByProductAgg(cid, dateRange))
+  ]);
+
+  const retMap = new Map(returned.map((r) => [String(r._id), Math.max(0, Number(r.returnedQty) || 0)]));
+  const productIds = new Set([
+    ...delivered.map((d) => String(d._id)),
+    ...returned.map((r) => String(r._id))
+  ]);
+
+  if (!productIds.size) {
+    return {
+      month: monthYm,
+      monthLabel: monthLabel(monthYm, tz),
+      rows: [],
+      totals: { netPacks: 0, paidPacks: 0, bonusPacks: 0, returnedPacks: 0 }
+    };
+  }
+
+  const delMap = new Map(
+    delivered.map((d) => {
+      const pid = String(d._id);
+      let paidQty = Math.max(0, Number(d.paidQty) || 0);
+      const bonusQty = Math.max(0, Number(d.bonusQty) || 0);
+      const physicalQty = Math.max(0, Number(d.physicalQty) || 0);
+      if (bonusQty === 0 && paidQty === 0 && physicalQty > 0) paidQty = physicalQty;
+      return [pid, { physicalQty, paidQty, bonusQty }];
+    })
+  );
+
+  const products = await Product.find({
+    companyId: cid,
+    _id: { $in: [...productIds].map(objectId) },
+    isDeleted: nd
+  })
+    .select('name composition')
+    .lean();
+  const productById = new Map(products.map((p) => [String(p._id), p]));
+
+  const rows = [];
+  let totalNet = 0;
+  let totalPaid = 0;
+  let totalBonus = 0;
+  let totalReturned = 0;
+
+  for (const pid of productIds) {
+    const del = delMap.get(pid) || { physicalQty: 0, paidQty: 0, bonusQty: 0 };
+    const returnedPacks = retMap.get(pid) || 0;
+    const netPacks = Math.max(0, del.physicalQty - returnedPacks);
+    if (del.physicalQty === 0 && returnedPacks === 0) continue;
+
+    totalNet += netPacks;
+    totalPaid += del.paidQty;
+    totalBonus += del.bonusQty;
+    totalReturned += returnedPacks;
+
+    const p = productById.get(pid);
+    rows.push({
+      productId: pid,
+      productName: p?.name || 'Unknown product',
+      composition: p?.composition ? String(p.composition) : '',
+      deliveredPacks: del.physicalQty,
+      paidPacks: del.paidQty,
+      bonusPacks: del.bonusQty,
+      returnedPacks,
+      netPacks
+    });
+  }
+
+  rows.sort((a, b) => b.netPacks - a.netPacks || String(a.productName).localeCompare(String(b.productName)));
+
+  return {
+    month: monthYm,
+    monthLabel: monthLabel(monthYm, tz),
+    rows,
+    totals: {
+      netPacks: totalNet,
+      paidPacks: totalPaid,
+      bonusPacks: totalBonus,
+      returnedPacks: totalReturned
     }
   };
 };
 
 module.exports = {
   fiscalYearBounds,
-  monthlySummary
+  monthlySummary,
+  productPackSalesForMonth
 };

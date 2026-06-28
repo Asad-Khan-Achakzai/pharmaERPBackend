@@ -15,6 +15,8 @@ const {
 const Supplier = require('../models/Supplier');
 const SupplierLedger = require('../models/SupplierLedger');
 const Expense = require('../models/Expense');
+const DoctorActivity = require('../models/DoctorActivity');
+const Doctor = require('../models/Doctor');
 const User = require('../models/User');
 const Account = require('../models/Account');
 const financialService = require('./financial.service');
@@ -837,6 +839,104 @@ const getEmployeeStatement = async (companyId, query, timeZone = 'UTC') => {
   };
 };
 
+const sumInvestedAmounts = (rows) => roundPKR(rows.reduce((s, r) => roundPKR(s + (r.investedAmount || 0)), 0));
+
+/**
+ * Doctor activity investments — cash paid out for doctor activities; running total is cumulative spend.
+ */
+const fetchActivityLedgerChronological = async (companyId, query, timeZone, cap = 5000) => {
+  const cid = new mongoose.Types.ObjectId(companyId);
+  const baseFilter = { companyId: cid, investedAmount: { $gt: 0 }, isDeleted: nd };
+  const doctorId = qScalar(query.doctorId);
+  if (doctorId) baseFilter.doctorId = new mongoose.Types.ObjectId(doctorId);
+
+  let openingBalance = 0;
+  const fromRaw = qScalar(query.from);
+  if (fromRaw) {
+    try {
+      const zone = businessTime.requireCompanyIanaZone(timeZone);
+      const t0 = queryDateBound(fromRaw, 'start', zone);
+      if (t0) {
+        const preRows = await DoctorActivity.find({ ...baseFilter, startDate: { $lt: t0 } })
+          .select('investedAmount')
+          .lean();
+        openingBalance = sumInvestedAmounts(preRows);
+      }
+    } catch {
+      /* invalid from */
+    }
+  }
+
+  const filter = { ...baseFilter };
+  applyDateFieldRangeFromQuery(filter, query, 'startDate', timeZone);
+  const docs = await DoctorActivity.find(filter)
+    .sort({ startDate: 1, _id: 1 })
+    .limit(cap)
+    .populate('doctorId', 'name')
+    .populate('moneyAccountId', 'name code')
+    .populate('voucherId', 'voucherNumber status')
+    .lean();
+
+  let running = openingBalance;
+  let debit = 0;
+  const entries = docs.map((row) => {
+    const d = roundPKR(row.investedAmount || 0);
+    debit = roundPKR(debit + d);
+    running = roundPKR(running + d);
+    const doctorName = row.doctorId?.name || 'Doctor';
+    const paidFrom = row.moneyAccountId?.name;
+    const voucherNo = row.voucherId?.voucherNumber;
+    let desc = `Doctor investment: ${doctorName}`;
+    if (paidFrom) desc += ` (paid from ${paidFrom})`;
+    if (voucherNo) desc += ` — ${voucherNo}`;
+    else if (!row.voucherId) desc += ' — not posted to finance';
+
+    return {
+      _id: row._id,
+      activityId: row._id,
+      date: row.startDate,
+      referenceType: 'DOCTOR_ACTIVITY',
+      category: row.status,
+      description: desc,
+      debit: d,
+      credit: 0,
+      runningBalance: running,
+      posted: Boolean(row.voucherId),
+      voucherNumber: voucherNo || null
+    };
+  });
+
+  const closingBalance = entries.length ? entries[entries.length - 1].runningBalance : openingBalance;
+  return {
+    entries,
+    openingBalance,
+    closingBalance,
+    totals: { debit, credit: 0 },
+    doctorId: doctorId || null
+  };
+};
+
+const getActivityLedger = async (companyId, query, timeZone = 'UTC') => {
+  const doctorId = qScalar(query.doctorId);
+  const stmt = await fetchActivityLedgerChronological(companyId, query, timeZone);
+  let doctorName = 'All doctors';
+  if (doctorId) {
+    const doc = await Doctor.findOne({
+      companyId: new mongoose.Types.ObjectId(companyId),
+      _id: new mongoose.Types.ObjectId(doctorId),
+      isDeleted: nd
+    })
+      .select('name')
+      .lean();
+    doctorName = doc?.name || 'Selected doctor';
+  }
+  return {
+    doctorId: doctorId || null,
+    doctorName,
+    ...stmt
+  };
+};
+
 module.exports = {
   list,
   getByPharmacy,
@@ -846,5 +946,6 @@ module.exports = {
   getClientStatement,
   getSupplierStatement,
   getExpenseLedger,
-  getEmployeeStatement
+  getEmployeeStatement,
+  getActivityLedger
 };
