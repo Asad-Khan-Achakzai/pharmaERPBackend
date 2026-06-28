@@ -12,6 +12,9 @@ const DoctorActivity = require('../models/DoctorActivity');
 const Expense = require('../models/Expense');
 const Ledger = require('../models/Ledger');
 const Product = require('../models/Product');
+const Order = require('../models/Order');
+const Pharmacy = require('../models/Pharmacy');
+const XLSX = require('xlsx');
 const { roundPKR } = require('../utils/currency');
 const ApiError = require('../utils/ApiError');
 const businessTime = require('../utils/businessTime');
@@ -95,6 +98,174 @@ const defaultFiscalYearStart = (timeZone) => {
   const now = DateTime.now().setZone(z);
   return now.month >= 8 ? now.year : now.year - 1;
 };
+
+/** Infer bonus qty from delivery line fields (matches Excel export logic). */
+const bonusQtyExpr = (qtyField, paidField, bonusField) => ({
+  $cond: [
+    { $ne: [{ $type: bonusField }, 'missing'] },
+    { $ifNull: [bonusField, 0] },
+    {
+      $max: [
+        0,
+        {
+          $subtract: [qtyField, { $ifNull: [paidField, qtyField] }]
+        }
+      ]
+    }
+  ]
+});
+
+/** Clinic discount on paid packs + full TP value of bonus/free packs. */
+const totalLineDiscountExpr = (tpAtTime, clinicDiscount, paidQty, bonusQty) => ({
+  $add: [
+    {
+      $multiply: [
+        { $multiply: [tpAtTime, paidQty] },
+        { $divide: [{ $ifNull: [clinicDiscount, 0] }, 100] }
+      ]
+    },
+    { $multiply: [tpAtTime, bonusQty] }
+  ]
+});
+
+const orderItemForProduct = {
+  $arrayElemAt: [
+    {
+      $filter: {
+        input: '$o.items',
+        as: 'oi',
+        cond: { $eq: ['$$oi.productId', '$items.productId'] }
+      }
+    },
+    0
+  ]
+};
+
+/** Discount by delivery month: Σ (clinic % on paid qty + TP × bonus qty) per line. */
+const deliveryDiscountByMonthPipeline = (companyId, dateRange, ymOn) => [
+  { $match: { companyId, isDeleted: nd, deliveredAt: dateRange } },
+  { $unwind: '$items' },
+  { $lookup: { from: 'orders', localField: 'orderId', foreignField: '_id', as: 'o' } },
+  { $unwind: '$o' },
+  {
+    $addFields: {
+      orderItem: orderItemForProduct,
+      paidQty: { $ifNull: ['$items.paidQuantity', '$items.quantity'] },
+      bonusQty: bonusQtyExpr('$items.quantity', '$items.paidQuantity', '$items.bonusQuantity')
+    }
+  },
+  {
+    $addFields: {
+      lineDiscount: totalLineDiscountExpr(
+        { $ifNull: ['$orderItem.tpAtTime', 0] },
+        '$orderItem.clinicDiscount',
+        '$paidQty',
+        '$bonusQty'
+      )
+    }
+  },
+  {
+    $group: {
+      _id: ymOn('$deliveredAt'),
+      discount: { $sum: '$lineDiscount' }
+    }
+  }
+];
+
+/** Return discount reversal: proportional share of delivery line total discount (clinic + bonus). */
+const returnDiscountByMonthPipeline = (companyId, dateRange, ymOn) => [
+  { $match: { companyId, isDeleted: nd, returnedAt: dateRange } },
+  {
+    $lookup: {
+      from: 'deliveryrecords',
+      let: { oid: '$orderId', cid: '$companyId' },
+      pipeline: [
+        {
+          $match: {
+            $expr: {
+              $and: [{ $eq: ['$orderId', '$$oid'] }, { $eq: ['$companyId', '$$cid'] }]
+            },
+            isDeleted: { $ne: true }
+          }
+        },
+        { $sort: { deliveredAt: -1 } }
+      ],
+      as: 'deliveries'
+    }
+  },
+  { $lookup: { from: 'orders', localField: 'orderId', foreignField: '_id', as: 'o' } },
+  { $unwind: '$o' },
+  { $unwind: '$items' },
+  {
+    $addFields: {
+      orderItem: orderItemForProduct,
+      deliveryLine: {
+        $let: {
+          vars: {
+            lines: {
+              $reduce: {
+                input: '$deliveries',
+                initialValue: [],
+                in: { $concatArrays: ['$$value', { $ifNull: ['$$this.items', []] }] }
+              }
+            }
+          },
+          in: {
+            $arrayElemAt: [
+              {
+                $filter: {
+                  input: '$$lines',
+                  as: 'dl',
+                  cond: { $eq: ['$$dl.productId', '$items.productId'] }
+                }
+              },
+              0
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    $addFields: {
+      tpAtTime: { $ifNull: ['$orderItem.tpAtTime', 0] },
+      clinicDiscount: { $ifNull: ['$orderItem.clinicDiscount', 0] },
+      deliveryPhysicalQty: { $max: [{ $ifNull: ['$deliveryLine.quantity', 0] }, 1] },
+      deliveryPaidQty: {
+        $ifNull: ['$deliveryLine.paidQuantity', { $ifNull: ['$deliveryLine.quantity', 0] }]
+      },
+      deliveryBonusQty: bonusQtyExpr(
+        { $ifNull: ['$deliveryLine.quantity', 0] },
+        '$deliveryLine.paidQuantity',
+        '$deliveryLine.bonusQuantity'
+      )
+    }
+  },
+  {
+    $addFields: {
+      deliveryLineTotalDiscount: {
+        $cond: [
+          { $gt: [{ $ifNull: ['$deliveryLine.quantity', 0] }, 0] },
+          totalLineDiscountExpr('$tpAtTime', '$clinicDiscount', '$deliveryPaidQty', '$deliveryBonusQty'),
+          totalLineDiscountExpr('$tpAtTime', '$clinicDiscount', '$items.quantity', 0)
+        ]
+      }
+    }
+  },
+  {
+    $addFields: {
+      returnDiscount: {
+        $multiply: [{ $divide: ['$deliveryLineTotalDiscount', '$deliveryPhysicalQty'] }, '$items.quantity']
+      }
+    }
+  },
+  {
+    $group: {
+      _id: ymOn('$returnedAt'),
+      discount: { $sum: '$returnDiscount' }
+    }
+  }
+];
 
 const monthlySummary = async (companyId, query = {}, timeZone) => {
   const rawStart = query.fiscalYearStart ?? query.fiscalYear;
@@ -273,120 +444,8 @@ const monthlySummary = async (companyId, query = {}, timeZone) => {
         }
       }
     ]),
-    DeliveryRecord.aggregate([
-      { $match: { companyId: cid, isDeleted: nd, deliveredAt: dateRange } },
-      {
-        $group: {
-          _id: ymOn('$deliveredAt'),
-          discount: {
-            $sum: {
-              $subtract: [
-                { $ifNull: ['$tpSubtotal', 0] },
-                { $ifNull: ['$pharmacyNetPayable', { $ifNull: ['$totalAmount', 0] }] }
-              ]
-            }
-          }
-        }
-      }
-    ]),
-    ReturnRecord.aggregate([
-      { $match: { companyId: cid, isDeleted: nd, returnedAt: dateRange } },
-      {
-        $lookup: {
-          from: 'deliveryrecords',
-          let: { oid: '$orderId', cid: '$companyId' },
-          pipeline: [
-            {
-              $match: {
-                $expr: {
-                  $and: [{ $eq: ['$orderId', '$$oid'] }, { $eq: ['$companyId', '$$cid'] }]
-                },
-                isDeleted: { $ne: true }
-              }
-            },
-            { $sort: { deliveredAt: -1 } }
-          ],
-          as: 'deliveries'
-        }
-      },
-      { $lookup: { from: 'orders', localField: 'orderId', foreignField: '_id', as: 'o' } },
-      { $unwind: '$o' },
-      { $unwind: '$items' },
-      {
-        $addFields: {
-          orderItem: {
-            $arrayElemAt: [
-              {
-                $filter: {
-                  input: '$o.items',
-                  as: 'oi',
-                  cond: { $eq: ['$$oi.productId', '$items.productId'] }
-                }
-              },
-              0
-            ]
-          },
-          deliveryLine: {
-            $let: {
-              vars: {
-                lines: {
-                  $reduce: {
-                    input: '$deliveries',
-                    initialValue: [],
-                    in: { $concatArrays: ['$$value', { $ifNull: ['$$this.items', []] }] }
-                  }
-                }
-              },
-              in: {
-                $arrayElemAt: [
-                  {
-                    $filter: {
-                      input: '$$lines',
-                      as: 'dl',
-                      cond: { $eq: ['$$dl.productId', '$items.productId'] }
-                    }
-                  },
-                  0
-                ]
-              }
-            }
-          }
-        }
-      },
-      {
-        $group: {
-          _id: ymOn('$returnedAt'),
-          discount: {
-            $sum: {
-              $subtract: [
-                {
-                  $multiply: [{ $ifNull: ['$orderItem.tpAtTime', 0] }, '$items.quantity']
-                },
-                {
-                  $cond: [
-                    { $gt: [{ $ifNull: ['$deliveryLine.linePharmacyNet', 0] }, 0] },
-                    {
-                      $multiply: [
-                        {
-                          $divide: [
-                            '$deliveryLine.linePharmacyNet',
-                            { $max: [{ $ifNull: ['$deliveryLine.quantity', 1] }, 1] }
-                          ]
-                        },
-                        '$items.quantity'
-                      ]
-                    },
-                    {
-                      $multiply: ['$items.quantity', { $ifNull: ['$items.finalSellingPrice', 0] }]
-                    }
-                  ]
-                }
-              ]
-            }
-          }
-        }
-      }
-    ]),
+    DeliveryRecord.aggregate(deliveryDiscountByMonthPipeline(cid, dateRange, ymOn)),
+    ReturnRecord.aggregate(returnDiscountByMonthPipeline(cid, dateRange, ymOn)),
     Payroll.aggregate([
       {
         $match: {
@@ -508,7 +567,8 @@ const monthlySummary = async (companyId, query = {}, timeZone) => {
         castingCost:
           'Order line castingAtTime × delivered qty (delivery month) minus castingAtTime × returned qty (return month)',
         distribution: 'DeliveryRecord.deliveredAt minus return commission reversals (Ledger.date)',
-        discount: 'Delivery tpSubtotal − pharmacyNetPayable; returns reduce by returned discount',
+        discount:
+          'Per delivery line: (TP × paid qty × clinicDiscount%) + (TP × bonus qty); returns reduce proportionally',
         expenses: 'Payroll.paidOn (PAID) + Expense.date (category ≠ SALARY)',
         marketing: 'DoctorActivity.createdAt (investedAmount)'
       },
@@ -679,8 +739,384 @@ const productPackSalesForMonth = async (companyId, query = {}, timeZone) => {
   };
 };
 
+const sumDeliveryUnits = (items = []) => {
+  let totalUnits = 0;
+  let paidUnits = 0;
+  let bonusUnits = 0;
+  for (const item of items) {
+    const physical = Number(item.quantity) || 0;
+    const paid = item.paidQuantity != null ? Number(item.paidQuantity) || 0 : physical;
+    const bonus =
+      item.bonusQuantity != null ? Number(item.bonusQuantity) || 0 : Math.max(0, physical - paid);
+    totalUnits += physical;
+    paidUnits += paid;
+    bonusUnits += bonus;
+  }
+  return { totalUnits, paidUnits, bonusUnits };
+};
+
+const lineItemUnitsAndDiscount = (order, item) => {
+  const oi = order?.items?.find((i) => String(i.productId) === String(item.productId));
+  const tpAtTime = Number(oi?.tpAtTime) || 0;
+  const clinicPct = Number(oi?.clinicDiscount) || 0;
+  const physical = Number(item.quantity) || 0;
+  const paid = item.paidQuantity != null ? Number(item.paidQuantity) || 0 : physical;
+  const bonus =
+    item.bonusQuantity != null ? Number(item.bonusQuantity) || 0 : Math.max(0, physical - paid);
+  const clinicDisc = roundPKR((tpAtTime * paid * clinicPct) / 100);
+  const bonusDisc = roundPKR(tpAtTime * bonus);
+  return {
+    physical,
+    paid,
+    bonus,
+    tpAtTime,
+    clinicPct,
+    clinicDisc,
+    bonusDisc,
+    totalDisc: roundPKR(clinicDisc + bonusDisc),
+    tpLineTotal: roundPKR(item.tpLineTotal ?? tpAtTime * physical),
+    linePharmacyNet: roundPKR(item.linePharmacyNet ?? 0)
+  };
+};
+
+const sumDeliveryDiscountBreakdown = (order, deliveryItems = []) => {
+  let clinicDiscount = 0;
+  let bonusDiscount = 0;
+  for (const item of deliveryItems) {
+    const line = lineItemUnitsAndDiscount(order, item);
+    clinicDiscount += line.clinicDisc;
+    bonusDiscount += line.bonusDisc;
+  }
+  clinicDiscount = roundPKR(clinicDiscount);
+  bonusDiscount = roundPKR(bonusDiscount);
+  return {
+    clinicDiscount,
+    bonusDiscount,
+    totalDiscount: roundPKR(clinicDiscount + bonusDiscount)
+  };
+};
+
+/**
+ * Excel workbook for a calendar month: delivery summary, product line detail, and product totals.
+ */
+const buildDeliveryDetailsExcelBuffer = async (companyId, query = {}, timeZone) => {
+  const monthYm = qScalar(query.month);
+  if (!monthYm || !monthYmPattern.test(monthYm)) {
+    throw new ApiError(400, 'month is required (YYYY-MM)');
+  }
+
+  const fiscalYearStart = query.fiscalYearStart ?? query.fiscalYear;
+  if (fiscalYearStart != null && fiscalYearStart !== '') {
+    const bounds = fiscalYearBounds(fiscalYearStart, timeZone);
+    if (!bounds.monthKeys.includes(monthYm)) {
+      throw new ApiError(400, 'month must fall within the selected fiscal year');
+    }
+  }
+
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const dateRange = monthDateRange(monthYm, tz);
+  const cid = objectId(companyId);
+  const ndFilter = { isDeleted: nd };
+
+  const deliveries = await DeliveryRecord.find({
+    companyId: cid,
+    ...ndFilter,
+    deliveredAt: dateRange
+  })
+    .sort({ deliveredAt: 1 })
+    .lean();
+
+  const orderIds = deliveries.map((d) => d.orderId);
+  const orders = orderIds.length
+    ? await Order.find({ _id: { $in: orderIds } }).lean()
+    : [];
+  const orderMap = Object.fromEntries(orders.map((o) => [String(o._id), o]));
+
+  const pharmacyIds = [...new Set(orders.map((o) => String(o.pharmacyId)).filter(Boolean))];
+  const pharmacies = pharmacyIds.length
+    ? await Pharmacy.find({
+        _id: { $in: pharmacyIds.map(objectId) }
+      })
+        .select('name')
+        .lean()
+    : [];
+  const pharmacyMap = Object.fromEntries(pharmacies.map((p) => [String(p._id), p.name]));
+
+  const productIdSet = new Set();
+  for (const d of deliveries) {
+    for (const item of d.items || []) {
+      if (item.productId) productIdSet.add(String(item.productId));
+    }
+  }
+  const products = productIdSet.size
+    ? await Product.find({
+        companyId: cid,
+        _id: { $in: [...productIdSet].map(objectId) },
+        isDeleted: nd
+      })
+        .select('name composition')
+        .lean()
+    : [];
+  const productMap = Object.fromEntries(products.map((p) => [String(p._id), p]));
+
+  const productLineRows = [];
+  const productSummaryMap = new Map();
+
+  for (const d of deliveries) {
+    const order = orderMap[String(d.orderId)];
+    const pharmacyName = pharmacyMap[String(order?.pharmacyId)] || '';
+    const deliveredAt = DateTime.fromJSDate(new Date(d.deliveredAt))
+      .setZone(tz)
+      .toFormat('yyyy-MM-dd HH:mm');
+    const invoiceNumber = d.invoiceNumber || '';
+
+    for (const item of d.items || []) {
+      const line = lineItemUnitsAndDiscount(order, item);
+      const pid = String(item.productId);
+      const prod = productMap[pid];
+      const productName = prod?.name || 'Unknown product';
+      const composition = prod?.composition ? String(prod.composition) : '';
+
+      productLineRows.push({
+        'Invoice Number': invoiceNumber,
+        'Delivered At': deliveredAt,
+        Pharmacy: pharmacyName,
+        Product: productName,
+        Composition: composition,
+        'Total Units': line.physical,
+        'Paid Units': line.paid,
+        'Bonus Units': line.bonus,
+        'TP at Time (PKR)': line.tpAtTime,
+        'Clinic Discount %': line.clinicPct,
+        'tpLineTotal (PKR)': line.tpLineTotal,
+        'linePharmacyNet (PKR)': line.linePharmacyNet,
+        'Clinic Discount (PKR)': line.clinicDisc,
+        'Bonus Discount (PKR)': line.bonusDisc,
+        'Total Line Discount (PKR)': line.totalDisc
+      });
+
+      const prev = productSummaryMap.get(pid) || {
+        productName,
+        composition,
+        totalUnits: 0,
+        paidUnits: 0,
+        bonusUnits: 0,
+        tpLineTotal: 0,
+        totalDiscount: 0
+      };
+      prev.totalUnits += line.physical;
+      prev.paidUnits += line.paid;
+      prev.bonusUnits += line.bonus;
+      prev.tpLineTotal = roundPKR(prev.tpLineTotal + line.tpLineTotal);
+      prev.totalDiscount = roundPKR(prev.totalDiscount + line.totalDisc);
+      productSummaryMap.set(pid, prev);
+    }
+  }
+
+  const rows = deliveries.map((d, idx) => {
+    const order = orderMap[String(d.orderId)];
+    const tpSubtotal = roundPKR(d.tpSubtotal ?? 0);
+    const pharmacyNet = roundPKR(d.pharmacyNetPayable ?? d.totalAmount ?? 0);
+    const units = sumDeliveryUnits(d.items);
+    const disc = sumDeliveryDiscountBreakdown(order, d.items);
+    const totalDiscountPct = tpSubtotal > 0 ? roundPKR((disc.totalDiscount / tpSubtotal) * 100) : 0;
+
+    return {
+      '#': idx + 1,
+      'Invoice Number': d.invoiceNumber || '',
+      'Order ID': String(d.orderId),
+      'Delivery ID': String(d._id),
+      Pharmacy: pharmacyMap[String(order?.pharmacyId)] || '',
+      'Delivered At': DateTime.fromJSDate(new Date(d.deliveredAt)).setZone(tz).toFormat('yyyy-MM-dd HH:mm'),
+      'Line Count': (d.items || []).length,
+      'Total Units': units.totalUnits,
+      'Paid Units': units.paidUnits,
+      'Bonus Units': units.bonusUnits,
+      'tpSubtotal (PKR)': tpSubtotal,
+      'pharmacyNetPayable (PKR)': pharmacyNet,
+      'Clinic Discount (PKR)': disc.clinicDiscount,
+      'Bonus Discount (PKR)': disc.bonusDiscount,
+      'Total Discount (PKR)': disc.totalDiscount,
+      'Total Discount %': totalDiscountPct,
+      'Distributor Share (PKR)': roundPKR(d.distributorShareTotal ?? 0),
+      'Company Share (PKR)': roundPKR(d.companyShareTotal ?? 0)
+    };
+  });
+
+  const totals = {
+    '#': '',
+    'Invoice Number': 'TOTAL',
+    'Order ID': `${rows.length} deliveries`,
+    'Delivery ID': '',
+    Pharmacy: '',
+    'Delivered At': '',
+    'Line Count': rows.reduce((s, r) => s + r['Line Count'], 0),
+    'Total Units': rows.reduce((s, r) => s + r['Total Units'], 0),
+    'Paid Units': rows.reduce((s, r) => s + r['Paid Units'], 0),
+    'Bonus Units': rows.reduce((s, r) => s + r['Bonus Units'], 0),
+    'tpSubtotal (PKR)': roundPKR(rows.reduce((s, r) => s + r['tpSubtotal (PKR)'], 0)),
+    'pharmacyNetPayable (PKR)': roundPKR(rows.reduce((s, r) => s + r['pharmacyNetPayable (PKR)'], 0)),
+    'Clinic Discount (PKR)': roundPKR(rows.reduce((s, r) => s + r['Clinic Discount (PKR)'], 0)),
+    'Bonus Discount (PKR)': roundPKR(rows.reduce((s, r) => s + r['Bonus Discount (PKR)'], 0)),
+    'Total Discount (PKR)': roundPKR(rows.reduce((s, r) => s + r['Total Discount (PKR)'], 0)),
+    'Total Discount %': '',
+    'Distributor Share (PKR)': roundPKR(rows.reduce((s, r) => s + r['Distributor Share (PKR)'], 0)),
+    'Company Share (PKR)': roundPKR(rows.reduce((s, r) => s + r['Company Share (PKR)'], 0))
+  };
+
+  const productLineTotals = {
+    'Invoice Number': 'TOTAL',
+    'Delivered At': `${productLineRows.length} lines`,
+    Pharmacy: '',
+    Product: '',
+    Composition: '',
+    'Total Units': productLineRows.reduce((s, r) => s + r['Total Units'], 0),
+    'Paid Units': productLineRows.reduce((s, r) => s + r['Paid Units'], 0),
+    'Bonus Units': productLineRows.reduce((s, r) => s + r['Bonus Units'], 0),
+    'TP at Time (PKR)': '',
+    'Clinic Discount %': '',
+    'tpLineTotal (PKR)': roundPKR(productLineRows.reduce((s, r) => s + r['tpLineTotal (PKR)'], 0)),
+    'linePharmacyNet (PKR)': roundPKR(
+      productLineRows.reduce((s, r) => s + r['linePharmacyNet (PKR)'], 0)
+    ),
+    'Clinic Discount (PKR)': roundPKR(
+      productLineRows.reduce((s, r) => s + r['Clinic Discount (PKR)'], 0)
+    ),
+    'Bonus Discount (PKR)': roundPKR(
+      productLineRows.reduce((s, r) => s + r['Bonus Discount (PKR)'], 0)
+    ),
+    'Total Line Discount (PKR)': roundPKR(
+      productLineRows.reduce((s, r) => s + r['Total Line Discount (PKR)'], 0)
+    )
+  };
+
+  const productSummaryRows = [...productSummaryMap.entries()]
+    .map(([productId, p]) => ({ productId, ...p }))
+    .sort((a, b) => a.productName.localeCompare(b.productName))
+    .map((p, idx) => ({
+      '#': idx + 1,
+      Product: p.productName,
+      Composition: p.composition,
+      'Total Units': p.totalUnits,
+      'Paid Units': p.paidUnits,
+      'Bonus Units': p.bonusUnits,
+      'tpLineTotal (PKR)': p.tpLineTotal,
+      'Total Discount (PKR)': p.totalDiscount
+    }));
+
+  const productSummaryTotals = {
+    '#': '',
+    Product: 'TOTAL',
+    Composition: `${productSummaryRows.length} products`,
+    'Total Units': productSummaryRows.reduce((s, r) => s + r['Total Units'], 0),
+    'Paid Units': productSummaryRows.reduce((s, r) => s + r['Paid Units'], 0),
+    'Bonus Units': productSummaryRows.reduce((s, r) => s + r['Bonus Units'], 0),
+    'tpLineTotal (PKR)': roundPKR(productSummaryRows.reduce((s, r) => s + r['tpLineTotal (PKR)'], 0)),
+    'Total Discount (PKR)': roundPKR(
+      productSummaryRows.reduce((s, r) => s + r['Total Discount (PKR)'], 0)
+    )
+  };
+
+  const wb = XLSX.utils.book_new();
+
+  const deliverySheetData = rows.length
+    ? [...rows, totals]
+    : [
+        {
+          '#': '',
+          'Invoice Number': `No deliveries recorded for ${monthLabel(monthYm, tz)}`,
+          'Order ID': '',
+          'Delivery ID': '',
+          Pharmacy: '',
+          'Delivered At': '',
+          'Line Count': 0,
+          'Total Units': 0,
+          'Paid Units': 0,
+          'Bonus Units': 0,
+          'tpSubtotal (PKR)': 0,
+          'pharmacyNetPayable (PKR)': 0,
+          'Clinic Discount (PKR)': 0,
+          'Bonus Discount (PKR)': 0,
+          'Total Discount (PKR)': 0,
+          'Total Discount %': 0,
+          'Distributor Share (PKR)': 0,
+          'Company Share (PKR)': 0
+        },
+        totals
+      ];
+  const wsDeliveries = XLSX.utils.json_to_sheet(deliverySheetData);
+  wsDeliveries['!cols'] = [
+    { wch: 5 },
+    { wch: 22 },
+    { wch: 26 },
+    { wch: 26 },
+    { wch: 28 },
+    { wch: 18 },
+    { wch: 10 },
+    { wch: 12 },
+    { wch: 12 },
+    { wch: 12 },
+    { wch: 16 },
+    { wch: 22 },
+    { wch: 18 },
+    { wch: 18 },
+    { wch: 18 },
+    { wch: 16 },
+    { wch: 20 },
+    { wch: 18 }
+  ];
+  XLSX.utils.book_append_sheet(wb, wsDeliveries, 'Deliveries');
+
+  const wsProductLines = XLSX.utils.json_to_sheet(
+    productLineRows.length ? [...productLineRows, productLineTotals] : [productLineTotals]
+  );
+  wsProductLines['!cols'] = [
+    { wch: 22 },
+    { wch: 18 },
+    { wch: 28 },
+    { wch: 32 },
+    { wch: 24 },
+    { wch: 12 },
+    { wch: 12 },
+    { wch: 12 },
+    { wch: 14 },
+    { wch: 16 },
+    { wch: 16 },
+    { wch: 20 },
+    { wch: 18 },
+    { wch: 18 },
+    { wch: 20 }
+  ];
+  XLSX.utils.book_append_sheet(wb, wsProductLines, 'Product lines');
+
+  const wsProductSummary = XLSX.utils.json_to_sheet(
+    productSummaryRows.length ? [...productSummaryRows, productSummaryTotals] : [productSummaryTotals]
+  );
+  wsProductSummary['!cols'] = [
+    { wch: 5 },
+    { wch: 32 },
+    { wch: 24 },
+    { wch: 12 },
+    { wch: 12 },
+    { wch: 12 },
+    { wch: 16 },
+    { wch: 18 }
+  ];
+  XLSX.utils.book_append_sheet(wb, wsProductSummary, 'Product summary');
+
+  const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' });
+  return {
+    buffer,
+    filename: `delivery-details-${monthYm}.xlsx`,
+    month: monthYm,
+    monthLabel: monthLabel(monthYm, tz),
+    deliveryCount: rows.length
+  };
+};
+
 module.exports = {
   fiscalYearBounds,
   monthlySummary,
-  productPackSalesForMonth
+  productPackSalesForMonth,
+  buildDeliveryDetailsExcelBuffer
 };

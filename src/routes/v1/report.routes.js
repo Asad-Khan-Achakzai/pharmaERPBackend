@@ -89,6 +89,12 @@ router.get(
   validateQuery(monthlySummaryProductPacksQuerySchema),
   c.monthlySummaryProductPacks
 );
+router.get(
+  '/monthly-summary/delivery-details',
+  checkPermission('reports.view'),
+  validateQuery(monthlySummaryProductPacksQuerySchema),
+  c.monthlySummaryDeliveryDetailsExcel
+);
 
 /** MRep field KPIs & coverage (Phase 3 — self, team subtree, or explicit rep when allowed). */
 router.get(
