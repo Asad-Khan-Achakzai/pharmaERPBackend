@@ -3,7 +3,9 @@ const WeeklyPlan = require('../models/WeeklyPlan');
 const PlanItem = require('../models/PlanItem');
 const Company = require('../models/Company');
 const User = require('../models/User');
+const CallPoint = require('../models/CallPoint');
 const ApiError = require('../utils/ApiError');
+const { CP_DAY_KEYS } = require('../constants/enums');
 const { parsePagination } = require('../utils/pagination');
 const auditService = require('./audit.service');
 const planItemService = require('./planItem.service');
@@ -15,6 +17,51 @@ const { DateTime } = require('luxon');
 const { PLAN_ITEM_STATUS, WEEKLY_PLAN_STATUS } = require('../constants/enums');
 const { resolveSubtreeUserIds } = require('../utils/teamScope');
 const { applyOrderMedicalRepScope, assertOrderVisibleToUser } = require('../utils/orderScope.util');
+
+/**
+ * Validate & normalize a per-day CP selection. Each provided id must reference an
+ * ACTIVE CP in the caller's company; empty strings / nulls clear that day.
+ * Returns a clean { day: ObjectId|null } object, or undefined when nothing supplied.
+ */
+const normalizeCpByDay = async (companyId, raw) => {
+  if (raw === undefined) return undefined;
+  if (raw === null) return null;
+
+  const out = {};
+  const idsToCheck = new Set();
+  for (const day of CP_DAY_KEYS) {
+    const val = raw[day];
+    if (val === undefined) continue;
+    if (val === null || val === '') {
+      out[day] = null;
+      continue;
+    }
+    if (!mongoose.Types.ObjectId.isValid(val)) {
+      throw new ApiError(400, `Invalid CP id for ${day}`);
+    }
+    out[day] = val;
+    idsToCheck.add(String(val));
+  }
+
+  if (idsToCheck.size) {
+    const found = await CallPoint.find({
+      _id: { $in: [...idsToCheck] },
+      companyId,
+      isActive: true,
+      isDeleted: { $ne: true }
+    })
+      .select('_id')
+      .lean();
+    const valid = new Set(found.map((c) => String(c._id)));
+    for (const id of idsToCheck) {
+      if (!valid.has(id)) {
+        throw new ApiError(400, 'One or more selected CPs are invalid or inactive');
+      }
+    }
+  }
+
+  return out;
+};
 
 const list = async (companyId, query, timeZone = 'UTC', opts = {}) => {
   const { page, limit, skip, sort, search } = parsePagination(query);
@@ -70,8 +117,11 @@ const create = async (companyId, data, reqUser, opts = {}) => {
     approvalRequired = !!(company && company.weeklyPlanApprovalRequired);
   }
 
+  const cpByDay = await normalizeCpByDay(companyId, data.cpByDay);
+
   const plan = await WeeklyPlan.create({
     ...data,
+    cpByDay: cpByDay === null ? undefined : cpByDay,
     approvalRequired,
     companyId,
     medicalRepId: targetRepId,
@@ -106,7 +156,26 @@ const update = async (companyId, id, data, reqUser, timeZone, opts = {}) => {
 
   const before = plan.toObject();
   const checkInConfigTouched = Object.prototype.hasOwnProperty.call(data, 'checkInConfiguration');
-  Object.assign(plan, data);
+  const cpByDayTouched = Object.prototype.hasOwnProperty.call(data, 'cpByDay');
+  let normalizedCpByDay;
+  if (cpByDayTouched) {
+    normalizedCpByDay = await normalizeCpByDay(companyId, data.cpByDay);
+  }
+  const rest = { ...data };
+  delete rest.cpByDay;
+  Object.assign(plan, rest);
+  if (cpByDayTouched) {
+    if (normalizedCpByDay === null) {
+      plan.cpByDay = undefined;
+    } else {
+      /** Merge supplied days onto existing selection so partial updates don't clear other days. */
+      const merged = { ...(plan.cpByDay ? plan.cpByDay.toObject?.() ?? plan.cpByDay : {}) };
+      for (const [day, val] of Object.entries(normalizedCpByDay)) {
+        merged[day] = val;
+      }
+      plan.cpByDay = merged;
+    }
+  }
   plan.updatedBy = reqUser.userId;
   await plan.save();
   if (checkInConfigTouched) {
@@ -131,10 +200,11 @@ const getByRep = async (companyId, repId, opts = {}) => {
 
 const getById = async (companyId, id, timeZone, opts = {}) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
-  const plan = await WeeklyPlan.findOne({ _id: id, companyId, isDeleted: { $ne: true } }).populate(
-    'medicalRepId',
-    'name email'
-  );
+  const plan = await WeeklyPlan.findOne({ _id: id, companyId, isDeleted: { $ne: true } })
+    .populate('medicalRepId', 'name email')
+    .populate(
+      CP_DAY_KEYS.map((day) => ({ path: `cpByDay.${day}`, select: 'name latitude longitude isActive' }))
+    );
   if (!plan) throw new ApiError(404, 'Weekly plan not found');
   assertOrderVisibleToUser(plan, opts.visibleRepIds);
   const planItems = await planItemService.listByPlan(companyId, id);

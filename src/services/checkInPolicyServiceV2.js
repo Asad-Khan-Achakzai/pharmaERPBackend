@@ -1,13 +1,16 @@
 const mongoose = require('mongoose');
+const { DateTime } = require('luxon');
 const Attendance = require('../models/Attendance');
 const Company = require('../models/Company');
 const WeeklyPlan = require('../models/WeeklyPlan');
 const PlanItem = require('../models/PlanItem');
 const Doctor = require('../models/Doctor');
+const CallPoint = require('../models/CallPoint');
 const {
   ATTENDANCE_SYSTEM_MODE,
   ATTENDANCE_LOCATION_STATUS,
   CHECKIN_POLICY_TYPE,
+  CP_DAY_KEYS,
   WEEKLY_PLAN_STATUS,
   PLAN_ITEM_TYPE
 } = require('../constants/enums');
@@ -52,7 +55,7 @@ const findActiveWeeklyPlanForDay = async (companyId, employeeId, businessYmd, tz
     status: WEEKLY_PLAN_STATUS.ACTIVE,
     isDeleted: { $ne: true }
   })
-    .select('weekStartDate weekEndDate checkInConfiguration')
+    .select('weekStartDate weekEndDate checkInConfiguration cpByDay')
     .lean();
 
   for (const plan of plans) {
@@ -108,6 +111,40 @@ const resolveFirstPlannedVisitPoint = async (
   return resolveDoctorPoint(companyId, item.doctorId, fallbackRadius);
 };
 
+/**
+ * Resolve the CP (call point) selected for the given business day on a weekly plan.
+ * Reads cpByDay[<weekday>] and loads the active CallPoint's coordinates. Radius is
+ * inherited from the company default (distance/radius logic is otherwise unchanged).
+ */
+const resolveDayCallPoint = async (companyId, weeklyPlan, businessYmd, fallbackRadius) => {
+  if (!weeklyPlan?.cpByDay) return null;
+  const dt = DateTime.fromISO(businessYmd);
+  if (!dt.isValid) return null;
+  const dayKey = CP_DAY_KEYS[dt.weekday - 1];
+  const cpId = weeklyPlan.cpByDay[dayKey];
+  if (!cpId) return null;
+
+  const cp = await CallPoint.findOne({
+    _id: cpId,
+    companyId,
+    isActive: true,
+    isDeleted: { $ne: true }
+  })
+    .select('name latitude longitude')
+    .lean();
+  if (!cp || typeof cp.latitude !== 'number' || typeof cp.longitude !== 'number') {
+    return null;
+  }
+  return {
+    latitude: cp.latitude,
+    longitude: cp.longitude,
+    radiusMeters: fallbackRadius,
+    locationName: String(cp.name || 'CP').trim() || 'CP',
+    policyType: CHECKIN_POLICY_TYPE.CUSTOM_LOCATION,
+    source: 'WEEKLY_PLAN_CP'
+  };
+};
+
 const resolveActiveCheckInPoint = async ({
   company,
   employeeId,
@@ -121,6 +158,14 @@ const resolveActiveCheckInPoint = async ({
   const fallbackRadius = companyDefault?.radiusMeters ?? DEFAULT_RADIUS_METERS;
 
   const weeklyPlan = await findActiveWeeklyPlanForDay(company._id, employeeId, businessYmd, tz);
+
+  /**
+   * Highest priority: the CP selected for today's weekday in the weekly plan.
+   * Only the coordinate source changes; radius + distance evaluation stay the same.
+   */
+  const dayCp = await resolveDayCallPoint(company._id, weeklyPlan, businessYmd, fallbackRadius);
+  if (dayCp) return dayCp;
+
   const config = weeklyPlan?.checkInConfiguration;
 
   if (!config || !config.policyType) {

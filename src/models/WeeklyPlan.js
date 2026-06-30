@@ -25,6 +25,24 @@ const checkInConfigurationSchema = new mongoose.Schema(
   { _id: false }
 );
 
+/**
+ * Per-day CP (call point) selection. Each weekday references a CallPoint from the
+ * company's Admin-managed CP master. Used as the highest-priority source for the
+ * daily check-in distance validation (resolved by weekday of the check-in date).
+ */
+const cpByDaySchema = new mongoose.Schema(
+  {
+    monday: { type: mongoose.Schema.Types.ObjectId, ref: 'CallPoint', default: null },
+    tuesday: { type: mongoose.Schema.Types.ObjectId, ref: 'CallPoint', default: null },
+    wednesday: { type: mongoose.Schema.Types.ObjectId, ref: 'CallPoint', default: null },
+    thursday: { type: mongoose.Schema.Types.ObjectId, ref: 'CallPoint', default: null },
+    friday: { type: mongoose.Schema.Types.ObjectId, ref: 'CallPoint', default: null },
+    saturday: { type: mongoose.Schema.Types.ObjectId, ref: 'CallPoint', default: null },
+    sunday: { type: mongoose.Schema.Types.ObjectId, ref: 'CallPoint', default: null }
+  },
+  { _id: false }
+);
+
 const visitSchema = new mongoose.Schema(
   {
     entityId: { type: mongoose.Schema.Types.ObjectId, required: true },
@@ -58,6 +76,8 @@ const weeklyPlanSchema = new mongoose.Schema(
     rejectedReason: { type: String, trim: true, maxlength: 1000, default: null },
     /** Check-in point override for this week (V2 only; ignored when company mode = LEGACY). */
     checkInConfiguration: { type: checkInConfigurationSchema, default: undefined },
+    /** Per-day CP selected from the CP master; highest-priority check-in coordinate source. */
+    cpByDay: { type: cpByDaySchema, default: undefined },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   },

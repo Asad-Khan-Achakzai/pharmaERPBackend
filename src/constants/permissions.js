@@ -17,6 +17,8 @@ const PERMISSIONS = {
   targets:      ['view', 'create', 'edit'],
   /** `review` lets a manager open a submitted plan; `approve` lets them activate or reject it. */
   weeklyPlans:  ['view', 'create', 'edit', 'markVisit', 'review', 'approve'],
+  /** CP (call point) master — Admin-managed check-in locations selected per day in weekly plans. */
+  callPoints:   ['view', 'create', 'edit', 'delete'],
   expenses:     ['view', 'create', 'edit', 'delete', 'approve'],
   payroll:      ['view', 'create', 'edit', 'pay'],
   /**

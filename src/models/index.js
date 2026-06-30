@@ -20,6 +20,7 @@ module.exports = {
   Transaction: require('./Transaction'),
   MedRepTarget: require('./MedRepTarget'),
   WeeklyPlan: require('./WeeklyPlan'),
+  CallPoint: require('./CallPoint'),
   PlanItem: require('./PlanItem'),
   VisitLog: require('./VisitLog'),
   Expense: require('./Expense'),

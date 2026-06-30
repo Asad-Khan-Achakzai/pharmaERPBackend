@@ -174,6 +174,21 @@ const CHECKIN_POLICY_TYPE = {
   CUSTOM_LOCATION: 'CUSTOM_LOCATION'
 };
 
+/**
+ * Day-of-week keys for per-day CP (call point) assignment on a weekly plan.
+ * Order/index aligns with Luxon `DateTime.weekday` (1=Monday … 7=Sunday):
+ *   CP_DAY_KEYS[weekday - 1].
+ */
+const CP_DAY_KEYS = [
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+  'sunday'
+];
+
 const WEEKLY_PLAN_STATUS = {
   DRAFT: 'DRAFT',
   /**
@@ -440,6 +455,7 @@ module.exports = {
   ATTENDANCE_SYSTEM_MODE,
   ATTENDANCE_LOCATION_STATUS,
   CHECKIN_POLICY_TYPE,
+  CP_DAY_KEYS,
   WEEKLY_PLAN_STATUS,
   PLAN_ITEM_TYPE,
   PLAN_ITEM_STATUS,

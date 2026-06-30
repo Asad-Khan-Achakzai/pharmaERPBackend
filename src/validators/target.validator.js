@@ -1,5 +1,13 @@
 const Joi = require('joi');
-const { CHECKIN_POLICY_TYPE } = require('../constants/enums');
+const { CHECKIN_POLICY_TYPE, CP_DAY_KEYS } = require('../constants/enums');
+
+/** { monday: cpId|null, ... } — each value an ObjectId or null to clear that day. */
+const cpByDaySchema = Joi.object(
+  CP_DAY_KEYS.reduce((acc, day) => {
+    acc[day] = Joi.string().hex().length(24).allow(null, '');
+    return acc;
+  }, {})
+);
 
 const productPacksTargetItemSchema = Joi.object({
   productId: Joi.string().required(),
@@ -92,7 +100,8 @@ const createWeeklyPlanSchema = Joi.object({
   ),
   status: Joi.string().valid('DRAFT', 'ACTIVE', 'COMPLETED', 'SUBMITTED', 'REVIEWED'),
   approvalRequired: Joi.boolean(),
-  checkInConfiguration: checkInConfigurationSchema.optional()
+  checkInConfiguration: checkInConfigurationSchema.optional(),
+  cpByDay: cpByDaySchema.optional()
 });
 
 const updateWeeklyPlanSchema = Joi.object({
@@ -117,7 +126,8 @@ const updateWeeklyPlanSchema = Joi.object({
     })
   ),
   status: Joi.string().valid('DRAFT', 'ACTIVE', 'COMPLETED', 'SUBMITTED', 'REVIEWED'),
-  checkInConfiguration: checkInConfigurationSchema.optional().allow(null)
+  checkInConfiguration: checkInConfigurationSchema.optional().allow(null),
+  cpByDay: cpByDaySchema.optional().allow(null)
 }).min(1);
 
 module.exports = {
