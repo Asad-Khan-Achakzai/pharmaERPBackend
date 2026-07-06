@@ -11,6 +11,21 @@ async function upsertRepSnapshot(params) {
 
   const existing = await RepLocationSnapshot.findOne({ companyId, userId }).lean();
   if (qualityGateEnabled && !shouldUpdateSnapshot(incoming, existing)) {
+    realtimeHub.publish(String(companyId), 'live-map', {
+      type: 'rep.location.updated',
+      payload: {
+        userId: String(userId),
+        lat: incoming.lat,
+        lng: incoming.lng,
+        accuracy: incoming.accuracy,
+        confidence: incoming.confidence,
+        speed: incoming.speed,
+        heading: incoming.heading,
+        trackingContext: incoming.trackingContext,
+        capturedAt: incoming.capturedAt,
+        expectedNextPingMs: incoming.expectedNextPingMs
+      }
+    });
     return existing;
   }
 

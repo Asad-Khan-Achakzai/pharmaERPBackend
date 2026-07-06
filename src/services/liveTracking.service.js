@@ -155,8 +155,19 @@ function resolveAttendanceStatus(attendance) {
   return 'CHECKED_IN';
 }
 
+function pickBestLocationFix(snapshot, heartbeat) {
+  if (snapshot && heartbeat) {
+    const snapAt = new Date(snapshot.capturedAt).getTime();
+    const beatAt = new Date(heartbeat.capturedAt).getTime();
+    if (beatAt !== snapAt) return beatAt > snapAt ? heartbeat : snapshot;
+    const snapUploaded = snapshot.uploadedAt ? new Date(snapshot.uploadedAt).getTime() : snapAt;
+    return beatAt >= snapUploaded ? heartbeat : snapshot;
+  }
+  return snapshot || heartbeat || null;
+}
+
 function pickLocationFields(snapshot, heartbeat, attendance, staleMs) {
-  const source = snapshot || heartbeat;
+  const source = pickBestLocationFix(snapshot, heartbeat);
   if (source) {
     const capturedAt = source.capturedAt;
     const ageSeconds = Math.round((Date.now() - new Date(capturedAt).getTime()) / 1000);
@@ -325,4 +336,11 @@ async function listLive(companyId, reqUser, timeZone, company, query = {}) {
   return { rows, etag };
 }
 
-module.exports = { recordHeartbeat, listLive, computeEtag, MAX_ACCURACY_METERS };
+module.exports = {
+  recordHeartbeat,
+  listLive,
+  computeEtag,
+  pickBestLocationFix,
+  pickLocationFields,
+  MAX_ACCURACY_METERS
+};

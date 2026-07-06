@@ -8,6 +8,9 @@ function isDuplicate(incoming, existing) {
   return dist < 8;
 }
 
+/** Always refresh snapshot when the fix is at least this much newer (live map freshness). */
+const PERIODIC_REFRESH_MS = 180_000;
+
 /**
  * Quality-gated snapshot update — prevents worse fixes from overwriting good pins.
  */
@@ -17,6 +20,7 @@ function shouldUpdateSnapshot(incoming, existing) {
   const incomingAt = new Date(incoming.capturedAt).getTime();
   const existingAt = new Date(existing.capturedAt).getTime();
   if (incomingAt <= existingAt + 5000) return false;
+  if (incomingAt >= existingAt + PERIODIC_REFRESH_MS) return true;
   if (isDuplicate(incoming, existing)) return false;
 
   const incomingConf = incoming.confidence ?? 0;
