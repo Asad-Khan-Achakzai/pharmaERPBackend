@@ -9,6 +9,7 @@ const schema = Joi.object({
   JWT_REFRESH_SECRET: Joi.string().required(),
   JWT_ACCESS_EXPIRY: Joi.string().default('1d'),
   JWT_REFRESH_EXPIRY: Joi.string().default('7d'),
+  /** Comma-separated browser origins allowed for CORS (e.g. local + production). */
   FRONTEND_URL: Joi.string().default('http://localhost:3000'),
   /** When not '0', resolve permissions from Role when user.roleId is set. Set to '0' for emergency legacy-only resolution. */
   USE_ROLE_BASED_AUTH: Joi.string().valid('0', '1').default('1'),
@@ -78,5 +79,14 @@ const { value: env, error } = schema.validate(process.env, { convert: true });
 if (error) {
   throw new Error(`Environment validation error: ${error.message}`);
 }
+
+function parseFrontendOrigins(raw) {
+  return String(raw || '')
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/$/, ''))
+    .filter(Boolean);
+}
+
+env.FRONTEND_ORIGINS = parseFrontendOrigins(env.FRONTEND_URL);
 
 module.exports = env;

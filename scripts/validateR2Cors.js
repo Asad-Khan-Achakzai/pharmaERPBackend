@@ -15,8 +15,8 @@
  *   node scripts/validateR2Cors.js            # validate round-trip + print CORS
  *   node scripts/validateR2Cors.js --apply    # also (re)apply CORS policy first
  *
- * Origins are taken from FRONTEND_URL plus a permissive set for mobile (RN has
- * no fixed web origin; Cloudflare R2 treats `*` as allow-any). Adjust as needed.
+ * Origins are taken from FRONTEND_URL (comma-separated) plus a permissive set for
+ * mobile (RN has no fixed web origin; Cloudflare R2 treats `*` as allow-any).
  */
 
 require('dotenv').config();
@@ -32,7 +32,7 @@ const APPLY = process.argv.includes('--apply');
 
 function corsRules() {
   const origins = new Set(['*']);
-  if (env.FRONTEND_URL) origins.add(env.FRONTEND_URL.replace(/\/$/, ''));
+  for (const origin of env.FRONTEND_ORIGINS) origins.add(origin);
   return [
     {
       AllowedMethods: ['GET', 'PUT', 'HEAD'],
