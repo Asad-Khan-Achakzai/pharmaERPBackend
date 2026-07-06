@@ -7,6 +7,12 @@ const repLocationSnapshotSchema = new mongoose.Schema(
     lat: { type: Number, required: true },
     lng: { type: Number, required: true },
     accuracy: { type: Number, default: null },
+    confidence: { type: Number, default: null, min: 0, max: 100 },
+    speed: { type: Number, default: null },
+    heading: { type: Number, default: null, min: 0, max: 360 },
+    trackingContext: { type: String, trim: true, maxlength: 32, default: null },
+    expectedNextPingMs: { type: Number, default: null },
+    uploadedAt: { type: Date, default: Date.now },
     capturedAt: { type: Date, required: true },
     locationSource: { type: String, enum: ['heartbeat', 'checkin'], default: 'heartbeat' }
   },

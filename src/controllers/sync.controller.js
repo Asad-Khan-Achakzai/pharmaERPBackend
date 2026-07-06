@@ -51,7 +51,12 @@ const serverConfig = asyncHandler(async (req, res) => {
         (geoResolved.features.liveTracking || geoResolved.features.managerLiveMap)
       ),
       maxAccuracyMeters: geoResolved.liveTracking.maxAccuracyMeters,
-      heartbeatIntervalMs: geoResolved.liveTracking.heartbeatIntervalMs
+      heartbeatIntervalMs: geoResolved.liveTracking.heartbeatIntervalMs,
+      trackingProfile: geoResolved.liveTracking.trackingProfile,
+      schedulerMinIntervalMs: geoResolved.liveTracking.schedulerMinIntervalMs,
+      schedulerMaxIntervalMs: geoResolved.liveTracking.schedulerMaxIntervalMs,
+      geofenceContextEnabled: geoResolved.liveTracking.geofenceContextEnabled,
+      staleDisplayMs: geoResolved.liveTracking.staleDisplayMs
     },
     expenses: {
       approvalRequired: !!(company && company.expenseApprovalRequired)

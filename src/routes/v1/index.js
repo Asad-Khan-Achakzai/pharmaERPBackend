@@ -47,6 +47,8 @@ const doctorLocationSuggestionRoutes = require('./doctorLocationSuggestion.route
 const announcementRoutes = require('./announcement.routes');
 const calendarRoutes = require('./calendar.routes');
 const geoRoutes = require('../../geo/routes/geo.routes');
+const realtimeRoutes = require('./realtime.routes');
+const internalMetricsRoutes = require('./internalMetrics.routes');
 
 router.use('/auth/mobile', mobileAuthRoutes);
 router.use('/device-control', deviceControlRoutes);
@@ -96,5 +98,7 @@ router.use('/territories/import', territoryImportRoutes);
 router.use('/territories', territoryRoutes);
 router.use('/onboarding', onboardingRoutes);
 router.use('/geo', geoRoutes);
+router.use('/realtime', realtimeRoutes);
+router.use('/internal/metrics', internalMetricsRoutes);
 
 module.exports = router;

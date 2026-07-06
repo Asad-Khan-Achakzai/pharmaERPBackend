@@ -22,7 +22,16 @@ const geoPlatformSchema = Joi.object({
   }),
   liveTracking: Joi.object({
     heartbeatIntervalMs: Joi.number().integer().min(60000).max(3600000),
-    maxAccuracyMeters: Joi.number().min(10).max(500)
+    maxAccuracyMeters: Joi.number().min(10).max(500),
+    trackingProfile: Joi.string().valid('balanced', 'fresh', 'conservative'),
+    schedulerMinIntervalMs: Joi.number().integer().min(15000).max(600000),
+    schedulerMaxIntervalMs: Joi.number().integer().min(60000).max(3600000),
+    staleDisplayMs: Joi.number().integer().min(60000).max(7200000),
+    staleHideMs: Joi.number().integer().min(60000).max(7200000),
+    retentionDays: Joi.number().integer().min(7).max(365),
+    geofenceContextEnabled: Joi.boolean(),
+    snapshotQualityGateEnabled: Joi.boolean(),
+    lowBatteryModeEnabled: Joi.boolean()
   })
 });
 

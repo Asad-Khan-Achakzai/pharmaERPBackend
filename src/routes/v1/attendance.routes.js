@@ -30,15 +30,21 @@ const {
   requestCommentSchema,
   inboxQuerySchema
 } = require('../../validators/attendance.validator');
-const { heartbeatSchema } = require('../../validators/phase2.validator');
+const { heartbeatSchema, heartbeatsBatchSchema } = require('../../validators/phase2.validator');
 
 router.use(authenticate, companyScope, clientUuid());
 
 router.post('/heartbeat', validate(heartbeatSchema), live.heartbeat);
+router.post('/heartbeats', validate(heartbeatsBatchSchema), live.heartbeatsBatch);
 router.get(
   '/live',
   checkPermissionAny('team.view', 'team.viewAllReports', 'attendance.viewTeam', 'admin.access'),
   live.live
+);
+router.get(
+  '/live/snapshot',
+  checkPermissionAny('team.view', 'team.viewAllReports', 'attendance.viewTeam', 'admin.access'),
+  live.liveSnapshot
 );
 
 router.post('/mark', checkPermission('attendance.mark'), validate(markAttendanceSchema), c.mark);

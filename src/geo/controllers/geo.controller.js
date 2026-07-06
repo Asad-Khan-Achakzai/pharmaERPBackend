@@ -20,14 +20,21 @@ const featureCatalog = asyncHandler(async (_req, res) => {
 });
 
 const live = asyncHandler(async (req, res) => {
-  const data = await geoLiveService.listLive(
+  const result = await geoLiveService.listLive(
     req.companyId,
     req.user,
     req.context.timeZone,
     req.context.company,
-    req.query
+    { ifNoneMatch: req.headers['if-none-match'] }
   );
-  ApiResponse.success(res, data);
+
+  if (result.notModified) {
+    res.setHeader('ETag', result.etag);
+    return res.status(304).end();
+  }
+
+  res.setHeader('ETag', result.etag);
+  ApiResponse.success(res, result.rows);
 });
 
 const dayRoute = asyncHandler(async (req, res) => {
@@ -67,9 +74,20 @@ const visitContext = asyncHandler(async (req, res) => {
 });
 
 const replay = asyncHandler(async (req, res) => {
+  const targetUserId = req.query.userId || req.user.userId;
+  if (String(targetUserId) !== String(req.user.userId)) {
+    if (!userHasPermission(req.user, 'admin.access')) {
+      const subtree = await resolveSubtreeUserIds(req.companyId, req.user.userId, {
+        includeSelf: true,
+        activeOnly: true
+      });
+      const ok = subtree.some((id) => String(id) === String(targetUserId));
+      if (!ok) throw new ApiError(403, 'You can only replay routes for yourself or your team');
+    }
+  }
   const data = await dayRouteService.getRouteReplay(
     req.companyId,
-    req.query.userId,
+    targetUserId,
     req.query.date,
     req.context.timeZone
   );

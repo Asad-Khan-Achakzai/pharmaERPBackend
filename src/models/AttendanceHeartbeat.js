@@ -11,6 +11,11 @@ const attendanceHeartbeatSchema = new mongoose.Schema(
     lat: { type: Number, required: true },
     lng: { type: Number, required: true },
     accuracy: { type: Number, default: null },
+    confidence: { type: Number, default: null, min: 0, max: 100 },
+    speed: { type: Number, default: null },
+    heading: { type: Number, default: null, min: 0, max: 360 },
+    trackingContext: { type: String, trim: true, maxlength: 32, default: null },
+    expectedNextPingMs: { type: Number, default: null },
     capturedAt: { type: Date, required: true },
     clientUuid: { type: String, trim: true, maxlength: 64, default: null }
   },
@@ -22,5 +27,7 @@ attendanceHeartbeatSchema.index(
   { companyId: 1, userId: 1, clientUuid: 1 },
   { unique: true, partialFilterExpression: { clientUuid: { $type: 'string' } } }
 );
+
+attendanceHeartbeatSchema.index({ companyId: 1, capturedAt: 1 }, { expireAfterSeconds: 90 * 24 * 60 * 60 });
 
 module.exports = mongoose.model('AttendanceHeartbeat', attendanceHeartbeatSchema);

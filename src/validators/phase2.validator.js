@@ -11,7 +11,16 @@ const heartbeatSchema = Joi.object({
   lng: Joi.number().required().min(-180).max(180),
   accuracy: Joi.number().min(0).max(5000).allow(null),
   capturedAt: Joi.date().iso().allow(null),
-  clientUuid: Joi.string().trim().max(64).allow(null, '')
+  clientUuid: Joi.string().trim().max(64).allow(null, ''),
+  confidence: Joi.number().min(0).max(100).allow(null),
+  speed: Joi.number().min(0).max(100).allow(null),
+  heading: Joi.number().min(0).max(360).allow(null),
+  trackingContext: Joi.string().trim().max(32).allow(null, ''),
+  expectedNextPingMs: Joi.number().integer().min(1000).max(3600000).allow(null)
+});
+
+const heartbeatsBatchSchema = Joi.object({
+  heartbeats: Joi.array().items(heartbeatSchema).min(1).max(20).required()
 });
 
 const optimizeRouteSchema = Joi.object({
@@ -34,6 +43,7 @@ const approveExpenseSchema = Joi.object({
 module.exports = {
   createAnnouncementSchema,
   heartbeatSchema,
+  heartbeatsBatchSchema,
   optimizeRouteSchema,
   rejectExpenseSchema,
   approveExpenseSchema

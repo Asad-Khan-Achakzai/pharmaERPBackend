@@ -1,34 +1,36 @@
 const AttendanceHeartbeat = require('../models/AttendanceHeartbeat');
+const RepLocationSnapshot = require('../geo/models/RepLocationSnapshot');
 const Attendance = require('../models/Attendance');
 const Company = require('../models/Company');
 const User = require('../models/User');
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 const ApiError = require('../utils/ApiError');
 const { LATE_CHECKIN_APPROVAL_STATUS } = require('../constants/enums');
 const businessTime = require('../utils/businessTime');
 const { resolveSubtreeUserIds } = require('../utils/teamScope');
 const { userHasTenantWideAccess } = require('../utils/effectivePermissions');
 const { resolveGeoPlatform } = require('../geo/utils/geoPlatformResolver');
+const { assertHeartbeatRateLimit } = require('../utils/heartbeatRateLimit');
 
 const todayYmd = (tz) => businessTime.nowInBusinessTime(tz).toISODate();
 const dateDocFromYmd = (ymd, tz) => businessTime.businessDayStartUtc(ymd, tz);
 
 const nd = { isDeleted: { $ne: true } };
 const MAX_ACCURACY_METERS = 150;
-const LIVE_STALE_MS = 30 * 60 * 1000;
+const DEFAULT_STALE_MS = 30 * 60 * 1000;
 
 async function assertLiveTrackingEnabled(companyId) {
   const company = await Company.findById(companyId).select('liveTrackingEnabled geoPlatform').lean();
   if (!company) {
     throw new ApiError(404, 'Company not found');
   }
-  if (company.liveTrackingEnabled === true) return;
+  if (company.liveTrackingEnabled === true) return company;
   const geo = resolveGeoPlatform(company);
-  if (geo.enabled && geo.features.liveTracking === true) return;
+  if (geo.enabled && geo.features.liveTracking === true) return company;
   throw new ApiError(403, 'Live tracking is not enabled for this company');
 }
 
-/** Open shift for heartbeat — uses company business day (same as check-in), not server local midnight. */
 async function findOpenAttendanceForHeartbeat(companyId, employeeId, timeZone) {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   const ymd = todayYmd(tz);
@@ -49,14 +51,33 @@ async function findOpenAttendanceForHeartbeat(companyId, employeeId, timeZone) {
   return Attendance.findOne({ ...openQuery, date: prevDoc }).lean();
 }
 
-async function recordHeartbeat({ companyId, userId, timeZone, lat, lng, accuracy, capturedAt, clientUuid }) {
+async function recordHeartbeat({
+  companyId,
+  userId,
+  timeZone,
+  lat,
+  lng,
+  accuracy,
+  capturedAt,
+  clientUuid,
+  company,
+  confidence,
+  speed,
+  heading,
+  trackingContext,
+  expectedNextPingMs
+}) {
   await assertLiveTrackingEnabled(companyId);
+  assertHeartbeatRateLimit(companyId, userId);
+
+  const geo = resolveGeoPlatform(company);
+  const maxAccuracyMeters = geo.liveTracking?.maxAccuracyMeters ?? MAX_ACCURACY_METERS;
 
   if (typeof lat !== 'number' || typeof lng !== 'number') {
     throw new ApiError(400, 'lat and lng are required');
   }
-  if (accuracy != null && accuracy > MAX_ACCURACY_METERS) {
-    throw new ApiError(422, `Location accuracy too low (>${MAX_ACCURACY_METERS}m)`);
+  if (accuracy != null && accuracy > maxAccuracyMeters) {
+    throw new ApiError(422, `Location accuracy too low (>${maxAccuracyMeters}m)`);
   }
 
   const attendance = await findOpenAttendanceForHeartbeat(companyId, userId, timeZone);
@@ -70,6 +91,11 @@ async function recordHeartbeat({ companyId, userId, timeZone, lat, lng, accuracy
     lat,
     lng,
     accuracy: accuracy ?? null,
+    confidence: confidence ?? null,
+    speed: speed ?? null,
+    heading: heading ?? null,
+    trackingContext: trackingContext || null,
+    expectedNextPingMs: expectedNextPingMs ?? null,
     capturedAt: capturedAt ? new Date(capturedAt) : new Date(),
     clientUuid: clientUuid || null
   };
@@ -91,11 +117,6 @@ async function recordHeartbeat({ companyId, userId, timeZone, lat, lng, accuracy
   }
 }
 
-/**
- * Users visible on the live map — mirrors GET /users/team scope:
- * - Tenant admin: all active company users except the viewer
- * - Managers: full reporting subtree (descendants), excluding the viewer
- */
 async function resolveLiveTrackingUserIds(companyId, reqUser) {
   const viewerId = new mongoose.Types.ObjectId(String(reqUser.userId));
   const cid = new mongoose.Types.ObjectId(String(companyId));
@@ -134,16 +155,26 @@ function resolveAttendanceStatus(attendance) {
   return 'CHECKED_IN';
 }
 
-function pickLocationFields(heartbeat, attendance) {
-  if (heartbeat) {
-    return {
-      lat: heartbeat.lat,
-      lng: heartbeat.lng,
-      accuracy: heartbeat.accuracy,
-      capturedAt: heartbeat.capturedAt,
-      ageSeconds: Math.round((Date.now() - new Date(heartbeat.capturedAt).getTime()) / 1000),
-      locationSource: 'heartbeat'
-    };
+function pickLocationFields(snapshot, heartbeat, attendance, staleMs) {
+  const source = snapshot || heartbeat;
+  if (source) {
+    const capturedAt = source.capturedAt;
+    const ageSeconds = Math.round((Date.now() - new Date(capturedAt).getTime()) / 1000);
+    if (ageSeconds * 1000 <= staleMs) {
+      return {
+        lat: source.lat,
+        lng: source.lng,
+        accuracy: source.accuracy,
+        confidence: source.confidence ?? null,
+        speed: source.speed ?? null,
+        heading: source.heading ?? null,
+        trackingContext: source.trackingContext ?? null,
+        expectedNextPingMs: source.expectedNextPingMs ?? null,
+        capturedAt,
+        ageSeconds,
+        locationSource: snapshot ? 'snapshot' : 'heartbeat'
+      };
+    }
   }
 
   const checkInLat = attendance?.checkInLat;
@@ -154,6 +185,11 @@ function pickLocationFields(heartbeat, attendance) {
       lat: checkInLat,
       lng: checkInLng,
       accuracy: attendance.checkInAccuracy ?? null,
+      confidence: 40,
+      speed: null,
+      heading: null,
+      trackingContext: null,
+      expectedNextPingMs: null,
       capturedAt: checkInTime,
       ageSeconds: Math.round((Date.now() - new Date(checkInTime).getTime()) / 1000),
       locationSource: 'checkin'
@@ -164,15 +200,20 @@ function pickLocationFields(heartbeat, attendance) {
     lat: null,
     lng: null,
     accuracy: null,
+    confidence: null,
+    speed: null,
+    heading: null,
+    trackingContext: null,
+    expectedNextPingMs: null,
     capturedAt: null,
     ageSeconds: null,
     locationSource: null
   };
 }
 
-function buildLiveRow({ user, heartbeat, attendance }) {
+function buildLiveRow({ user, snapshot, heartbeat, attendance, staleMs }) {
   const attendanceStatus = resolveAttendanceStatus(attendance);
-  const location = pickLocationFields(heartbeat, attendance);
+  const location = pickLocationFields(snapshot, heartbeat, attendance, staleMs);
   return {
     userId: user._id,
     name: user.name,
@@ -183,7 +224,6 @@ function buildLiveRow({ user, heartbeat, attendance }) {
   };
 }
 
-/** Located users first (most recent ping on top); others alphabetically at the bottom. */
 function sortLiveTrackingRows(rows) {
   return [...rows].sort((a, b) => {
     const aLocated = a.capturedAt != null && a.ageSeconds != null;
@@ -197,11 +237,20 @@ function sortLiveTrackingRows(rows) {
   });
 }
 
-async function listLive(companyId, reqUser, timeZone, query = {}) {
+function computeEtag(rows) {
+  const hash = crypto.createHash('sha1');
+  hash.update(JSON.stringify(rows));
+  return `"${hash.digest('hex')}"`;
+}
+
+async function listLive(companyId, reqUser, timeZone, company, query = {}) {
   await assertLiveTrackingEnabled(companyId);
 
+  const geo = resolveGeoPlatform(company);
+  const staleMs = geo.liveTracking?.staleDisplayMs ?? DEFAULT_STALE_MS;
+
   const teamUsers = await resolveLiveTrackingUserIds(companyId, reqUser);
-  if (!teamUsers.length) return [];
+  if (!teamUsers.length) return { rows: [], etag: computeEtag([]) };
 
   const cid = new mongoose.Types.ObjectId(String(companyId));
   const scopedIds = teamUsers.map((u) => u._id);
@@ -220,37 +269,60 @@ async function listLive(companyId, reqUser, timeZone, query = {}) {
     .lean();
   const attendanceByUser = new Map(attendanceRows.map((r) => [String(r.employeeId), r]));
 
-  const since = new Date(Date.now() - LIVE_STALE_MS);
-  const heartbeatRows = await AttendanceHeartbeat.aggregate([
-    {
-      $match: {
-        companyId: cid,
-        userId: { $in: scopedIds },
-        capturedAt: { $gte: since }
+  const since = new Date(Date.now() - staleMs);
+  const [snapshotRows, heartbeatRows] = await Promise.all([
+    RepLocationSnapshot.find({
+      companyId: cid,
+      userId: { $in: scopedIds },
+      capturedAt: { $gte: since }
+    }).lean(),
+    AttendanceHeartbeat.aggregate([
+      {
+        $match: {
+          companyId: cid,
+          userId: { $in: scopedIds },
+          capturedAt: { $gte: since }
+        }
+      },
+      { $sort: { capturedAt: -1 } },
+      {
+        $group: {
+          _id: '$userId',
+          lat: { $first: '$lat' },
+          lng: { $first: '$lng' },
+          accuracy: { $first: '$accuracy' },
+          confidence: { $first: '$confidence' },
+          speed: { $first: '$speed' },
+          heading: { $first: '$heading' },
+          trackingContext: { $first: '$trackingContext' },
+          expectedNextPingMs: { $first: '$expectedNextPingMs' },
+          capturedAt: { $first: '$capturedAt' }
+        }
       }
-    },
-    { $sort: { capturedAt: -1 } },
-    {
-      $group: {
-        _id: '$userId',
-        lat: { $first: '$lat' },
-        lng: { $first: '$lng' },
-        accuracy: { $first: '$accuracy' },
-        capturedAt: { $first: '$capturedAt' }
-      }
-    }
+    ])
   ]);
+
+  const snapshotByUser = new Map(snapshotRows.map((r) => [String(r.userId), r]));
   const heartbeatByUser = new Map(heartbeatRows.map((r) => [String(r._id), r]));
 
-  return sortLiveTrackingRows(
+  const rows = sortLiveTrackingRows(
     teamUsers.map((u) =>
       buildLiveRow({
         user: u,
+        snapshot: snapshotByUser.get(String(u._id)),
         heartbeat: heartbeatByUser.get(String(u._id)),
-        attendance: attendanceByUser.get(String(u._id))
+        attendance: attendanceByUser.get(String(u._id)),
+        staleMs
       })
     )
   );
+
+  const etag = computeEtag(rows);
+  if (query.ifNoneMatch && query.ifNoneMatch === etag) {
+    return { notModified: true, etag, rows };
+  }
+
+  return { rows, etag };
 }
 
-module.exports = { recordHeartbeat, listLive, MAX_ACCURACY_METERS };
+module.exports = { recordHeartbeat, listLive, computeEtag, MAX_ACCURACY_METERS };

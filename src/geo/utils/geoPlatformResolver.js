@@ -3,6 +3,31 @@ const { defaultFeaturesObject } = require('../config/geoFeatureRegistry');
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_ACCURACY_METERS = 150;
+const DEFAULT_STALE_DISPLAY_MS = 30 * 60 * 1000;
+const DEFAULT_RETENTION_DAYS = 90;
+
+function normalizeLiveTrackingSettings(stored, prev) {
+  const p = prev && typeof prev === 'object' ? prev : {};
+  const s = stored && typeof stored === 'object' ? stored : {};
+  return {
+    heartbeatIntervalMs:
+      s.heartbeatIntervalMs != null ? Number(s.heartbeatIntervalMs) : DEFAULT_HEARTBEAT_INTERVAL_MS,
+    maxAccuracyMeters:
+      s.maxAccuracyMeters != null ? Number(s.maxAccuracyMeters) : DEFAULT_MAX_ACCURACY_METERS,
+    trackingProfile: s.trackingProfile || p.trackingProfile || 'balanced',
+    schedulerMinIntervalMs:
+      s.schedulerMinIntervalMs != null ? Number(s.schedulerMinIntervalMs) : 30_000,
+    schedulerMaxIntervalMs:
+      s.schedulerMaxIntervalMs != null ? Number(s.schedulerMaxIntervalMs) : 600_000,
+    staleDisplayMs:
+      s.staleDisplayMs != null ? Number(s.staleDisplayMs) : DEFAULT_STALE_DISPLAY_MS,
+    staleHideMs: s.staleHideMs != null ? Number(s.staleHideMs) : DEFAULT_STALE_DISPLAY_MS * 2,
+    retentionDays: s.retentionDays != null ? Number(s.retentionDays) : DEFAULT_RETENTION_DAYS,
+    geofenceContextEnabled: s.geofenceContextEnabled !== false,
+    snapshotQualityGateEnabled: s.snapshotQualityGateEnabled !== false,
+    lowBatteryModeEnabled: s.lowBatteryModeEnabled !== false
+  };
+}
 
 function normalizeMapCenter(value) {
   if (value == null) {
@@ -35,10 +60,7 @@ function resolveGeoPlatform(company) {
       defaults: { mapCenter: null, mapZoom: 12, countryCode: 'PK' },
       features: defaultFeaturesObject(),
       limits: { maxGoogleCallsPerDay: null },
-      liveTracking: {
-        heartbeatIntervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS,
-        maxAccuracyMeters: DEFAULT_MAX_ACCURACY_METERS
-      }
+      liveTracking: normalizeLiveTrackingSettings(null, null)
     };
   }
 
@@ -88,16 +110,7 @@ function resolveGeoPlatform(company) {
       maxGoogleCallsPerDay:
         stored.limits?.maxGoogleCallsPerDay != null ? Number(stored.limits.maxGoogleCallsPerDay) : null
     },
-    liveTracking: {
-      heartbeatIntervalMs:
-        stored.liveTracking?.heartbeatIntervalMs != null
-          ? Number(stored.liveTracking.heartbeatIntervalMs)
-          : DEFAULT_HEARTBEAT_INTERVAL_MS,
-      maxAccuracyMeters:
-        stored.liveTracking?.maxAccuracyMeters != null
-          ? Number(stored.liveTracking.maxAccuracyMeters)
-          : DEFAULT_MAX_ACCURACY_METERS
-    }
+    liveTracking: normalizeLiveTrackingSettings(stored.liveTracking, null)
   };
 }
 
@@ -137,16 +150,7 @@ function buildGeoPlatformPatch(input, existingCompany) {
           ? input.limits.maxGoogleCallsPerDay
           : prev.limits?.maxGoogleCallsPerDay ?? null
     },
-    liveTracking: {
-      heartbeatIntervalMs:
-        input.liveTracking?.heartbeatIntervalMs ??
-        prev.liveTracking?.heartbeatIntervalMs ??
-        DEFAULT_HEARTBEAT_INTERVAL_MS,
-      maxAccuracyMeters:
-        input.liveTracking?.maxAccuracyMeters ??
-        prev.liveTracking?.maxAccuracyMeters ??
-        DEFAULT_MAX_ACCURACY_METERS
-    }
+    liveTracking: normalizeLiveTrackingSettings(input.liveTracking, prev.liveTracking)
   };
 
   const legacy = {
