@@ -46,6 +46,7 @@ const notificationRoutes = require('./notification.routes');
 const doctorLocationSuggestionRoutes = require('./doctorLocationSuggestion.routes');
 const announcementRoutes = require('./announcement.routes');
 const calendarRoutes = require('./calendar.routes');
+const geoRoutes = require('../../geo/routes/geo.routes');
 
 router.use('/auth/mobile', mobileAuthRoutes);
 router.use('/device-control', deviceControlRoutes);
@@ -94,5 +95,6 @@ router.use('/audit-logs', auditLogRoutes);
 router.use('/territories/import', territoryImportRoutes);
 router.use('/territories', territoryRoutes);
 router.use('/onboarding', onboardingRoutes);
+router.use('/geo', geoRoutes);
 
 module.exports = router;

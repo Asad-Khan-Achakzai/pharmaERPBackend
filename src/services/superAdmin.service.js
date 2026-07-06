@@ -17,6 +17,7 @@ const { tenantAggregateMatch } = require('../utils/tenantAggregate');
 
 const { resolveCompanyTimeZone } = require('../utils/countryTimeZone');
 const { Info } = require('luxon');
+const { buildGeoPlatformPatch, syncLegacyFlagsToGeoPlatform } = require('../geo/utils/geoPlatformResolver');
 
 const notDeleted = { isDeleted: { $ne: true } };
 
@@ -39,11 +40,39 @@ const listCompanies = async (query) => {
   return { docs, total, page, limit };
 };
 
+const mergeGeoIntoPlainCompany = (target, payload) => {
+  if (Object.prototype.hasOwnProperty.call(payload, 'geoPlatform')) {
+    const built = buildGeoPlatformPatch(payload.geoPlatform, target);
+    if (built) {
+      target.geoPlatform = built.geoPlatform;
+      target.liveTrackingEnabled = built.legacy.liveTrackingEnabled;
+      target.geoFencingEnabled = built.legacy.geoFencingEnabled;
+      target.attendanceGeofenceEnabled = built.legacy.attendanceGeofenceEnabled;
+    }
+    delete payload.geoPlatform;
+    return;
+  }
+
+  const legacyTouched =
+    Object.prototype.hasOwnProperty.call(payload, 'liveTrackingEnabled') ||
+    Object.prototype.hasOwnProperty.call(payload, 'geoFencingEnabled') ||
+    Object.prototype.hasOwnProperty.call(payload, 'attendanceGeofenceEnabled');
+
+  if (legacyTouched) {
+    syncLegacyFlagsToGeoPlatform(target);
+  }
+};
+
+const applyGeoPlatformPatch = (company, payload) => {
+  mergeGeoIntoPlainCompany(company, payload);
+};
+
 const createCompany = async (payload) => {
   const data = { ...payload };
   if (data.email === '') data.email = undefined;
   const tz = resolveCompanyTimeZone({ timeZone: data.timeZone, country: data.country });
   data.timeZone = tz;
+  mergeGeoIntoPlainCompany(data, data);
   const company = await Company.create(data);
   await seedDefaultRolesForCompany(company._id, {});
   await coaSeed.ensureCoaForCompany(company._id);
@@ -54,6 +83,7 @@ const updateCompany = async (id, payload) => {
   const company = await Company.findById(id);
   if (!company) throw new ApiError(404, 'Company not found');
   const patch = { ...payload };
+  applyGeoPlatformPatch(company, patch);
   if (Object.prototype.hasOwnProperty.call(patch, 'timeZone')) {
     const mergedCountry = patch.country != null ? patch.country : company.country;
     company.timeZone = resolveCompanyTimeZone({ timeZone: patch.timeZone, country: mergedCountry });

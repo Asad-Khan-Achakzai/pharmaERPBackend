@@ -8,6 +8,7 @@ const { LATE_CHECKIN_APPROVAL_STATUS } = require('../constants/enums');
 const businessTime = require('../utils/businessTime');
 const { resolveSubtreeUserIds } = require('../utils/teamScope');
 const { userHasTenantWideAccess } = require('../utils/effectivePermissions');
+const { resolveGeoPlatform } = require('../geo/utils/geoPlatformResolver');
 
 const todayYmd = (tz) => businessTime.nowInBusinessTime(tz).toISODate();
 const dateDocFromYmd = (ymd, tz) => businessTime.businessDayStartUtc(ymd, tz);
@@ -17,10 +18,14 @@ const MAX_ACCURACY_METERS = 150;
 const LIVE_STALE_MS = 30 * 60 * 1000;
 
 async function assertLiveTrackingEnabled(companyId) {
-  const company = await Company.findById(companyId).select('liveTrackingEnabled').lean();
-  if (!company?.liveTrackingEnabled) {
-    throw new ApiError(403, 'Live tracking is not enabled for this company');
+  const company = await Company.findById(companyId).select('liveTrackingEnabled geoPlatform').lean();
+  if (!company) {
+    throw new ApiError(404, 'Company not found');
   }
+  if (company.liveTrackingEnabled === true) return;
+  const geo = resolveGeoPlatform(company);
+  if (geo.enabled && geo.features.liveTracking === true) return;
+  throw new ApiError(403, 'Live tracking is not enabled for this company');
 }
 
 /** Open shift for heartbeat — uses company business day (same as check-in), not server local midnight. */

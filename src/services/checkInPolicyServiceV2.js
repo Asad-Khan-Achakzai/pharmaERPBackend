@@ -485,5 +485,7 @@ module.exports = {
   readResolvedCheckInPolicy,
   previewForEmployeeToday,
   bumpAttendanceConfigVersion,
+  findActiveWeeklyPlanForDay,
+  resolveDayCallPoint,
   ATTENDANCE_SYSTEM_MODE
 };

@@ -58,7 +58,10 @@ const assertSequenceIntegrityForExecutionDay = (items) => {
 };
 
 const listPopulate = [
-  { path: 'doctorId', select: 'name specialization' },
+  {
+    path: 'doctorId',
+    select: 'name specialization latitude longitude locationStatus locationName city'
+  },
   { path: 'visitLogId' },
   { path: 'weeklyPlanId', select: 'weekStartDate weekEndDate status' }
 ];

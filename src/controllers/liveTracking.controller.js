@@ -1,10 +1,11 @@
-const liveTrackingService = require('../services/liveTracking.service');
+const geoLiveService = require('../geo/services/geoLive.service');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../middleware/asyncHandler');
 
 const heartbeat = asyncHandler(async (req, res) => {
-  const data = await liveTrackingService.recordHeartbeat({
+  const data = await geoLiveService.recordHeartbeat({
     companyId: req.companyId,
+    company: req.context.company,
     userId: req.user.userId,
     timeZone: req.context.timeZone,
     lat: req.body.lat,
@@ -17,10 +18,11 @@ const heartbeat = asyncHandler(async (req, res) => {
 });
 
 const live = asyncHandler(async (req, res) => {
-  const data = await liveTrackingService.listLive(
+  const data = await geoLiveService.listLive(
     req.companyId,
     req.user,
     req.context.timeZone,
+    req.context.company,
     req.query
   );
   ApiResponse.success(res, data);

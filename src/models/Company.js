@@ -181,7 +181,53 @@ const companySchema = new mongoose.Schema(
      * Incremented when attendanceSystemMode or checkInPolicy changes.
      * Clients compare to invalidate cached attendance config.
      */
-    attendanceConfigVersion: { type: Number, default: 1, min: 1 }
+    attendanceConfigVersion: { type: Number, default: 1, min: 1 },
+    /**
+     * PharmaERP Geo Platform — master config and per-feature toggles (Super Admin).
+     * Legacy booleans (liveTrackingEnabled, geoFencingEnabled) are synced on write.
+     */
+    geoPlatform: {
+      enabled: { type: Boolean, default: false },
+      configVersion: { type: Number, default: 1, min: 1 },
+      defaults: {
+        mapCenter: {
+          lat: { type: Number, default: null },
+          lng: { type: Number, default: null }
+        },
+        mapZoom: { type: Number, default: 12, min: 1, max: 21 },
+        countryCode: { type: String, trim: true, default: 'PK', maxlength: 8 }
+      },
+      features: {
+        liveTracking: { type: Boolean, default: false },
+        managerLiveMap: { type: Boolean, default: false },
+        doctorMaps: { type: Boolean, default: false },
+        doctorLocationReviewMaps: { type: Boolean, default: false },
+        callPointMaps: { type: Boolean, default: false },
+        attendanceMaps: { type: Boolean, default: false },
+        weeklyPlanMaps: { type: Boolean, default: false },
+        dailyPlanMaps: { type: Boolean, default: false },
+        activeVisitMaps: { type: Boolean, default: false },
+        navigation: { type: Boolean, default: false },
+        routeOptimization: { type: Boolean, default: false },
+        routeReplay: { type: Boolean, default: false },
+        heatMaps: { type: Boolean, default: false },
+        territoryPolygons: { type: Boolean, default: false },
+        geofencing: { type: Boolean, default: false },
+        placesAutocomplete: { type: Boolean, default: false },
+        geocoding: { type: Boolean, default: false },
+        distanceAndEta: { type: Boolean, default: false },
+        routeAnalytics: { type: Boolean, default: false },
+        travelAnalytics: { type: Boolean, default: false },
+        aiGeoApis: { type: Boolean, default: false }
+      },
+      limits: {
+        maxGoogleCallsPerDay: { type: Number, default: null, min: 1 }
+      },
+      liveTracking: {
+        heartbeatIntervalMs: { type: Number, default: 5 * 60 * 1000, min: 60000 },
+        maxAccuracyMeters: { type: Number, default: 150, min: 10, max: 500 }
+      }
+    }
   },
   { timestamps: true }
 );

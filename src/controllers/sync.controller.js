@@ -3,13 +3,18 @@ const ApiResponse = require('../utils/ApiResponse');
 const env = require('../config/env');
 const { getMediaFlags } = require('../utils/mediaFlags');
 const pushService = require('../services/push.service');
+const { getPublicGeoConfig } = require('../geo/services/geoConfig.service');
+const { resolveGeoPlatform } = require('../geo/utils/geoPlatformResolver');
 
 const serverConfig = asyncHandler(async (req, res) => {
   const company = req.context && req.context.company ? req.context.company : null;
   const media = getMediaFlags(company);
+  const geoPlatform = getPublicGeoConfig(company);
+  const geoResolved = resolveGeoPlatform(company);
   const payload = {
     serverTime: new Date().toISOString(),
     media,
+    geoPlatform,
     attendance: {
       geofenceEnabled: !!(company && company.attendanceGovernanceEnabled),
       selfieEnabled: media.enableMediaUpload && media.enableVisitPhotos,
@@ -41,9 +46,12 @@ const serverConfig = asyncHandler(async (req, res) => {
       backendReady: pushService.isPushConfigured()
     },
     liveTracking: {
-      enabled: !!(company && company.liveTrackingEnabled),
-      maxAccuracyMeters: 150,
-      heartbeatIntervalMs: 5 * 60 * 1000
+      enabled: !!(
+        geoResolved.enabled &&
+        (geoResolved.features.liveTracking || geoResolved.features.managerLiveMap)
+      ),
+      maxAccuracyMeters: geoResolved.liveTracking.maxAccuracyMeters,
+      heartbeatIntervalMs: geoResolved.liveTracking.heartbeatIntervalMs
     },
     expenses: {
       approvalRequired: !!(company && company.expenseApprovalRequired)
@@ -54,7 +62,10 @@ const serverConfig = asyncHandler(async (req, res) => {
           name: company.name,
           status: 'LIVE',
           mobilePushEnabled: !!company.mobilePushEnabled,
-          liveTrackingEnabled: !!company.liveTrackingEnabled,
+          liveTrackingEnabled: !!(
+            geoResolved.enabled &&
+            (geoResolved.features.liveTracking || geoResolved.features.managerLiveMap)
+          ),
           expenseApprovalRequired: !!company.expenseApprovalRequired
         }
       : null

@@ -64,7 +64,13 @@ const schema = Joi.object({
   MOBILE_SYNC_PAGE_SIZE: Joi.number().integer().min(10).max(500).default(50),
   MOBILE_SYNC_POLL_INTERVAL_MS: Joi.number().integer().min(15000).default(60000),
   /** Optional — Expo push notifications when Company.mobilePushEnabled is true. */
-  EXPO_ACCESS_TOKEN: Joi.string().allow('').default('')
+  EXPO_ACCESS_TOKEN: Joi.string().allow('').default(''),
+  /** Geo Platform — server-side Google Maps API key (Routes, Geocoding, Places, Matrix). */
+  GOOGLE_MAPS_SERVER_API_KEY: Joi.string().allow('').default(''),
+  GOOGLE_MAPS_WEB_API_KEY: Joi.string().allow('').default(''),
+  GOOGLE_MAPS_ANDROID_API_KEY: Joi.string().allow('').default(''),
+  GOOGLE_MAPS_IOS_API_KEY: Joi.string().allow('').default(''),
+  GEO_BILLING_MONITORING: Joi.string().valid('0', '1').default('0')
 }).unknown(true);
 
 const { value: env, error } = schema.validate(process.env, { convert: true });

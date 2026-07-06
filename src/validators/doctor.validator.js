@@ -53,6 +53,8 @@ const doctorBodyFields = {
   assignedRepId: Joi.string().hex().length(24).allow(null, ''),
   monthlyVisitTarget: Joi.number().integer().min(0).max(31).allow(null),
   tier: Joi.string().trim().allow('', null).max(16),
+  latitude: Joi.number().min(-90).max(90).allow(null),
+  longitude: Joi.number().min(-180).max(180).allow(null),
   /** Optional finalized MediaAsset id to attach as the doctor photo. */
   assetId: Joi.string()
 };

@@ -87,7 +87,50 @@ const normalizeDoctorPayload = (data) => {
   if (Object.prototype.hasOwnProperty.call(o, 'assignedRepId') && (o.assignedRepId === '' || o.assignedRepId === undefined)) {
     o.assignedRepId = null;
   }
+  if (Object.prototype.hasOwnProperty.call(o, 'latitude')) {
+    if (o.latitude === '' || o.latitude === null || o.latitude === undefined || Number.isNaN(Number(o.latitude))) {
+      o.latitude = null;
+    } else {
+      o.latitude = Number(o.latitude);
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(o, 'longitude')) {
+    if (o.longitude === '' || o.longitude === null || o.longitude === undefined || Number.isNaN(Number(o.longitude))) {
+      o.longitude = null;
+    } else {
+      o.longitude = Number(o.longitude);
+    }
+  }
   return o;
+};
+
+/** Apply admin-set GPS; marks location VERIFIED when both coordinates are present. */
+const applyDoctorLocationPatch = (doctor, patch, reqUser) => {
+  const hasLat = Object.prototype.hasOwnProperty.call(patch, 'latitude');
+  const hasLng = Object.prototype.hasOwnProperty.call(patch, 'longitude');
+  if (!hasLat && !hasLng) return;
+
+  const lat = hasLat ? patch.latitude : doctor.latitude;
+  const lng = hasLng ? patch.longitude : doctor.longitude;
+  delete patch.latitude;
+  delete patch.longitude;
+
+  if (lat == null || lng == null) {
+    doctor.latitude = null;
+    doctor.longitude = null;
+    doctor.locationStatus = 'UNVERIFIED';
+    doctor.locationVerifiedAt = null;
+    doctor.locationVerifiedBy = null;
+    return;
+  }
+  if (typeof lat !== 'number' || typeof lng !== 'number') {
+    throw new ApiError(400, 'Valid latitude and longitude are required together');
+  }
+  doctor.latitude = lat;
+  doctor.longitude = lng;
+  doctor.locationStatus = 'VERIFIED';
+  doctor.locationVerifiedAt = new Date();
+  doctor.locationVerifiedBy = reqUser.userId;
 };
 
 /**
@@ -179,6 +222,8 @@ const create = async (companyId, data, reqUser) => {
   }
   await applyAssignmentRefs(companyId, payload);
   const doctor = await Doctor.create({ ...payload, companyId, createdBy: reqUser.userId });
+  applyDoctorLocationPatch(doctor, payload, reqUser);
+  await doctor.save();
   if (assetId) {
     await mediaAttach.attachEntityImage({
       companyId,
@@ -223,6 +268,7 @@ const update = async (companyId, id, data, reqUser) => {
   }
   await applyAssignmentRefs(companyId, patch);
   const before = doctor.toObject();
+  applyDoctorLocationPatch(doctor, patch, reqUser);
   Object.assign(doctor, { ...patch, updatedBy: reqUser.userId });
   await doctor.save();
   if (assetId) {

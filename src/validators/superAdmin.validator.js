@@ -1,6 +1,7 @@
 const Joi = require('joi');
 
 const { ATTENDANCE_SYSTEM_MODE } = require('../constants/enums');
+const { geoPlatformSchema } = require('../geo/validators/geo.validator');
 
 const checkInPolicySchema = Joi.object({
   type: Joi.string().valid('COMPANY_DEFAULT').default('COMPANY_DEFAULT'),
@@ -57,6 +58,7 @@ const createCompanySchema = Joi.object({
   isActive: Joi.boolean().default(true),
   attendanceSystemMode: Joi.string().valid(...Object.values(ATTENDANCE_SYSTEM_MODE)),
   checkInPolicy: checkInPolicySchema,
+  geoPlatform: geoPlatformSchema,
   ...mediaFlagFields
 });
 
@@ -89,6 +91,7 @@ const updateCompanySchema = Joi.object({
   isActive: Joi.boolean(),
   attendanceSystemMode: Joi.string().valid(...Object.values(ATTENDANCE_SYSTEM_MODE)),
   checkInPolicy: checkInPolicySchema,
+  geoPlatform: geoPlatformSchema,
   ...mediaFlagFields
 })
   .min(1)

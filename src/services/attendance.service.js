@@ -547,7 +547,11 @@ const dashboardLabel = (rec) => {
   if (!rec) return 'NOT_MARKED';
   if (rec.status === ATTENDANCE_STATUS.LEAVE) return 'LEAVE';
   if (rec.lateCheckInApprovalStatus === LATE_CHECKIN_APPROVAL_STATUS.PENDING) return 'LATE_CHECKIN_PENDING';
-  return rec.status;
+  if (rec.status === ATTENDANCE_STATUS.ABSENT) return ATTENDANCE_STATUS.ABSENT;
+  if (rec.status === ATTENDANCE_STATUS.HALF_DAY) return ATTENDANCE_STATUS.HALF_DAY;
+  /** Team board "present" requires an actual check-in, not the schema default alone. */
+  if (rec.checkInTime) return 'PRESENT';
+  return 'NOT_MARKED';
 };
 
 const listToday = async (companyId, timeZone, visibleUserIds = null) => {
