@@ -1,11 +1,28 @@
 const { EventEmitter } = require('events');
+const { RedisPubSubAdapter } = require('./RedisPubSubAdapter');
 
-/** In-process event bus — swap RedisPubSubAdapter in multi-node deployments. */
+/** In-process event bus with optional Redis fan-out for multi-node deployments. */
 class RealtimeHub extends EventEmitter {
   constructor() {
     super();
     this.setMaxListeners(500);
     this.connectionCount = 0;
+    this.redis = new RedisPubSubAdapter();
+    this.redisReady = false;
+  }
+
+  async init() {
+    this.redisReady = await this.redis.connect((companyId, channel, envelope) => {
+      const key = this.channelKey(companyId, channel);
+      const event = {
+        channel,
+        type: envelope.type,
+        payload: envelope.payload,
+        ts: new Date().toISOString(),
+        companyId: String(companyId)
+      };
+      this.emit(key, event);
+    });
   }
 
   channelKey(companyId, channel) {
@@ -22,6 +39,9 @@ class RealtimeHub extends EventEmitter {
       companyId: String(companyId)
     };
     this.emit(key, event);
+    if (this.redisReady) {
+      void this.redis.publish(String(companyId), channel, envelope);
+    }
     return event;
   }
 
@@ -40,8 +60,10 @@ class RealtimeHub extends EventEmitter {
   }
 
   stats() {
-    return { connections: this.connectionCount };
+    return { connections: this.connectionCount, redis: this.redisReady };
   }
 }
 
-module.exports = new RealtimeHub();
+const hub = new RealtimeHub();
+
+module.exports = hub;

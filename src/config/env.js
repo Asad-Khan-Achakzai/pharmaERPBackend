@@ -71,7 +71,9 @@ const schema = Joi.object({
   GOOGLE_MAPS_WEB_API_KEY: Joi.string().allow('').default(''),
   GOOGLE_MAPS_ANDROID_API_KEY: Joi.string().allow('').default(''),
   GOOGLE_MAPS_IOS_API_KEY: Joi.string().allow('').default(''),
-  GEO_BILLING_MONITORING: Joi.string().valid('0', '1').default('0')
+  GEO_BILLING_MONITORING: Joi.string().valid('0', '1').default('0'),
+  /** Optional Redis URL for multi-node realtime pub/sub and shared rate limits. */
+  REDIS_URL: Joi.string().allow('').default('')
 }).unknown(true);
 
 const { value: env, error } = schema.validate(process.env, { convert: true });

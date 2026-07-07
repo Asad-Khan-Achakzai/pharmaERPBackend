@@ -20,6 +20,7 @@ const callPointSchema = new mongoose.Schema(
 );
 
 callPointSchema.index({ companyId: 1, isActive: 1, name: 1 });
+callPointSchema.index({ companyId: 1, latitude: 1, longitude: 1 });
 /** Name unique per company (case-insensitive), ignoring soft-deleted rows. */
 callPointSchema.index(
   { companyId: 1, name: 1 },

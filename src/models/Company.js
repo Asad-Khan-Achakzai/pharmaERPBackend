@@ -201,6 +201,7 @@ const companySchema = new mongoose.Schema(
         liveTracking: { type: Boolean, default: false },
         managerLiveMap: { type: Boolean, default: false },
         doctorMaps: { type: Boolean, default: false },
+        pharmacyMaps: { type: Boolean, default: false },
         doctorLocationReviewMaps: { type: Boolean, default: false },
         callPointMaps: { type: Boolean, default: false },
         attendanceMaps: { type: Boolean, default: false },

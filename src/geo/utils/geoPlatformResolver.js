@@ -71,7 +71,11 @@ function resolveGeoPlatform(company) {
     features.liveTracking = true;
   }
 
-  const hasStoredFeatures = stored.features && Object.keys(stored.features).length > 0;
+  const storedFeatureKeys = stored.features ? Object.keys(stored.features) : [];
+  const hasStoredFeatures = storedFeatureKeys.length > 0;
+  if (features.doctorMaps === true && !storedFeatureKeys.includes('pharmacyMaps')) {
+    features.pharmacyMaps = true;
+  }
   if (!hasStoredFeatures) {
     if (company.liveTrackingEnabled === true) {
       features.liveTracking = true;
@@ -127,6 +131,26 @@ function assertGeoFeatureEnabled(company, featureKey) {
     err.data = { feature: featureKey };
     throw err;
   }
+}
+
+/** Single source for visit geofence enforcement (geoPlatform.features.geofencing + company mode). */
+function resolveGeofenceConfig(company) {
+  const { GEO_FENCE_MODE } = require('../../constants/enums');
+  if (!company) {
+    return {
+      featureEnabled: false,
+      active: false,
+      mode: GEO_FENCE_MODE.OFF,
+      radiusMeters: 150
+    };
+  }
+  const featureEnabled = isGeoFeatureEnabled(company, 'geofencing');
+  const mode = company.geoFenceMode || GEO_FENCE_MODE.OFF;
+  const radiusMeters =
+    Number(company.geoFenceRadiusMeters) > 0 ? Number(company.geoFenceRadiusMeters) : 150;
+  const active =
+    featureEnabled && (mode === GEO_FENCE_MODE.SOFT || mode === GEO_FENCE_MODE.STRICT);
+  return { featureEnabled, active, mode, radiusMeters };
 }
 
 function buildGeoPlatformPatch(input, existingCompany) {
@@ -192,6 +216,7 @@ module.exports = {
   resolveGeoPlatform,
   isGeoFeatureEnabled,
   assertGeoFeatureEnabled,
+  resolveGeofenceConfig,
   buildGeoPlatformPatch,
   syncLegacyFlagsToGeoPlatform,
   DEFAULT_HEARTBEAT_INTERVAL_MS,

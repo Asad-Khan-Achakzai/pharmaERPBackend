@@ -63,6 +63,7 @@ doctorSchema.index({ companyId: 1, isActive: 1 });
 doctorSchema.index({ companyId: 1, territoryId: 1, isActive: 1 });
 doctorSchema.index({ companyId: 1, assignedRepId: 1, isActive: 1 });
 doctorSchema.index({ companyId: 1, locationStatus: 1 });
+doctorSchema.index({ companyId: 1, latitude: 1, longitude: 1 });
 
 doctorSchema.plugin(softDeletePlugin);
 

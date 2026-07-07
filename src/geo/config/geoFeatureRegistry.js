@@ -6,6 +6,7 @@ const GEO_FEATURE_KEYS = Object.freeze([
   'liveTracking',
   'managerLiveMap',
   'doctorMaps',
+  'pharmacyMaps',
   'doctorLocationReviewMaps',
   'callPointMaps',
   'attendanceMaps',
@@ -42,6 +43,7 @@ const GEO_FEATURE_LABELS = Object.freeze({
   liveTracking: 'Rep location sharing (GPS while checked in on mobile)',
   managerLiveMap: 'Manager live map (view reps on web & mobile)',
   doctorMaps: 'Doctor maps',
+  pharmacyMaps: 'Pharmacy maps',
   doctorLocationReviewMaps: 'Doctor location review maps',
   callPointMaps: 'Call point maps',
   attendanceMaps: 'Attendance zone maps',
@@ -69,6 +71,8 @@ const GEO_FEATURE_DESCRIPTIONS = Object.freeze({
     'When enabled, managers can view real-time rep locations on the live map (web Team Live page and mobile manager Live screen). Enabling this also requires rep location sharing. When disabled, live map screens and APIs are hidden.',
   doctorMaps:
     'When enabled, doctor list and detail screens show map pins for doctors with coordinates (web and mobile). When disabled, map views are hidden.',
+  pharmacyMaps:
+    'When enabled, pharmacy list and detail screens show map pins and location picker for pharmacies with coordinates (web). When disabled, pharmacy map views are hidden.',
   doctorLocationReviewMaps:
     'When enabled, admins and managers can review and correct doctor GPS coordinates on the location review map (web). When disabled, that page and API are unavailable.',
   callPointMaps:
@@ -111,6 +115,7 @@ const GEO_FEATURE_PLATFORMS = Object.freeze({
   liveTracking: 'mobile',
   managerLiveMap: 'both',
   doctorMaps: 'both',
+  pharmacyMaps: 'web',
   doctorLocationReviewMaps: 'web',
   callPointMaps: 'web',
   attendanceMaps: 'web',

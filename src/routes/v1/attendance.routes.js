@@ -31,6 +31,7 @@ const {
   inboxQuerySchema
 } = require('../../validators/attendance.validator');
 const { heartbeatSchema, heartbeatsBatchSchema } = require('../../validators/phase2.validator');
+const { requireGeoFeature } = require('../../geo/middleware/requireGeoFeature');
 
 router.use(authenticate, companyScope, clientUuid());
 
@@ -39,11 +40,13 @@ router.post('/heartbeats', validate(heartbeatsBatchSchema), live.heartbeatsBatch
 router.get(
   '/live',
   checkPermissionAny('team.view', 'team.viewAllReports', 'attendance.viewTeam', 'admin.access'),
+  requireGeoFeature('managerLiveMap'),
   live.live
 );
 router.get(
   '/live/snapshot',
   checkPermissionAny('team.view', 'team.viewAllReports', 'attendance.viewTeam', 'admin.access'),
+  requireGeoFeature('managerLiveMap'),
   live.liveSnapshot
 );
 

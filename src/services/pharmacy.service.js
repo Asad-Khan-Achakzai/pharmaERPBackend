@@ -6,6 +6,34 @@ const applyBonusSchemeInput = (data) => {
     data.bonusScheme = normalizeBonusScheme(data.bonusScheme);
   }
 };
+
+const normalizePharmacyInput = (data) => {
+  const o = { ...data };
+  applyBonusSchemeInput(o);
+
+  if (Object.prototype.hasOwnProperty.call(o, 'latitude')) {
+    if (o.latitude === '' || o.latitude == null || Number.isNaN(Number(o.latitude))) {
+      o.latitude = null;
+    } else {
+      o.latitude = Number(o.latitude);
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(o, 'longitude')) {
+    if (o.longitude === '' || o.longitude == null || Number.isNaN(Number(o.longitude))) {
+      o.longitude = null;
+    } else {
+      o.longitude = Number(o.longitude);
+    }
+  }
+
+  const hasLat = Object.prototype.hasOwnProperty.call(o, 'latitude') && o.latitude != null;
+  const hasLng = Object.prototype.hasOwnProperty.call(o, 'longitude') && o.longitude != null;
+  if (hasLat !== hasLng) {
+    throw new ApiError(400, 'Valid latitude and longitude are required together');
+  }
+
+  return o;
+};
 const Doctor = require('../models/Doctor');
 const Ledger = require('../models/Ledger');
 const ApiError = require('../utils/ApiError');
@@ -52,8 +80,8 @@ const list = async (companyId, query, timeZone = "UTC") => {
 };
 
 const create = async (companyId, data, reqUser) => {
-  const { assetId, ...pharmacyData } = data;
-  applyBonusSchemeInput(pharmacyData);
+  const { assetId, ...raw } = data;
+  const pharmacyData = normalizePharmacyInput(raw);
   const pharmacy = await Pharmacy.create({ ...pharmacyData, companyId, createdBy: reqUser.userId });
   if (assetId) {
     await mediaAttach.attachEntityImage({
@@ -97,8 +125,8 @@ const update = async (companyId, id, data, reqUser) => {
   const pharmacy = await Pharmacy.findOne({ _id: id, companyId });
   if (!pharmacy) throw new ApiError(404, 'Pharmacy not found');
   const before = pharmacy.toObject();
-  const { assetId, ...pharmacyData } = data;
-  applyBonusSchemeInput(pharmacyData);
+  const { assetId, ...raw } = data;
+  const pharmacyData = normalizePharmacyInput(raw);
   Object.assign(pharmacy, { ...pharmacyData, updatedBy: reqUser.userId });
   await pharmacy.save();
   if (assetId) {

@@ -7,9 +7,13 @@ const { startAttendanceApprovalAutomationJob } = require('./src/jobs/attendanceA
 const { startPlanItemsMissedJob } = require('./src/jobs/planItemsMissed.job');
 const { startMediaRetentionCleanupJob } = require('./src/jobs/mediaRetentionCleanup.job');
 const { seedMrepRolesForAllCompanies } = require('./src/jobs/seedMrepRoles.bootstrap');
+const realtimeHub = require('./src/realtime/RealtimeHub');
+const { initHeartbeatRateLimit } = require('./src/utils/heartbeatRateLimit');
 
 const startServer = async () => {
   await connectDB();
+  await realtimeHub.init();
+  await initHeartbeatRateLimit();
 
   if (env.NODE_ENV !== 'test') {
     startAttendanceAutoCheckoutJob();

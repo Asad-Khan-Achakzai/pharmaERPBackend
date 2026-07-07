@@ -23,6 +23,14 @@ async function setCache(key, api, payload, ttlMs = CACHE_TTL_MS) {
   );
 }
 
+async function googleFetch(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    throw new ApiError(502, `Google Maps API HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
 async function geocode({ companyId, company, userId, address }) {
   await assertWithinDailyQuota(companyId, company);
   const cacheKey = `geocode:${String(address).trim().toLowerCase()}`;
@@ -33,9 +41,24 @@ async function geocode({ companyId, company, userId, address }) {
     throw new ApiError(503, 'Google Maps server API is not configured');
   }
 
-  // Placeholder — wire to Google Geocoding REST when key is present
+  const key = encodeURIComponent(env.GOOGLE_MAPS_SERVER_API_KEY);
+  const q = encodeURIComponent(String(address).trim());
+  const data = await googleFetch(
+    `https://maps.googleapis.com/maps/api/geocode/json?address=${q}&key=${key}`
+  );
+
+  if (data.status !== 'OK' || !data.results?.[0]) {
+    throw new ApiError(502, `Geocoding failed: ${data.status || 'UNKNOWN'}`);
+  }
+
   await recordUsage({ companyId, userId, api: 'geocoding', operation: 'geocode', units: 1 });
-  const result = { lat: null, lng: null, formattedAddress: address, provider: 'google', stub: true };
+  const r = data.results[0];
+  const result = {
+    lat: r.geometry.location.lat,
+    lng: r.geometry.location.lng,
+    formattedAddress: r.formatted_address,
+    provider: 'google'
+  };
   await setCache(cacheKey, 'geocoding', result);
   return result;
 }
@@ -50,8 +73,20 @@ async function reverseGeocode({ companyId, company, userId, lat, lng }) {
     throw new ApiError(503, 'Google Maps server API is not configured');
   }
 
+  const key = encodeURIComponent(env.GOOGLE_MAPS_SERVER_API_KEY);
+  const data = await googleFetch(
+    `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${key}`
+  );
+
+  if (data.status !== 'OK' || !data.results?.[0]) {
+    throw new ApiError(502, `Reverse geocoding failed: ${data.status || 'UNKNOWN'}`);
+  }
+
   await recordUsage({ companyId, userId, api: 'geocoding', operation: 'reverseGeocode', units: 1 });
-  const result = { formattedAddress: `${lat}, ${lng}`, provider: 'google', stub: true };
+  const result = {
+    formattedAddress: data.results[0].formatted_address,
+    provider: 'google'
+  };
   await setCache(cacheKey, 'geocoding', result);
   return result;
 }
@@ -61,14 +96,42 @@ async function computeRoute({ companyId, company, userId, waypoints }) {
   if (!isGoogleConfigured()) {
     throw new ApiError(503, 'Google Maps server API is not configured');
   }
+
+  const pts = Array.isArray(waypoints) ? waypoints.filter((w) => w?.lat != null && w?.lng != null) : [];
+  if (pts.length < 2) {
+    return { waypoints: pts, polyline: null, distanceMeters: null, durationSeconds: null, provider: 'google' };
+  }
+
+  const key = encodeURIComponent(env.GOOGLE_MAPS_SERVER_API_KEY);
+  const origin = `${pts[0].lat},${pts[0].lng}`;
+  const destination = `${pts[pts.length - 1].lat},${pts[pts.length - 1].lng}`;
+  const middle = pts.slice(1, -1).map((p) => `${p.lat},${p.lng}`);
+  const wp = middle.length ? `&waypoints=${encodeURIComponent(middle.join('|'))}` : '';
+  const data = await googleFetch(
+    `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${destination}${wp}&key=${key}`
+  );
+
+  if (data.status !== 'OK' || !data.routes?.[0]) {
+    throw new ApiError(502, `Directions failed: ${data.status || 'UNKNOWN'}`);
+  }
+
   await recordUsage({
     companyId,
     userId,
     api: 'routes',
     operation: 'computeRoutes',
-    units: Math.max(1, waypoints?.length || 1)
+    units: Math.max(1, pts.length)
   });
-  return { waypoints, polyline: null, distanceMeters: null, durationSeconds: null, provider: 'google', stub: true };
+
+  const route = data.routes[0];
+  const leg = route.legs?.[0];
+  return {
+    waypoints: pts,
+    polyline: route.overview_polyline?.points || null,
+    distanceMeters: leg?.distance?.value ?? null,
+    durationSeconds: leg?.duration?.value ?? null,
+    provider: 'google'
+  };
 }
 
 async function distanceMatrix({ companyId, company, userId, origins, destinations }) {
@@ -76,6 +139,14 @@ async function distanceMatrix({ companyId, company, userId, origins, destination
   if (!isGoogleConfigured()) {
     throw new ApiError(503, 'Google Maps server API is not configured');
   }
+
+  const key = encodeURIComponent(env.GOOGLE_MAPS_SERVER_API_KEY);
+  const o = (origins || []).map((p) => `${p.lat},${p.lng}`).join('|');
+  const d = (destinations || []).map((p) => `${p.lat},${p.lng}`).join('|');
+  const data = await googleFetch(
+    `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${encodeURIComponent(o)}&destinations=${encodeURIComponent(d)}&key=${key}`
+  );
+
   await recordUsage({
     companyId,
     userId,
@@ -83,7 +154,8 @@ async function distanceMatrix({ companyId, company, userId, origins, destination
     operation: 'matrix',
     units: (origins?.length || 1) * (destinations?.length || 1)
   });
-  return { rows: [], provider: 'google', stub: true };
+
+  return { rows: data.rows || [], provider: 'google', status: data.status };
 }
 
 async function placesAutocomplete({ companyId, company, userId, input, sessionToken }) {
@@ -91,6 +163,14 @@ async function placesAutocomplete({ companyId, company, userId, input, sessionTo
   if (!isGoogleConfigured()) {
     throw new ApiError(503, 'Google Maps server API is not configured');
   }
+
+  const key = encodeURIComponent(env.GOOGLE_MAPS_SERVER_API_KEY);
+  const q = encodeURIComponent(String(input).trim());
+  const session = sessionToken ? `&sessiontoken=${encodeURIComponent(sessionToken)}` : '';
+  const data = await googleFetch(
+    `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${q}${session}&key=${key}`
+  );
+
   await recordUsage({
     companyId,
     userId,
@@ -99,7 +179,15 @@ async function placesAutocomplete({ companyId, company, userId, input, sessionTo
     units: 1,
     metadata: { sessionToken: sessionToken || null }
   });
-  return { predictions: [], provider: 'google', stub: true };
+
+  return {
+    predictions: (data.predictions || []).map((p) => ({
+      description: p.description,
+      placeId: p.place_id
+    })),
+    provider: 'google',
+    status: data.status
+  };
 }
 
 module.exports = {

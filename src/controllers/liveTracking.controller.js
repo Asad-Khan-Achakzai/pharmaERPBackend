@@ -1,5 +1,4 @@
 const geoLiveService = require('../geo/services/geoLive.service');
-const liveTrackingService = require('../services/liveTracking.service');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../middleware/asyncHandler');
 
@@ -53,7 +52,7 @@ const live = asyncHandler(async (req, res) => {
 });
 
 const liveSnapshot = asyncHandler(async (req, res) => {
-  const result = await liveTrackingService.listLive(
+  const result = await geoLiveService.listLive(
     req.companyId,
     req.user,
     req.context.timeZone,

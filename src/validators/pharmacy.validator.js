@@ -14,7 +14,9 @@ const createPharmacySchema = Joi.object({
   email: Joi.string().email().trim().allow(''),
   discountOnTP: Joi.number().min(0).max(100).default(0),
   bonusScheme: bonusSchemeSchema,
-  assetId: Joi.string()
+  assetId: Joi.string(),
+  latitude: Joi.number().min(-90).max(90).allow(null),
+  longitude: Joi.number().min(-180).max(180).allow(null)
 });
 
 const updatePharmacySchema = Joi.object({
@@ -27,7 +29,9 @@ const updatePharmacySchema = Joi.object({
   discountOnTP: Joi.number().min(0).max(100),
   bonusScheme: bonusSchemeSchema,
   isActive: Joi.boolean(),
-  assetId: Joi.string()
+  assetId: Joi.string(),
+  latitude: Joi.number().min(-90).max(90).allow(null),
+  longitude: Joi.number().min(-180).max(180).allow(null)
 }).min(1);
 
 module.exports = { createPharmacySchema, updatePharmacySchema };

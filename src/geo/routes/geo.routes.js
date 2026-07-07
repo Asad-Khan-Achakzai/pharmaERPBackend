@@ -20,7 +20,8 @@ const {
   analyticsQuerySchema,
   territoryBoundaryBodySchema,
   navigationQuerySchema,
-  distanceEtaBodySchema
+  distanceEtaBodySchema,
+  mapContextQuerySchema
 } = require('../validators/geo.validator');
 
 router.use(authenticate, companyScope, attachGeoPlatform);
@@ -33,6 +34,14 @@ router.get(
   requireGeoFeature('managerLiveMap'),
   checkPermissionAny('team.view', 'team.viewAllReports', 'attendance.viewTeam', 'admin.access'),
   c.live
+);
+
+router.get(
+  '/context',
+  requireGeoFeature('managerLiveMap'),
+  checkPermissionAny('team.view', 'team.viewAllReports', 'attendance.viewTeam', 'admin.access'),
+  validateQuery(mapContextQuerySchema),
+  c.mapContext
 );
 
 router.get('/day-route', requireGeoFeature('dailyPlanMaps'), validateQuery(dayRouteQuerySchema), c.dayRoute);

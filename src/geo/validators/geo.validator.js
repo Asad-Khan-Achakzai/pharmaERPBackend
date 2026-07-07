@@ -122,6 +122,19 @@ const distanceEtaBodySchema = Joi.object({
     .required()
 });
 
+const mapContextQuerySchema = Joi.object({
+  north: Joi.number().min(-90).max(90).required(),
+  south: Joi.number().min(-90).max(90).required(),
+  east: Joi.number().min(-180).max(180).required(),
+  west: Joi.number().min(-180).max(180).required(),
+  bbox: Joi.string().trim().max(120),
+  employeeId: Joi.string().hex().length(24),
+  radiusMeters: Joi.number().integer().min(50).max(5000),
+  layers: Joi.string().trim().max(200),
+  date: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/),
+  trackingContext: Joi.string().trim().max(64)
+});
+
 module.exports = {
   geoPlatformSchema,
   dayRouteQuerySchema,
@@ -137,5 +150,6 @@ module.exports = {
   analyticsQuerySchema,
   territoryBoundaryBodySchema,
   navigationQuerySchema,
-  distanceEtaBodySchema
+  distanceEtaBodySchema,
+  mapContextQuerySchema
 };

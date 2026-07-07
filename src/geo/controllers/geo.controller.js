@@ -4,6 +4,7 @@ const dayRouteService = require('../services/dayRoute.service');
 const googleMapsGateway = require('../services/google/googleMapsGateway.service');
 const usageMeteringService = require('../services/usageMetering.service');
 const geoExtendedService = require('../services/geoExtended.service');
+const geoContextService = require('../services/geoContext.service');
 const ApiResponse = require('../../utils/ApiResponse');
 const asyncHandler = require('../../middleware/asyncHandler');
 const ApiError = require('../../utils/ApiError');
@@ -221,6 +222,28 @@ const distanceEta = asyncHandler(async (req, res) => {
   ApiResponse.success(res, data);
 });
 
+const mapContext = asyncHandler(async (req, res) => {
+  const employeeId = req.query.employeeId;
+  if (employeeId && String(employeeId) !== String(req.user.userId)) {
+    if (!userHasPermission(req.user, 'admin.access')) {
+      const subtree = await resolveSubtreeUserIds(req.companyId, req.user.userId, {
+        includeSelf: true,
+        activeOnly: true
+      });
+      const ok = subtree.some((id) => String(id) === String(employeeId));
+      if (!ok) throw new ApiError(403, 'You can only view map context for yourself or your team');
+    }
+  }
+
+  const data = await geoContextService.getMapContext(
+    req.companyId,
+    req.context.company,
+    req.query,
+    req.context.timeZone
+  );
+  ApiResponse.success(res, data);
+});
+
 module.exports = {
   config,
   featureCatalog,
@@ -244,5 +267,6 @@ module.exports = {
   routeAnalytics,
   travelAnalytics,
   navigation,
-  distanceEta
+  distanceEta,
+  mapContext
 };

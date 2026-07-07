@@ -1,4 +1,5 @@
 const { GEO_FENCE_MODE, GEO_FENCE_RESULT } = require('../constants/enums');
+const { resolveGeofenceConfig } = require('../geo/utils/geoPlatformResolver');
 
 const EARTH_RADIUS_METERS = 6371000;
 
@@ -26,10 +27,7 @@ function distanceMeters(lat1, lng1, lat2, lng2) {
 }
 
 function isGeoFencingActive(company) {
-  if (!company) return false;
-  if (company.geoFencingEnabled !== true) return false;
-  const mode = company.geoFenceMode || GEO_FENCE_MODE.OFF;
-  return mode === GEO_FENCE_MODE.SOFT || mode === GEO_FENCE_MODE.STRICT;
+  return resolveGeofenceConfig(company).active;
 }
 
 /**
@@ -66,9 +64,8 @@ function evaluateVisitGeoFence({ company, doctor, visitLat, visitLng }) {
     };
   }
 
-  const radius = Number(company.geoFenceRadiusMeters) > 0 ? Number(company.geoFenceRadiusMeters) : 150;
-  const inside = dist <= radius;
-  const mode = company.geoFenceMode || GEO_FENCE_MODE.OFF;
+  const { radiusMeters, mode } = resolveGeofenceConfig(company);
+  const inside = dist <= radiusMeters;
   const result = inside ? GEO_FENCE_RESULT.INSIDE_RADIUS : GEO_FENCE_RESULT.OUTSIDE_RADIUS;
   const shouldBlock = !inside && mode === GEO_FENCE_MODE.STRICT;
 
