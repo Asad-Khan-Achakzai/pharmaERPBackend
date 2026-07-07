@@ -8,8 +8,16 @@ const Territory = require('../models/Territory');
 const ApiError = require('../utils/ApiError');
 const { resolveSubtreeUserIds } = require('../utils/teamScope');
 const { userHasPermission, userHasTenantWideAccess } = require('../utils/effectivePermissions');
+const { DEFAULT_MEDICAL_REP_CODE } = require('../constants/rbac');
 const coverageService = require('./coverage.service');
 const mrepKpiService = require('./mrepKpi.service');
+const { fetchBulkCounters } = require('./mrepKpiBulk.service');
+const {
+  buildScopeHierarchy,
+  metricsFromUserCounters,
+  rollupMetricsForUserIds,
+  userHasTeamRollup
+} = require('./mrepHierarchyRollup.service');
 const businessTime = require('../utils/businessTime');
 
 const {
@@ -80,37 +88,135 @@ const resolveOverviewRepIds = async (companyId, viewerUser, explicitRepId) => {
   return [new mongoose.Types.ObjectId(String(viewerUserId))];
 };
 
-const BATCH = 8;
+const attachRowIdentity = (metrics, repId, yyyyMm, userMeta) => ({
+  repId,
+  month: yyyyMm,
+  ...metrics,
+  name: userMeta?.name ?? null,
+  email: userMeta?.email ?? null,
+  employeeCode: userMeta?.employeeCode ?? null,
+  roleCode: userMeta?.roleCode ?? null,
+  roleName: userMeta?.roleName ?? null,
+  managerId: userMeta?.managerId ?? null
+});
 
 const monthlyOverview = async (companyId, viewerUser, yyyyMm, timeZone, { repId: explicitRepId } = {}) => {
   const repOids = await resolveOverviewRepIds(companyId, viewerUser, explicitRepId);
+
+  let counterRepOids = repOids;
+  if (explicitRepId && repOids.length === 1) {
+    counterRepOids = await resolveSubtreeUserIds(companyId, explicitRepId, {
+      includeSelf: true,
+      activeOnly: true
+    });
+    if (!counterRepOids.length) counterRepOids = repOids;
+  }
+
+  const counterScopeSet = new Set(counterRepOids.map((id) => String(id)));
+
   const users = await User.find({
     _id: { $in: repOids },
     companyId,
     isDeleted: { $ne: true },
     isActive: true
   })
-    .select('name email employeeCode')
+    .select('name email employeeCode managerId roleId')
+    .populate('roleId', 'code name')
+    .sort({ name: 1 })
     .lean();
-  const byId = Object.fromEntries(users.map((u) => [String(u._id), u]));
 
-  const rows = [];
-  for (let i = 0; i < repOids.length; i += BATCH) {
-    const chunk = repOids.slice(i, i + BATCH);
-    const part = await Promise.all(
-      chunk.map((oid) => mrepKpiService.monthlyRowForRep(companyId, oid, yyyyMm, timeZone))
-    );
-    rows.push(...part);
+  if (!users.length) {
+    return {
+      month: yyyyMm,
+      metricsVersion: 'mrepMonthlyOverviewV2',
+      scopeSummary: null,
+      reps: []
+    };
   }
+
+  const hierarchyUsers = await User.find({
+    _id: { $in: counterRepOids },
+    companyId,
+    isDeleted: { $ne: true },
+    isActive: true
+  })
+    .select('_id managerId roleId')
+    .populate('roleId', 'code name')
+    .lean();
+
+  const { subtreeMemo, teamSize } = buildScopeHierarchy(hierarchyUsers, counterScopeSet);
+  const countersByUser = await fetchBulkCounters(companyId, counterRepOids, yyyyMm, timeZone);
+
+  const scopeUserIds = explicitRepId
+    ? (() => {
+        const id = String(explicitRepId);
+        const u = users.find((x) => String(x._id) === id);
+        const roleCode = u?.roleId?.code ?? null;
+        const descendants = teamSize(id);
+        if (userHasTeamRollup(roleCode, descendants)) {
+          return subtreeMemo.get(id) || [id];
+        }
+        return [id];
+      })()
+    : repOids.map((id) => String(id));
+
+  const scopeMetrics = rollupMetricsForUserIds(scopeUserIds, countersByUser);
+
+  const reps = users.map((u) => {
+    const repId = String(u._id);
+    const roleCode = u.roleId?.code ?? null;
+    const descendants = teamSize(repId);
+    const hasTeamRollup = userHasTeamRollup(roleCode, descendants);
+    const personalBundle = countersByUser.get(repId);
+    const personalMetrics = metricsFromUserCounters(personalBundle);
+
+    const userMeta = {
+      name: u.name,
+      email: u.email,
+      employeeCode: u.employeeCode,
+      roleCode,
+      roleName: u.roleId?.name ?? null,
+      managerId: u.managerId ? String(u.managerId) : null
+    };
+
+    if (!hasTeamRollup) {
+      return {
+        ...attachRowIdentity(personalMetrics, repId, yyyyMm, userMeta),
+        displayMode: 'individual',
+        hasTeamRollup: false,
+        teamSize: null,
+        personalMetrics: null
+      };
+    }
+
+    const subtreeIds = subtreeMemo.get(repId) || [repId];
+    const teamMetrics = rollupMetricsForUserIds(subtreeIds, countersByUser);
+
+    return {
+      ...attachRowIdentity(teamMetrics, repId, yyyyMm, userMeta),
+      displayMode: 'teamRollup',
+      hasTeamRollup: true,
+      teamSize: descendants,
+      personalMetrics: {
+        coverage: personalMetrics.coverage,
+        planExecution: personalMetrics.planExecution,
+        target: personalMetrics.target,
+        ordersInPeriod: personalMetrics.ordersInPeriod,
+        totalGrossSalesTp: personalMetrics.totalGrossSalesTp,
+        attendanceScorePercent: personalMetrics.attendanceScorePercent
+      }
+    };
+  });
 
   return {
     month: yyyyMm,
-    reps: rows.map((r) => ({
-      ...r,
-      name: byId[r.repId]?.name || null,
-      email: byId[r.repId]?.email || null,
-      employeeCode: byId[r.repId]?.employeeCode || null
-    }))
+    metricsVersion: 'mrepMonthlyOverviewV2',
+    scopeSummary: {
+      ...scopeMetrics,
+      teamSize: scopeUserIds.length,
+      label: explicitRepId ? 'filtered' : 'viewerScope'
+    },
+    reps
   };
 };
 
@@ -156,22 +262,40 @@ const rankings = async (companyId, viewerUser, yyyyMm, timeZone, { repId: explic
     repId: explicitRepId
   });
   const rankingsRows = data.reps
-    .map((r) => ({
-      repId: r.repId,
-      name: r.name,
-      employeeCode: r.employeeCode,
-      coveragePercent: r.coverage?.coveragePercent ?? null,
-      visitCompletionPercent: r.planExecution?.visitCompletionPercent ?? null,
-      adherencePercent: r.planExecution?.adherencePercent ?? null,
-      unplannedRatio: r.planExecution?.unplannedRatio ?? null,
-      grossRevenue: r.ordersInPeriod?.grossRevenue ?? null
-    }))
+    .filter((r) => r.roleCode === DEFAULT_MEDICAL_REP_CODE)
+    .map((r) => {
+      const individual = r.personalMetrics || r;
+      return {
+        repId: r.repId,
+        name: r.name,
+        employeeCode: r.employeeCode,
+        coveragePercent: individual.coverage?.coveragePercent ?? null,
+        visitCompletionPercent: individual.planExecution?.visitCompletionPercent ?? null,
+        adherencePercent: individual.planExecution?.adherencePercent ?? null,
+        unplannedRatio: individual.planExecution?.unplannedRatio ?? null,
+        grossRevenue: individual.ordersInPeriod?.grossRevenue ?? null
+      };
+    })
     .sort((a, b) => (Number(b.coveragePercent) || 0) - (Number(a.coveragePercent) || 0));
   rankingsRows.forEach((row, idx) => {
     row.rank = idx + 1;
   });
   return { month: yyyyMm, metricsVersion: 'mrepRankingsV1', rankings: rankingsRows };
 };
+
+const mrepOnlyOverviewReps = (reps) =>
+  reps
+    .filter((r) => r.roleCode === DEFAULT_MEDICAL_REP_CODE)
+    .map((r) => ({
+      ...r,
+      ...(r.personalMetrics || {}),
+      coverage: r.personalMetrics?.coverage ?? r.coverage,
+      planExecution: r.personalMetrics?.planExecution ?? r.planExecution,
+      target: r.personalMetrics?.target ?? r.target,
+      ordersInPeriod: r.personalMetrics?.ordersInPeriod ?? r.ordersInPeriod,
+      totalGrossSalesTp: r.personalMetrics?.totalGrossSalesTp ?? r.totalGrossSalesTp,
+      attendanceScorePercent: r.personalMetrics?.attendanceScorePercent ?? r.attendanceScorePercent
+    }));
 
 const trends = async (companyId, viewerUser, monthsCount, timeZone, { repId: explicitRepId } = {}) => {
   const zone = businessTime.requireCompanyIanaZone(timeZone);
@@ -186,9 +310,9 @@ const trends = async (companyId, viewerUser, monthsCount, timeZone, { repId: exp
     const overview = await monthlyOverview(companyId, viewerUser, m, timeZone, {
       repId: explicitRepId
     });
-    points.push({ month: m, reps: overview.reps });
+    points.push({ month: m, reps: mrepOnlyOverviewReps(overview.reps), scopeSummary: overview.scopeSummary });
   }
-  return { metricsVersion: 'mrepTrendsV1', months, points };
+  return { metricsVersion: 'mrepTrendsV2', months, points };
 };
 
 const territoryCompare = async (companyId, parentTerritoryId, yyyyMm, timeZone, viewerUserId, permissions) => {
