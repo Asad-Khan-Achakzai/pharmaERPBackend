@@ -22,6 +22,7 @@ module.exports = {
   WeeklyPlan: require('./WeeklyPlan'),
   CallPoint: require('./CallPoint'),
   PlanItem: require('./PlanItem'),
+  ActiveVisit: require('./ActiveVisit'),
   VisitLog: require('./VisitLog'),
   Expense: require('./Expense'),
   Payroll: require('./Payroll'),

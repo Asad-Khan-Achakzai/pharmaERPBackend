@@ -1,5 +1,10 @@
 const mongoose = require('mongoose');
-const { PLAN_ITEM_TYPE, PLAN_ITEM_STATUS, UNPLANNED_VISIT_REASON } = require('../constants/enums');
+const {
+  PLAN_ITEM_TYPE,
+  PLAN_ITEM_STATUS,
+  UNPLANNED_VISIT_REASON,
+  CO_VISIT_PARTICIPANT_STATUS
+} = require('../constants/enums');
 const { softDeletePlugin } = require('../plugins/softDelete');
 
 const planItemSchema = new mongoose.Schema(
@@ -29,6 +34,24 @@ const planItemSchema = new mongoose.Schema(
     /** Set for isUnplanned rows — reason taxonomy for field-force analytics. */
     unplannedReason: { type: String, enum: Object.values(UNPLANNED_VISIT_REASON), default: null },
     visitLogId: { type: mongoose.Schema.Types.ObjectId, ref: 'VisitLog', default: null },
+    /** Co-visit participants — shared visit, independent execution per participant. */
+    participants: [
+      {
+        employeeId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        lifecycleStatus: {
+          type: String,
+          enum: Object.values(CO_VISIT_PARTICIPANT_STATUS),
+          default: CO_VISIT_PARTICIPANT_STATUS.INVITED
+        },
+        invitedAt: { type: Date, default: Date.now },
+        invitedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+        respondedAt: { type: Date, default: null },
+        checkedInAt: { type: Date, default: null },
+        completedAt: { type: Date, default: null },
+        visitLogId: { type: mongoose.Schema.Types.ObjectId, ref: 'VisitLog', default: null },
+        declinedReason: { type: String, trim: true, maxlength: 500, default: null }
+      }
+    ],
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   },
@@ -37,6 +60,7 @@ const planItemSchema = new mongoose.Schema(
 
 planItemSchema.index({ companyId: 1, employeeId: 1, date: 1 });
 planItemSchema.index({ weeklyPlanId: 1, date: 1 });
+planItemSchema.index({ companyId: 1, 'participants.employeeId': 1, date: 1 });
 planItemSchema.index(
   { companyId: 1, employeeId: 1, date: 1, sequenceOrder: 1 },
   {

@@ -6,7 +6,14 @@ const VisitLog = require('../models/VisitLog');
 const Doctor = require('../models/Doctor');
 const Product = require('../models/Product');
 const ApiError = require('../utils/ApiError');
-const { PLAN_ITEM_TYPE, PLAN_ITEM_STATUS, WEEKLY_PLAN_STATUS, UNPLANNED_VISIT_REASON, DAY_EXECUTION_STATE } = require('../constants/enums');
+const {
+  PLAN_ITEM_TYPE,
+  PLAN_ITEM_STATUS,
+  WEEKLY_PLAN_STATUS,
+  UNPLANNED_VISIT_REASON,
+  DAY_EXECUTION_STATE,
+  CO_VISIT_PARTICIPANT_STATUS
+} = require('../constants/enums');
 const businessTime = require('../utils/businessTime');
 const planExecution = require('../utils/planExecution.util');
 const attendanceService = require('./attendance.service');
@@ -15,6 +22,9 @@ const coverageService = require('./coverage.service');
 const doctorLocationWorkflow = require('./doctorLocationWorkflow.service');
 const env = require('../config/env');
 const { assertOrderVisibleToUser } = require('../utils/orderScope.util');
+const coVisit = require('./coVisit.service');
+const coVisitNotification = require('./coVisitNotification.service');
+const activeVisitService = require('./activeVisit.service');
 
 const normalizePlanItemDate = (input, timeZone) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
@@ -63,39 +73,68 @@ const listPopulate = [
     select: 'name specialization latitude longitude locationStatus locationName city'
   },
   { path: 'visitLogId' },
+  { path: 'participants.employeeId', select: 'name email' },
+  { path: 'employeeId', select: 'name email' },
   { path: 'weeklyPlanId', select: 'weekStartDate weekEndDate status' }
 ];
 
-const listByPlan = async (companyId, weeklyPlanId) => {
-  return PlanItem.find({ companyId, weeklyPlanId, isDeleted: { $ne: true } })
+const attachPlanItemDateYmd = (items, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const rows = Array.isArray(items) ? items : [items];
+  return rows.map((item) => ({
+    ...item,
+    dateYmd: businessTime.businessDayKeyFromUtcInstant(item.date, tz)
+  }));
+};
+
+const listByPlan = async (companyId, weeklyPlanId, viewerUserId = null, timeZone = null) => {
+  const rows = await PlanItem.find({ companyId, weeklyPlanId, isDeleted: { $ne: true } })
     .populate(listPopulate)
     .sort({ date: 1, sequenceOrder: 1, createdAt: 1 })
     .lean();
+  const enriched = await coVisit.populateParticipantUsers(rows, viewerUserId);
+  return timeZone ? attachPlanItemDateYmd(enriched, timeZone) : enriched;
 };
 
 const buildTodayExecution = async (companyId, employeeId, dateYmd, timeZone) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   const ymd = dateYmd || businessTime.nowInBusinessTime(tz).toISODate();
   const dateDoc = businessTime.businessDayStartUtc(ymd, tz);
-  const items = await PlanItem.find({
-    companyId,
-    employeeId,
-    date: dateDoc,
-    isDeleted: { $ne: true }
-  })
-    .populate(listPopulate)
-    .sort({ sequenceOrder: 1, createdAt: 1 })
-    .lean();
+  const eid = new mongoose.Types.ObjectId(String(employeeId));
 
-  assertSequenceIntegrityForExecutionDay(items);
-  const summary = planExecution.summarizeExecutionCounts(items);
-  const dayExecutionState = planExecution.deriveDayExecutionState(items);
-  const pendingSorted = items
+  const [ownedItems, coVisitItems] = await Promise.all([
+    PlanItem.find({ companyId, employeeId: eid, date: dateDoc, isDeleted: { $ne: true } })
+      .populate(listPopulate)
+      .sort({ sequenceOrder: 1, createdAt: 1 })
+      .lean(),
+    PlanItem.find({
+      companyId,
+      date: dateDoc,
+      isDeleted: { $ne: true },
+      employeeId: { $ne: eid },
+      ...coVisit.participantVisibilityQuery(employeeId)
+    })
+      .populate(listPopulate)
+      .sort({ plannedTime: 1, createdAt: 1 })
+      .lean()
+  ]);
+
+  assertSequenceIntegrityForExecutionDay(ownedItems);
+
+  const enrichedOwned = await coVisit.populateParticipantUsers(ownedItems, employeeId);
+  const enrichedCoVisit = await coVisit.populateParticipantUsers(coVisitItems, employeeId);
+  const items = [...enrichedOwned, ...enrichedCoVisit.map((i) => ({ ...i, isCoVisitParticipantView: true }))];
+
+  const summary = planExecution.summarizeExecutionCounts(ownedItems);
+  const dayExecutionState = planExecution.deriveDayExecutionState(ownedItems);
+  const pendingSorted = ownedItems
     .filter((i) => i.status === PLAN_ITEM_STATUS.PENDING)
     .sort((a, b) => (a.sequenceOrder || 0) - (b.sequenceOrder || 0));
-  const nextPlanItem = pendingSorted[0] || null;
+  const nextPlanItem = pendingSorted[0]
+    ? enrichedOwned.find((e) => String(e._id) === String(pendingSorted[0]._id)) || pendingSorted[0]
+    : null;
 
-  const visitedItems = items.filter((i) => i.status === PLAN_ITEM_STATUS.VISITED);
+  const visitedItems = ownedItems.filter((i) => i.status === PLAN_ITEM_STATUS.VISITED);
   const outOfSequenceCount = visitedItems.filter((i) => i.wasOutOfOrder).length;
   const unplannedCompletedCount = visitedItems.filter((i) => i.isUnplanned).length;
   const coveragePercent = summary.total ? Math.round((summary.visited / summary.total) * 100) : 0;
@@ -134,6 +173,45 @@ const buildTodayExecution = async (companyId, employeeId, dateYmd, timeZone) => 
     coverageHints,
     coverageAlert,
     items
+  };
+};
+
+/**
+ * Manager / admin rollup for a single business day across many reps.
+ * `visibleEmployeeIds`:
+ *   - `null` → company-wide (admin.access)
+ *   - `ObjectId[]` → restrict to subtree or self
+ */
+const buildTeamVisits = async (companyId, visibleEmployeeIds, dateYmd, timeZone, { employeeId } = {}) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const ymd = dateYmd || businessTime.nowInBusinessTime(tz).toISODate();
+  const dateDoc = businessTime.businessDayStartUtc(ymd, tz);
+
+  const query = {
+    companyId,
+    date: dateDoc,
+    isDeleted: { $ne: true }
+  };
+
+  if (employeeId) {
+    query.employeeId = new mongoose.Types.ObjectId(String(employeeId));
+  } else if (Array.isArray(visibleEmployeeIds) && visibleEmployeeIds.length > 0) {
+    query.employeeId = { $in: visibleEmployeeIds };
+  }
+
+  const items = await PlanItem.find(query)
+    .populate(listPopulate)
+    .sort({ sequenceOrder: 1, createdAt: 1 })
+    .lean();
+
+  const enriched = await coVisit.populateParticipantUsers(items, null);
+  const withYmd = attachPlanItemDateYmd(enriched, tz);
+  const summary = planExecution.summarizeExecutionCounts(items);
+
+  return {
+    date: ymd,
+    summary,
+    items: withYmd
   };
 };
 
@@ -235,7 +313,7 @@ const bulkCreateForPlan = async (companyId, weeklyPlanId, items, reqUser, timeZo
       buckets.set(t, { date, rows: [] });
       dayOrder.push(t);
     }
-    buckets.get(t).rows.push({ type, doctorId, title, notes: raw.notes, plannedTime });
+    buckets.get(t).rows.push({ type, doctorId, title, notes: raw.notes, plannedTime, participantUserIds: raw.participantUserIds });
   }
 
   const docs = [];
@@ -243,6 +321,11 @@ const bulkCreateForPlan = async (companyId, weeklyPlanId, items, reqUser, timeZo
     const { date, rows } = buckets.get(timeKey);
     let seq = 1;
     for (const row of rows) {
+      let participants = [];
+      if (row.participantUserIds?.length) {
+        await coVisit.assertParticipantsAssignable(companyId, employeeId, row.participantUserIds, reqUser);
+        participants = coVisit.buildParticipantRecords(row.participantUserIds, reqUser.userId);
+      }
       docs.push({
         companyId,
         weeklyPlanId,
@@ -256,6 +339,7 @@ const bulkCreateForPlan = async (companyId, weeklyPlanId, items, reqUser, timeZo
         notes: row.notes,
         status: PLAN_ITEM_STATUS.PENDING,
         isUnplanned: false,
+        participants,
         createdBy: reqUser.userId
       });
       seq += 1;
@@ -264,6 +348,18 @@ const bulkCreateForPlan = async (companyId, weeklyPlanId, items, reqUser, timeZo
 
   try {
     const created = await PlanItem.insertMany(docs);
+    for (const doc of created) {
+      if (doc.participants?.length) {
+        const ids = doc.participants.map((p) => String(p.employeeId));
+        void coVisitNotification.notifyParticipantsAdded({
+          companyId,
+          planItem: doc,
+          addedUserIds: ids,
+          inviterUserId: reqUser.userId,
+          timeZone: tz
+        });
+      }
+    }
     await auditService.log({
       companyId,
       userId: reqUser.userId,
@@ -272,10 +368,13 @@ const bulkCreateForPlan = async (companyId, weeklyPlanId, items, reqUser, timeZo
       entityId: weeklyPlanId,
       changes: { after: { count: created.length } }
     });
-    return PlanItem.find({ _id: { $in: created.map((c) => c._id) } })
-      .populate('doctorId', 'name specialization')
-      .sort({ date: 1, sequenceOrder: 1 })
-      .lean();
+    return attachPlanItemDateYmd(
+      await PlanItem.find({ _id: { $in: created.map((c) => c._id) } })
+        .populate('doctorId', 'name specialization')
+        .sort({ date: 1, sequenceOrder: 1 })
+        .lean(),
+      tz
+    );
   } catch (e) {
     if (e && e.code === 11000) {
       throw new ApiError(
@@ -314,29 +413,41 @@ const markVisit = async (companyId, planItemId, body, reqUser, timeZone, company
     }).session(session);
 
     if (!item) throw new ApiError(404, 'Plan item not found');
-    if (String(item.employeeId) !== String(reqUser.userId)) {
-      throw new ApiError(403, 'You can only complete your own plan items');
-    }
-    if (item.status !== PLAN_ITEM_STATUS.PENDING) {
-      throw new ApiError(400, 'Only pending plan items can be marked as visited');
+
+    const isOwnerVisit = coVisit.isOwner(item, reqUser.userId);
+    const isParticipantVisit = coVisit.canExecuteAsParticipant(item, reqUser.userId);
+
+    if (!isOwnerVisit && !isParticipantVisit) {
+      throw new ApiError(403, 'You are not authorized to complete this co-visit');
     }
 
-    const nextId = await firstPendingIdForDay(companyId, reqUser.userId, item.date, session);
-    const isOutOfOrder = Boolean(nextId && String(planItemId) !== nextId);
-    const strictSeq =
-      Boolean(companyDoc && companyDoc.strictVisitSequence === true) ||
-      String(env.STRICT_VISIT_SEQUENCE || '0') === '1';
-
-    if (isOutOfOrder) {
-      if (strictSeq) {
-        throw new ApiError(
-          403,
-          'This visit is not next in your planned sequence. Complete earlier visits first, or ask an admin to adjust the plan.'
-        );
+    let isOutOfOrder = false;
+    if (isOwnerVisit) {
+      if (item.status !== PLAN_ITEM_STATUS.PENDING) {
+        throw new ApiError(400, 'Only pending plan items can be marked as visited');
       }
-      const reason = body.outOfOrderReason != null ? String(body.outOfOrderReason).trim() : '';
-      if (reason.length < 3) {
-        throw new ApiError(400, 'Out-of-sequence visits require outOfOrderReason (at least 3 characters).');
+      const nextId = await firstPendingIdForDay(companyId, reqUser.userId, item.date, session);
+      isOutOfOrder = Boolean(nextId && String(planItemId) !== nextId);
+      const strictSeq =
+        Boolean(companyDoc && companyDoc.strictVisitSequence === true) ||
+        String(env.STRICT_VISIT_SEQUENCE || '0') === '1';
+
+      if (isOutOfOrder) {
+        if (strictSeq) {
+          throw new ApiError(
+            403,
+            'This visit is not next in your planned sequence. Complete earlier visits first, or ask an admin to adjust the plan.'
+          );
+        }
+        const reason = body.outOfOrderReason != null ? String(body.outOfOrderReason).trim() : '';
+        if (reason.length < 3) {
+          throw new ApiError(400, 'Out-of-sequence visits require outOfOrderReason (at least 3 characters).');
+        }
+      }
+    } else {
+      const entry = coVisit.findParticipantEntry(item, reqUser.userId);
+      if (entry?.lifecycleStatus === CO_VISIT_PARTICIPANT_STATUS.COMPLETED) {
+        throw new ApiError(400, 'You have already completed your participation in this co-visit');
       }
     }
 
@@ -357,6 +468,8 @@ const markVisit = async (companyId, planItemId, body, reqUser, timeZone, company
       if (x == null || x === '') return undefined;
       return parseInstantFromBody(x, 'date');
     };
+
+    const checkInParsed = body.checkInTime != null ? parseOpt(body.checkInTime) : undefined;
 
     const { uniq, primary } = await assertProductPayload(
       companyId,
@@ -382,6 +495,8 @@ const markVisit = async (companyId, planItemId, body, reqUser, timeZone, company
       session
     });
 
+    const orderTaken = isOwnerVisit ? Boolean(body.orderTaken) : false;
+
     const [visitLog] = await VisitLog.create(
       [
         {
@@ -390,14 +505,14 @@ const markVisit = async (companyId, planItemId, body, reqUser, timeZone, company
           employeeId: reqUser.userId,
           doctorId,
           visitTime,
-          checkInTime: body.checkInTime != null ? parseOpt(body.checkInTime) : undefined,
+          checkInTime: checkInParsed,
           checkOutTime: body.checkOutTime != null ? parseOpt(body.checkOutTime) : undefined,
           location: geoFields.location,
           distanceFromDoctor: geoFields.distanceFromDoctor,
           geoFenceResult: geoFields.geoFenceResult,
           gpsAccuracy: geoFields.gpsAccuracy,
           notes: body.notes,
-          orderTaken: Boolean(body.orderTaken),
+          orderTaken,
           productsDiscussed: pDiscussed,
           primaryProductId: primary,
           samplesQty,
@@ -410,30 +525,46 @@ const markVisit = async (companyId, planItemId, body, reqUser, timeZone, company
       { session }
     );
 
-    item.status = PLAN_ITEM_STATUS.VISITED;
-    item.visitLogId = visitLog._id;
-    item.actualVisitTime = visitTime;
-    item.wasOutOfOrder = isOutOfOrder;
-    item.outOfOrderReason = isOutOfOrder ? String(body.outOfOrderReason).trim() : null;
+    if (isOwnerVisit) {
+      item.status = PLAN_ITEM_STATUS.VISITED;
+      item.visitLogId = visitLog._id;
+      item.actualVisitTime = visitTime;
+      item.wasOutOfOrder = isOutOfOrder;
+      item.outOfOrderReason = isOutOfOrder ? String(body.outOfOrderReason).trim() : null;
+    } else {
+      const pEntry = coVisit.findParticipantEntry(item, reqUser.userId);
+      if (pEntry) {
+        if (checkInParsed) pEntry.checkedInAt = checkInParsed;
+        pEntry.lifecycleStatus = CO_VISIT_PARTICIPANT_STATUS.COMPLETED;
+        pEntry.completedAt = visitTime;
+        pEntry.visitLogId = visitLog._id;
+        item.markModified('participants');
+      }
+    }
+
     item.updatedBy = reqUser.userId;
     await item.save({ session });
 
     await session.commitTransaction();
 
+    await activeVisitService.clearByPlanItemId(companyId, reqUser.userId, item._id);
+
     await auditService.log({
       companyId,
       userId: reqUser.userId,
-      action: 'planItem.markVisit',
+      action: isOwnerVisit ? 'planItem.markVisit' : 'planItem.markVisit.participant',
       entityType: 'PlanItem',
       entityId: item._id,
-      changes: { after: item.toObject(), wasOutOfOrder: isOutOfOrder }
+      changes: { after: item.toObject(), wasOutOfOrder: isOutOfOrder, role: isOwnerVisit ? 'OWNER' : 'PARTICIPANT' }
     });
 
     const lean = await PlanItem.findById(item._id)
       .populate('doctorId', 'name specialization')
       .populate('visitLogId')
+      .populate('participants.employeeId', 'name')
       .lean();
-    return { ...lean, executionMeta: { wasOutOfOrder: isOutOfOrder } };
+    const [enriched] = await coVisit.populateParticipantUsers([lean], reqUser.userId);
+    return { ...enriched, executionMeta: { wasOutOfOrder: isOutOfOrder, coVisitRole: isOwnerVisit ? 'OWNER' : 'PARTICIPANT' } };
   } catch (e) {
     await session.abortTransaction();
     throw e;
@@ -477,6 +608,31 @@ const updateByAdmin = async (companyId, planItemId, data, reqUser, timeZone) => 
     }
   }
   if (data.notes !== undefined) item.notes = data.notes;
+
+  if (data.participantUserIds !== undefined) {
+    coVisit.assertOwnerCanManageParticipants(item, reqUser);
+    const { added, removed } = coVisit.diffParticipantIds(item, data.participantUserIds);
+    await coVisit.assertParticipantsAssignable(companyId, item.employeeId, data.participantUserIds, reqUser);
+    item.participants = coVisit.buildParticipantRecords(data.participantUserIds, reqUser.userId);
+    if (added.length) {
+      void coVisitNotification.notifyParticipantsAdded({
+        companyId,
+        planItem: item,
+        addedUserIds: added,
+        inviterUserId: reqUser.userId,
+        timeZone: tz
+      });
+    }
+    if (removed.length) {
+      void coVisitNotification.notifyParticipantsRemoved({
+        companyId,
+        planItem: item,
+        removedUserIds: removed,
+        timeZone: tz
+      });
+    }
+  }
+
   item.updatedBy = reqUser.userId;
   await item.save();
 
@@ -710,6 +866,8 @@ const createUnplannedAsPlanItem = async (companyId, body, reqUser, timeZone, com
 
     await session.commitTransaction();
 
+    await activeVisitService.clearUnplannedByDoctorId(companyId, reqUser.userId, doctorId);
+
     await auditService.log({
       companyId,
       userId: reqUser.userId,
@@ -744,7 +902,34 @@ const markMissedForCompanyBusinessDay = async (companyId, ymd, timeZone) => {
     },
     { $set: { status: PLAN_ITEM_STATUS.MISSED } }
   );
-  return res.modifiedCount || 0;
+
+  const openStatuses = [
+    CO_VISIT_PARTICIPANT_STATUS.INVITED,
+    CO_VISIT_PARTICIPANT_STATUS.ACCEPTED,
+    CO_VISIT_PARTICIPANT_STATUS.CHECKED_IN
+  ];
+  const participantRes = await PlanItem.updateMany(
+    {
+      companyId,
+      date: dateDoc,
+      isDeleted: { $ne: true },
+      participants: {
+        $elemMatch: {
+          lifecycleStatus: { $in: openStatuses }
+        }
+      }
+    },
+    {
+      $set: {
+        'participants.$[p].lifecycleStatus': CO_VISIT_PARTICIPANT_STATUS.MISSED
+      }
+    },
+    {
+      arrayFilters: [{ 'p.lifecycleStatus': { $in: openStatuses } }]
+    }
+  );
+
+  return (res.modifiedCount || 0) + (participantRes.modifiedCount || 0);
 };
 
 const runPlanItemsMissedTick = async () => {
@@ -766,6 +951,7 @@ module.exports = {
   listByPlan,
   listTodayPending,
   buildTodayExecution,
+  buildTeamVisits,
   bulkCreateForPlan,
   markVisit,
   updateByAdmin,

@@ -55,7 +55,7 @@ const getById = asyncHandler(async (req, res) => {
   const visibleRepIds = await resolveOrderVisibleMedicalRepIds(req.companyId, req.user);
   ApiResponse.success(
     res,
-    await weeklyPlanService.getById(req.companyId, req.params.id, req.context.timeZone, { visibleRepIds })
+    await weeklyPlanService.getById(req.companyId, req.params.id, req.context.timeZone, { visibleRepIds, viewerUserId: req.user.userId })
   );
 });
 const copyPreviousWeek = asyncHandler(async (req, res) => {

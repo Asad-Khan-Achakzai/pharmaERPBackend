@@ -42,6 +42,10 @@ const visitLogSchema = new mongoose.Schema(
 visitLogSchema.index({ companyId: 1, employeeId: 1, visitTime: -1 });
 visitLogSchema.index({ companyId: 1, doctorId: 1, visitTime: -1 });
 visitLogSchema.index({ planItemId: 1 }, { sparse: true });
+visitLogSchema.index(
+  { planItemId: 1, employeeId: 1 },
+  { unique: true, sparse: true, partialFilterExpression: { isDeleted: { $ne: true } } }
+);
 
 visitLogSchema.plugin(softDeletePlugin);
 

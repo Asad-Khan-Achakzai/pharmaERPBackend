@@ -12,7 +12,8 @@ const bulkPlanItemsSchema = Joi.object({
         doctorId: Joi.string().allow(null, ''),
         title: Joi.string().trim().allow('', null),
         notes: Joi.string().trim().allow(''),
-        plannedTime: Joi.string().trim().max(32).allow('', null)
+        plannedTime: Joi.string().trim().max(32).allow('', null),
+        participantUserIds: Joi.array().items(Joi.string().hex().length(24)).max(20)
       })
     )
     .min(1)
@@ -69,8 +70,17 @@ const reorderPlanItemsSchema = Joi.object({
 
 const updatePlanItemSchema = Joi.object({
   status: Joi.string().valid('PENDING', 'VISITED', 'MISSED'),
-  notes: Joi.string().trim().allow('')
+  notes: Joi.string().trim().allow(''),
+  participantUserIds: Joi.array().items(Joi.string().hex().length(24)).max(20)
 }).min(1);
+
+const coVisitAvailabilityQuerySchema = Joi.object({
+  date: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).required(),
+  doctorId: Joi.string().hex().length(24),
+  plannedTime: Joi.string().trim().max(32).allow('', null),
+  candidateUserIds: Joi.string().trim().required(),
+  excludePlanItemId: Joi.string().hex().length(24)
+});
 
 const listTodayQuerySchema = Joi.object({
   date: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/),
@@ -96,5 +106,6 @@ module.exports = {
   listTodayQuerySchema,
   reorderPlanItemsSchema,
   visitSummaryQuerySchema,
-  visitByEmployeeQuerySchema
+  visitByEmployeeQuerySchema,
+  coVisitAvailabilityQuerySchema
 };

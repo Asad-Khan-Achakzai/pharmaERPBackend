@@ -213,6 +213,23 @@ const PLAN_ITEM_STATUS = {
   MISSED: 'MISSED'
 };
 
+/** Co-visit participant lifecycle (PlanItem.participants[].lifecycleStatus). */
+const CO_VISIT_PARTICIPANT_STATUS = {
+  INVITED: 'INVITED',
+  ACCEPTED: 'ACCEPTED',
+  DECLINED: 'DECLINED',
+  CHECKED_IN: 'CHECKED_IN',
+  COMPLETED: 'COMPLETED',
+  MISSED: 'MISSED'
+};
+
+/** Advisory tier when selecting co-visit participants (non-blocking). */
+const CO_VISIT_AVAILABILITY_TIER = {
+  AVAILABLE: 'AVAILABLE',
+  WARNING: 'WARNING',
+  CONFLICT: 'CONFLICT'
+};
+
 /** Derived per calendar day for a rep (plan execution UI). */
 const DAY_EXECUTION_STATE = {
   NOT_STARTED: 'NOT_STARTED',
@@ -459,6 +476,8 @@ module.exports = {
   WEEKLY_PLAN_STATUS,
   PLAN_ITEM_TYPE,
   PLAN_ITEM_STATUS,
+  CO_VISIT_PARTICIPANT_STATUS,
+  CO_VISIT_AVAILABILITY_TIER,
   DAY_EXECUTION_STATE,
   UNPLANNED_VISIT_REASON,
   DOCTOR_LOCATION_STATUS,

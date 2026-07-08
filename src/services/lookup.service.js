@@ -188,6 +188,11 @@ const doctors = async (companyId, query = {}) => {
 const assignableUsers = async (companyId, query = {}, reqUser = null) => {
   const limit = clampLimit(query);
   const filter = { companyId, isActive: true };
+  const coVisitOwnerId = qScalar(query.forCoVisitOwnerId);
+  if (coVisitOwnerId && mongoose.Types.ObjectId.isValid(coVisitOwnerId)) {
+    // Co-visit picker: all active company users except the visit owner.
+    filter._id = { $ne: new mongoose.Types.ObjectId(coVisitOwnerId) };
+  } else {
   const scopeTeam = qScalar(query.scope) === 'team';
   if (scopeTeam && reqUser && !userHasTenantWideAccess(reqUser)) {
     const subtreeIds = await resolveSubtreeUserIds(companyId, reqUser.userId, {
@@ -195,6 +200,7 @@ const assignableUsers = async (companyId, query = {}, reqUser = null) => {
       activeOnly: true
     });
     filter._id = subtreeIds.length ? { $in: subtreeIds } : { $in: [] };
+  }
   }
   const searchTerm = qScalar(query.search);
   if (searchTerm) {

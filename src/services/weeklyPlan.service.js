@@ -207,13 +207,25 @@ const getById = async (companyId, id, timeZone, opts = {}) => {
     );
   if (!plan) throw new ApiError(404, 'Weekly plan not found');
   assertOrderVisibleToUser(plan, opts.visibleRepIds);
-  const planItems = await planItemService.listByPlan(companyId, id);
+  const weekStartDateYmd = businessTime.businessDayKeyFromUtcInstant(plan.weekStartDate, tz);
+  const weekEndDateYmd = businessTime.businessDayKeyFromUtcInstant(plan.weekEndDate, tz);
+  const weekDayYmds = [];
+  let cur = DateTime.fromISO(weekStartDateYmd, { zone: tz });
+  const end = DateTime.fromISO(weekEndDateYmd, { zone: tz });
+  while (cur.toMillis() <= end.toMillis()) {
+    weekDayYmds.push(cur.toISODate());
+    cur = cur.plus({ days: 1 });
+  }
+  const planItems = await planItemService.listByPlan(companyId, id, opts.viewerUserId || null, tz);
   const metrics = planExecution.computePlanMetrics(planItems, tz);
   const businessTodayYmd = businessTime.nowInBusinessTime(tz).toISODate();
   const beforeWeek = planExecution.isBeforePlanWeek(plan, tz);
   const companyPolicy = await checkInPolicyServiceV2.getCompanyForCheckInPolicy(companyId);
   return {
     ...plan.toObject(),
+    weekStartDateYmd,
+    weekEndDateYmd,
+    weekDayYmds,
     planItems,
     executionMetrics: metrics,
     editLock: { beforePlanWeek: beforeWeek, businessTodayYmd },
@@ -311,7 +323,7 @@ const copyPreviousWeekIntoPlan = async (companyId, targetPlanId, reqUser, timeZo
     changes: { after: { fromPlanId: String(prev._id), copiedCount: docs.length } }
   });
 
-  return planItemService.listByPlan(companyId, target._id);
+  return planItemService.listByPlan(companyId, target._id, null, tz);
 };
 
 /* ============================================================================
