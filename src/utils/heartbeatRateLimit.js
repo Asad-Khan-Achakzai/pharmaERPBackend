@@ -3,7 +3,8 @@ const env = require('../config/env');
 
 const BURST_LIMIT = 6;
 const WINDOW_MS = 60_000;
-const MIN_GAP_MS = 5000;
+/** Align with mobile background throttle (~30s) so foreground+background races don't 429. */
+const MIN_GAP_MS = 25_000;
 
 /** In-process fallback buckets when Redis is unavailable. */
 const buckets = new Map();

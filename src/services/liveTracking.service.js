@@ -68,14 +68,21 @@ async function recordHeartbeat({
   expectedNextPingMs
 }) {
   await assertLiveTrackingEnabled(companyId);
-  assertHeartbeatRateLimit(companyId, userId);
-
-  const geo = resolveGeoPlatform(company);
-  const maxAccuracyMeters = geo.liveTracking?.maxAccuracyMeters ?? MAX_ACCURACY_METERS;
 
   if (typeof lat !== 'number' || typeof lng !== 'number') {
     throw new ApiError(400, 'lat and lng are required');
   }
+
+  if (clientUuid) {
+    const existing = await AttendanceHeartbeat.findOne({ companyId, userId, clientUuid }).lean();
+    if (existing) return existing;
+  }
+
+  await assertHeartbeatRateLimit(companyId, userId);
+
+  const geo = resolveGeoPlatform(company);
+  const maxAccuracyMeters = geo.liveTracking?.maxAccuracyMeters ?? MAX_ACCURACY_METERS;
+
   if (accuracy != null && accuracy > maxAccuracyMeters) {
     throw new ApiError(422, `Location accuracy too low (>${maxAccuracyMeters}m)`);
   }
@@ -99,11 +106,6 @@ async function recordHeartbeat({
     capturedAt: capturedAt ? new Date(capturedAt) : new Date(),
     clientUuid: clientUuid || null
   };
-
-  if (clientUuid) {
-    const existing = await AttendanceHeartbeat.findOne({ companyId, userId, clientUuid }).lean();
-    if (existing) return existing;
-  }
 
   try {
     const doc = await AttendanceHeartbeat.create(payload);
