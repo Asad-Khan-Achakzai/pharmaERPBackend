@@ -6,7 +6,7 @@ const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const { escapeRegex, qScalar, applyCreatedAtRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
 const { ALL_PERMISSIONS } = require('../constants/permissions');
-const { ROLES, TERRITORY_KIND } = require('../constants/enums');
+const { ROLES } = require('../constants/enums');
 const { ADMIN_ACCESS } = require('../constants/rbac');
 const auditService = require('./audit.service');
 const mediaAttach = require('./media.attach');
@@ -32,7 +32,8 @@ async function withUserImages(companyId, docs) {
 const { resolveSubtreeUserIds, assertNoCycle } = require('../utils/teamScope');
 const { userHasTenantWideAccess } = require('../utils/effectivePermissions');
 const { validateReportingHierarchy } = require('../utils/userReportingHierarchy.util');
-const { validateTerritoryAnchorForRole } = require('../utils/userTerritoryAnchor.util');
+const { validateTerritoryAnchorForRole, validateCoverageTerritoryKindsForRole } = require('../utils/userTerritoryAnchor.util');
+const { inferTerritoryAssignmentLabel } = require('../utils/userTerritoryAssignment.util');
 
 const normalizeEmail = (e) => (e == null || e === '' ? '' : String(e).toLowerCase().trim());
 
@@ -103,27 +104,31 @@ const normalizeCoverageTerritoryIds = async (companyId, rawList, primaryTerritor
 };
 
 /**
- * When anchor is a brick, extra coverage is normally explicit bricks only (new UX).
- * Legacy rows may still store area/zone nodes in `coverageTerritoryIds`; those keep expanding via path.
+ * Load primary + coverage territory kinds and validate extras against role rules.
  */
-const inferTerritoryAssignmentLabel = (anchorPopulated, coveragePopulated) => {
-  const cov = Array.isArray(coveragePopulated) ? coveragePopulated.filter(Boolean) : [];
-  const coverageLen = cov.length;
-  const coverageAllBrick =
-    coverageLen > 0 && cov.every((c) => typeof c === 'object' && c && c.kind === TERRITORY_KIND.BRICK);
-  const anchor = anchorPopulated && typeof anchorPopulated === 'object' ? anchorPopulated : null;
-  if (!anchor || !anchor.kind) return { key: 'NONE', label: 'None' };
-  const k = anchor.kind;
-  if (k === TERRITORY_KIND.ZONE && coverageLen === 0) return { key: 'ENTIRE_ZONE', label: 'Entire Zone' };
-  if (k === TERRITORY_KIND.AREA && coverageLen === 0) return { key: 'ENTIRE_AREA', label: 'Entire Area' };
-  if (k === TERRITORY_KIND.BRICK && coverageLen === 0) return { key: 'SINGLE_BRICK', label: 'Single Brick' };
-  if (k === TERRITORY_KIND.BRICK && coverageLen > 0 && coverageAllBrick) {
-    return { key: 'CUSTOM_MULTI_BRICK', label: 'Custom Multi-Brick' };
-  }
-  if (coverageLen > 0) {
-    return { key: 'HIERARCHICAL_PLUS_EXTRA', label: 'Hierarchical + extra coverage' };
-  }
-  return { key: 'CUSTOM', label: 'Custom / legacy' };
+const assertCoverageMatchesRole = async (companyId, roleId, primaryTerritoryId, coverageOids) => {
+  if (!roleId || !primaryTerritoryId) return;
+  const primary = await Territory.findOne({
+    _id: primaryTerritoryId,
+    companyId,
+    isDeleted: { $ne: true }
+  })
+    .select('kind')
+    .lean();
+  if (!primary?.kind) return;
+
+  const extras = Array.isArray(coverageOids) ? coverageOids : [];
+  if (!extras.length) return;
+
+  const docs = await Territory.find({
+    _id: { $in: extras },
+    companyId,
+    isDeleted: { $ne: true }
+  })
+    .select('kind')
+    .lean();
+
+  await validateCoverageTerritoryKindsForRole(Role, roleId, primary.kind, docs);
 };
 
 /**
@@ -239,6 +244,7 @@ const create = async (companyId, data, reqUser) => {
   let extraCoverage;
   if (Object.prototype.hasOwnProperty.call(data, 'coverageTerritoryIds')) {
     extraCoverage = await normalizeCoverageTerritoryIds(companyId, data.coverageTerritoryIds, payload.territoryId);
+    await assertCoverageMatchesRole(companyId, payload.roleId, payload.territoryId, extraCoverage);
   }
 
   const user = await User.create({
@@ -404,6 +410,8 @@ const update = async (companyId, id, data, reqUser) => {
       data.coverageTerritoryIds,
       primary
     );
+    const effectiveRoleId = Object.prototype.hasOwnProperty.call(payload, 'roleId') ? payload.roleId : user.roleId;
+    await assertCoverageMatchesRole(companyId, effectiveRoleId, primary, payload.coverageTerritoryIds);
   }
 
   Object.assign(user, { ...payload, updatedBy: reqUser.userId });
