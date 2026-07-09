@@ -22,9 +22,26 @@ const {
   applyDateFieldRangeFromQuery,
   applyCreatedByFromQuery
 } = require('../utils/listQuery');
+const mediaAttach = require('./media.attach');
 
 const nd = { isDeleted: { $ne: true } };
 const oid = (id) => new mongoose.Types.ObjectId(id);
+
+/** Attach a transient signed receipt URL from MediaAsset (source of truth). */
+async function withReceipts(companyId, docs) {
+  const list = Array.isArray(docs) ? docs : [docs];
+  const ids = list.filter(Boolean).map((d) => String(d._id));
+  const images = await mediaAttach.resolveEntityImages({ companyId, resource: 'expenses', ids });
+  const decorate = (d) => {
+    if (!d) return d;
+    const obj = typeof d.toObject === 'function' ? d.toObject() : d;
+    const img = images.get(String(obj._id));
+    obj.receiptUrl = img ? img.url : null;
+    obj.receiptMime = img ? img.mime || null : null;
+    return obj;
+  };
+  return Array.isArray(docs) ? list.map(decorate) : decorate(docs);
+}
 
 const expenseCategoryToAccountCode = (category) => {
   switch (category) {
@@ -155,7 +172,7 @@ const list = async (companyId, query, timeZone = 'UTC') => {
     Expense.find(filter).populate(populateOpts).sort(sort).skip(skip).limit(limit),
     Expense.countDocuments(filter)
   ]);
-  return { docs, total, page, limit };
+  return { docs: await withReceipts(companyId, docs), total, page, limit };
 };
 
 const create = async (companyId, data, reqUser) => {
@@ -217,7 +234,8 @@ const create = async (companyId, data, reqUser) => {
     void notifyExpenseManagers(companyId, created, reqUser);
   }
 
-  return Expense.findById(created._id).populate(populateOpts);
+  const populated = await Expense.findById(created._id).populate(populateOpts);
+  return withReceipts(companyId, populated);
 };
 
 async function notifyExpenseManagers(companyId, expense, submitter) {
@@ -270,7 +288,7 @@ const inbox = async (companyId, reqUser, query = {}) => {
     Expense.find(filter).populate(populateOpts).sort({ createdAt: -1 }).skip(skip).limit(limit),
     Expense.countDocuments(filter)
   ]);
-  return { docs, total, page, limit };
+  return { docs: await withReceipts(companyId, docs), total, page, limit };
 };
 
 const approve = async (companyId, id, data, reqUser) => {
@@ -319,7 +337,8 @@ const approve = async (companyId, id, data, reqUser) => {
     });
   }
 
-  return Expense.findById(expense._id).populate(populateOpts);
+  const approved = await Expense.findById(expense._id).populate(populateOpts);
+  return withReceipts(companyId, approved);
 };
 
 const reject = async (companyId, id, reason, reqUser) => {
@@ -352,7 +371,8 @@ const reject = async (companyId, id, reason, reqUser) => {
     });
   }
 
-  return Expense.findById(expense._id).populate(populateOpts);
+  const rejected = await Expense.findById(expense._id).populate(populateOpts);
+  return withReceipts(companyId, rejected);
 };
 
 const update = async (companyId, id, data, reqUser) => {
@@ -372,7 +392,8 @@ const update = async (companyId, id, data, reqUser) => {
     entityId: expense._id,
     changes: { before, after: expense.toObject() }
   });
-  return expense.populate(populateOpts);
+  const updated = await expense.populate(populateOpts);
+  return withReceipts(companyId, updated);
 };
 
 const remove = async (companyId, id, reqUser) => {

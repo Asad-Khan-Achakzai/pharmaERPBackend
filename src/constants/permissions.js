@@ -19,7 +19,7 @@ const PERMISSIONS = {
   weeklyPlans:  ['view', 'create', 'edit', 'markVisit', 'review', 'approve'],
   /** CP (call point) master — Admin-managed check-in locations selected per day in weekly plans. */
   callPoints:   ['view', 'create', 'edit', 'delete'],
-  expenses:     ['view', 'create', 'edit', 'delete', 'approve'],
+  expenses:     ['view', 'create', 'edit', 'delete', 'approve', 'reject'],
   payroll:      ['view', 'create', 'edit', 'pay'],
   /**
    * `request.create` — submit attendance regularization when company has approvals enabled.

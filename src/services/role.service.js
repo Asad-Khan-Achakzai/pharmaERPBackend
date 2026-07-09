@@ -84,7 +84,8 @@ const DEFAULT_ASM_PERMISSIONS = [
   'attendance.governance.view',
   'expenses.view',
   'expenses.create',
-  'expenses.approve'
+  'expenses.approve',
+  'expenses.reject'
 ];
 
 const DEFAULT_RM_PERMISSIONS = [
