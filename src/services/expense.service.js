@@ -250,6 +250,7 @@ async function notifyExpenseManagers(companyId, expense, submitter) {
 
   const title = 'Expense pending approval';
   const body = `${expense.description || 'Field expense'} — Rs ${expense.amount}`;
+  const expenseId = String(expense._id);
   await Promise.all(
     [...targets].map((userId) =>
       notificationService
@@ -260,7 +261,8 @@ async function notifyExpenseManagers(companyId, expense, submitter) {
           body,
           kind: NOTIFICATION_KIND.EXPENSE,
           link: '/(manager)/approvals',
-          meta: { expenseId: String(expense._id) }
+          meta: { expenseId },
+          dedupeKey: `expense:${expenseId}:submitted:${userId}`
         })
         .catch(() => null)
     )
@@ -327,13 +329,16 @@ const approve = async (companyId, id, data, reqUser) => {
   });
 
   if (expense.employeeId) {
+    const expenseId = String(expense._id);
     void notificationService.createForUser({
       companyId,
       userId: expense.employeeId,
       title: 'Expense approved',
       body: expense.description || 'Your expense was approved',
       kind: NOTIFICATION_KIND.EXPENSE,
-      link: '/expenses'
+      link: '/expenses',
+      meta: { expenseId },
+      dedupeKey: `expense:${expenseId}:approved`
     });
   }
 
@@ -361,13 +366,16 @@ const reject = async (companyId, id, reason, reqUser) => {
   });
 
   if (expense.employeeId) {
+    const expenseId = String(expense._id);
     void notificationService.createForUser({
       companyId,
       userId: expense.employeeId,
       title: 'Expense rejected',
       body: reason,
       kind: NOTIFICATION_KIND.EXPENSE,
-      link: '/expenses'
+      link: '/expenses',
+      meta: { expenseId },
+      dedupeKey: `expense:${expenseId}:rejected`
     });
   }
 

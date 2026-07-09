@@ -596,6 +596,7 @@ const updateByAdmin = async (companyId, planItemId, data, reqUser, timeZone) => 
   }
 
   const before = item.toObject();
+  const notesBefore = item.notes;
   if (data.status !== undefined) {
     if (locked) throw new ApiError(400, 'Cannot change status for locked days');
     if (!Object.values(PLAN_ITEM_STATUS).includes(data.status)) {
@@ -608,6 +609,8 @@ const updateByAdmin = async (companyId, planItemId, data, reqUser, timeZone) => 
     }
   }
   if (data.notes !== undefined) item.notes = data.notes;
+
+  let scheduleTouched = data.notes !== undefined && data.notes !== notesBefore;
 
   if (data.participantUserIds !== undefined) {
     coVisit.assertOwnerCanManageParticipants(item, reqUser);
@@ -635,6 +638,20 @@ const updateByAdmin = async (companyId, planItemId, data, reqUser, timeZone) => 
 
   item.updatedBy = reqUser.userId;
   await item.save();
+
+  if (scheduleTouched) {
+    const participantIds = (item.participants || [])
+      .map((p) => String(p.employeeId))
+      .filter(Boolean);
+    if (participantIds.length) {
+      void coVisitNotification.notifyCoVisitUpdated({
+        companyId,
+        planItem: item,
+        participantUserIds: participantIds,
+        timeZone: tz
+      });
+    }
+  }
 
   await auditService.log({
     companyId,

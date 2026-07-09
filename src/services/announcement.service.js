@@ -4,7 +4,9 @@ const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const notificationService = require('./notification.service');
 const { NOTIFICATION_KIND } = require('../constants/enums');
+const logger = require('../utils/logger');
 
+const FANOUT_BATCH = 100;
 const nd = { isDeleted: { $ne: true } };
 
 async function feed(companyId, query = {}) {
@@ -33,7 +35,10 @@ async function create(companyId, data, reqUser) {
     createdBy: reqUser.userId
   });
   if (data.publish) {
-    await fanOutAnnouncement(companyId, doc, reqUser.userId);
+    // Non-blocking: HTTP returns after announcement is saved; fan-out drains via outbox.
+    void fanOutAnnouncement(companyId, doc, reqUser.userId).catch((err) => {
+      logger.error('announcement.fanout_failed', { id: String(doc._id), err: err.message });
+    });
   }
   return doc.toObject();
 }
@@ -45,34 +50,60 @@ async function publish(companyId, id, reqUser) {
   doc.publishedAt = new Date();
   doc.publishedBy = reqUser.userId;
   await doc.save();
-  await fanOutAnnouncement(companyId, doc, reqUser.userId);
+  void fanOutAnnouncement(companyId, doc, reqUser.userId).catch((err) => {
+    logger.error('announcement.fanout_failed', { id: String(doc._id), err: err.message });
+  });
   return doc.toObject();
 }
 
+/**
+ * Batched fan-out: create notifications (with dedupe) in chunks of FANOUT_BATCH.
+ * Push delivery is handled by the outbox worker.
+ */
 async function fanOutAnnouncement(companyId, announcement, actorUserId) {
-  const users = await User.find({
-    companyId,
-    isActive: { $ne: false },
-    isDeleted: { $ne: true }
-  })
-    .select('_id')
-    .lean();
-
   const title = announcement.title;
   const body = announcement.body?.slice(0, 500) || '';
-  await Promise.all(
-    users.map((u) =>
-      notificationService.createForUser({
-        companyId,
-        userId: u._id,
-        title,
-        body,
-        kind: NOTIFICATION_KIND.ANNOUNCEMENT,
-        link: '/notifications',
-        meta: { announcementId: String(announcement._id), publishedBy: String(actorUserId) }
-      }).catch(() => null)
-    )
-  );
+  const announcementId = String(announcement._id);
+  let skip = 0;
+  let total = 0;
+
+  for (;;) {
+    const users = await User.find({
+      companyId,
+      isActive: { $ne: false },
+      isDeleted: { $ne: true }
+    })
+      .select('_id')
+      .sort({ _id: 1 })
+      .skip(skip)
+      .limit(FANOUT_BATCH)
+      .lean();
+
+    if (!users.length) break;
+
+    await Promise.all(
+      users.map((u) =>
+        notificationService
+          .createForUser({
+            companyId,
+            userId: u._id,
+            title,
+            body,
+            kind: NOTIFICATION_KIND.ANNOUNCEMENT,
+            link: '/notifications',
+            meta: { announcementId, publishedBy: String(actorUserId) },
+            dedupeKey: `announcement:${announcementId}:fanout`
+          })
+          .catch(() => null)
+      )
+    );
+
+    total += users.length;
+    skip += users.length;
+    if (users.length < FANOUT_BATCH) break;
+  }
+
+  logger.info('announcement.fanout_enqueued', { announcementId, users: total });
 }
 
-module.exports = { feed, create, publish };
+module.exports = { feed, create, publish, fanOutAnnouncement };

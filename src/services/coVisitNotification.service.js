@@ -20,6 +20,7 @@ const notifyParticipantsAdded = async ({ companyId, planItem, addedUserIds, invi
   const when = fmtVisitWhen(planItem, tz);
   const doctor = doctorLabel(planItem);
   const link = `/visit/${planItem._id}`;
+  const planItemId = String(planItem._id);
 
   await Promise.all(
     addedUserIds.map((userId) =>
@@ -30,7 +31,8 @@ const notifyParticipantsAdded = async ({ companyId, planItem, addedUserIds, invi
         body: `You have been invited to a Co-Visit: ${doctor}, ${when}`,
         kind: NOTIFICATION_KIND.PLAN,
         link,
-        meta: { planItemId: String(planItem._id), inviterUserId: String(inviterUserId) }
+        meta: { planItemId, inviterUserId: String(inviterUserId) },
+        dedupeKey: `plan:${planItemId}:added:${userId}`
       })
     )
   );
@@ -41,6 +43,8 @@ const notifyParticipantsRemoved = async ({ companyId, planItem, removedUserIds, 
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   const when = fmtVisitWhen(planItem, tz);
   const doctor = doctorLabel(planItem);
+  const planItemId = String(planItem._id);
+  const link = `/visit/${planItemId}`;
 
   await Promise.all(
     removedUserIds.map((userId) =>
@@ -50,7 +54,9 @@ const notifyParticipantsRemoved = async ({ companyId, planItem, removedUserIds, 
         title: 'Removed from Co-Visit',
         body: `You have been removed from a Co-Visit: ${doctor}, ${when}`,
         kind: NOTIFICATION_KIND.PLAN,
-        meta: { planItemId: String(planItem._id) }
+        link,
+        meta: { planItemId },
+        dedupeKey: `plan:${planItemId}:removed:${userId}`
       })
     )
   );
@@ -62,6 +68,9 @@ const notifyCoVisitUpdated = async ({ companyId, planItem, participantUserIds, t
   const when = fmtVisitWhen(planItem, tz);
   const doctor = doctorLabel(planItem);
   const link = `/visit/${planItem._id}`;
+  const planItemId = String(planItem._id);
+  // Include schedule fingerprint so a later change can notify again.
+  const stamp = `${when}|${doctor}`;
 
   await Promise.all(
     participantUserIds.map((userId) =>
@@ -72,7 +81,8 @@ const notifyCoVisitUpdated = async ({ companyId, planItem, participantUserIds, t
         body: `Co-Visit schedule changed: ${doctor}, ${when}`,
         kind: NOTIFICATION_KIND.PLAN,
         link,
-        meta: { planItemId: String(planItem._id) }
+        meta: { planItemId },
+        dedupeKey: `plan:${planItemId}:updated:${userId}:${stamp}`
       })
     )
   );

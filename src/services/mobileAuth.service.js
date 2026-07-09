@@ -40,7 +40,31 @@ function describeDevice(device) {
   };
 }
 
+/**
+ * Prevent cross-user push leakage on a shared physical device:
+ * revoke any other user's active sessions for the same deviceId and clear tokens.
+ */
+async function revokeOtherUsersOnDevice(deviceId, currentUserId) {
+  if (!deviceId || !currentUserId) return;
+  await DeviceSession.updateMany(
+    {
+      deviceId,
+      userId: { $ne: currentUserId },
+      revokedAt: null
+    },
+    {
+      $set: {
+        revokedAt: new Date(),
+        revokedReason: 'DEVICE_REASSIGNED',
+        pushToken: null
+      }
+    }
+  );
+}
+
 async function issueDeviceSession({ user, companyId, device }) {
+  await revokeOtherUsersOnDevice(device.deviceId, user._id);
+
   const tokens = generateTokens({
     userId: user._id,
     userType: effectiveUserType(user),
@@ -217,7 +241,7 @@ async function logout({ user, deviceId }) {
   if (!deviceId) return;
   await DeviceSession.findOneAndUpdate(
     { userId: user.userId, deviceId },
-    { $set: { revokedAt: new Date(), revokedReason: 'USER_LOGOUT' } }
+    { $set: { revokedAt: new Date(), revokedReason: 'USER_LOGOUT', pushToken: null } }
   );
 }
 
@@ -240,24 +264,46 @@ async function listSessions({ user }) {
 async function revokeSession({ user, sessionId }) {
   const doc = await DeviceSession.findOneAndUpdate(
     { _id: sessionId, userId: user.userId },
-    { $set: { revokedAt: new Date(), revokedReason: 'USER_REVOKE' } },
+    { $set: { revokedAt: new Date(), revokedReason: 'USER_REVOKE', pushToken: null } },
     { new: true }
   );
   if (!doc) throw new ApiError(404, 'Session not found');
 }
 
-async function updatePushToken({ user, deviceId, pushToken }) {
+async function updatePushToken({ user, deviceId, pushToken, headerDeviceId }) {
   if (!deviceId) throw new ApiError(400, 'deviceId is required');
-  const token = pushToken ? String(pushToken).trim() : null;
+  const bodyDeviceId = String(deviceId).trim();
+  const hdr = headerDeviceId != null ? String(headerDeviceId).trim() : '';
+  if (!hdr || hdr !== bodyDeviceId) {
+    throw new ApiError(400, 'deviceId must match X-Device-Id header');
+  }
+
+  try {
+    require('../utils/pushTokenRateLimit').assertPushTokenRateLimit(user.userId);
+  } catch (err) {
+    if (err.statusCode === 429) throw new ApiError(429, err.message);
+    throw err;
+  }
+
+  let token = pushToken ? String(pushToken).trim() : null;
+  if (token) {
+    const { isValidExpoPushToken } = require('../utils/pushDiagnostics');
+    if (!isValidExpoPushToken(token)) {
+      throw new ApiError(400, 'Invalid Expo push token');
+    }
+  }
 
   const result = await DeviceSession.findOneAndUpdate(
-    { userId: user.userId, deviceId, revokedAt: null },
+    { userId: user.userId, deviceId: bodyDeviceId, revokedAt: null },
     { $set: { pushToken: token, lastSeenAt: new Date() } },
     { new: true }
   );
 
   if (!result) {
-    const anySession = await DeviceSession.findOne({ userId: user.userId, deviceId }).lean();
+    const anySession = await DeviceSession.findOne({
+      userId: user.userId,
+      deviceId: bodyDeviceId
+    }).lean();
     if (!anySession) {
       throw new ApiError(
         404,
@@ -279,7 +325,7 @@ async function changePassword({ userId, currentPassword, newPassword }) {
   await user.save();
   await DeviceSession.updateMany(
     { userId: user._id, revokedAt: null },
-    { $set: { revokedAt: new Date(), revokedReason: 'PASSWORD_CHANGED' } }
+    { $set: { revokedAt: new Date(), revokedReason: 'PASSWORD_CHANGED', pushToken: null } }
   );
 }
 
@@ -309,7 +355,12 @@ async function switchCompany({ user, companyId, device }) {
     accessToken: tokens.accessToken,
     refreshToken: tokens.refreshToken,
     user: u,
-    company: { _id: company._id, name: company.name, status: 'LIVE' }
+    company: {
+      _id: company._id,
+      name: company.name,
+      status: 'LIVE',
+      mobilePushEnabled: !!company.mobilePushEnabled
+    }
   };
 }
 

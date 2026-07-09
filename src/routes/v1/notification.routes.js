@@ -6,6 +6,7 @@ const { companyScope } = require('../../middleware/companyScope');
 
 router.use(authenticate, companyScope);
 router.get('/feed', c.feed);
+router.get('/unread-count', c.unreadCount);
 router.post('/:id/read', c.markRead);
 
 module.exports = router;

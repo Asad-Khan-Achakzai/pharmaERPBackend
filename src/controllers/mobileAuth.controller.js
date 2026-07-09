@@ -44,7 +44,8 @@ const updatePushToken = asyncHandler(async (req, res) => {
   const data = await mobileAuthService.updatePushToken({
     user: req.user,
     deviceId: req.body.deviceId,
-    pushToken: req.body.pushToken
+    pushToken: req.body.pushToken,
+    headerDeviceId: req.get('X-Device-Id') || req.get('x-device-id')
   });
   ApiResponse.success(res, data, 'Push token updated');
 });
@@ -83,7 +84,8 @@ const requestDeviceChange = asyncHandler(async (req, res) => {
 const getDeviceChangeRequest = asyncHandler(async (req, res) => {
   const data = await deviceControlService.getMyDeviceChangeRequest({
     userId: req.deviceChange.userId,
-    companyId: req.deviceChange.companyId
+    companyId: req.deviceChange.companyId,
+    deviceId: req.deviceChange.deviceId
   });
   ApiResponse.success(res, data);
 });

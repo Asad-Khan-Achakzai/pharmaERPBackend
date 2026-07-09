@@ -186,6 +186,8 @@ async function notifyNextApprovers({ companyId, request, payload = {} }) {
       : `${requesterName} submitted a late check-in for approval`;
   }
 
+  const requestId = String(request._id);
+  const stepKey = `attendance:${requestId}:step:${request.currentStepIndex ?? 0}`;
   await Promise.all(
     targetIds.map((userId) =>
       notificationService
@@ -196,11 +198,44 @@ async function notifyNextApprovers({ companyId, request, payload = {} }) {
           body,
           kind: NOTIFICATION_KIND.ATTENDANCE,
           link: '/(manager)/approvals',
-          meta: { requestId: String(request._id), requestType: request.type }
+          meta: { requestId, requestType: request.type },
+          dedupeKey: `${stepKey}:${userId}`
         })
         .catch(() => null)
     )
   );
+}
+
+/** Notify the requesting employee of a final attendance outcome (sanitized push via outbox). */
+async function notifyRequesterOutcome({ companyId, request, outcome }) {
+  if (!request?.requesterId) return;
+  const requestId = String(request._id);
+  const typeLabel = String(request.type || 'request').replace(/_/g, ' ').toLowerCase();
+  let title = 'Attendance update';
+  let body = `Your ${typeLabel} was updated`;
+  if (outcome === 'approved') {
+    title = 'Attendance request approved';
+    body = `Your ${typeLabel} was approved`;
+  } else if (outcome === 'rejected') {
+    title = 'Attendance request rejected';
+    body = `Your ${typeLabel} was rejected`;
+  } else if (outcome === 'auto_rejected') {
+    title = 'Attendance request auto-rejected';
+    body = `Your ${typeLabel} was automatically rejected`;
+  }
+
+  await notificationService
+    .createForUser({
+      companyId,
+      userId: request.requesterId,
+      title,
+      body,
+      kind: NOTIFICATION_KIND.ATTENDANCE,
+      link: '/notifications',
+      meta: { requestId, requestType: request.type, outcome },
+      dedupeKey: `attendance:${requestId}:outcome:${outcome}`
+    })
+    .catch(() => null);
 }
 
 const logRequestWorkflowAudit = async ({ companyId, requestId, attendanceId, actorUserId, source, action, meta }) => {
@@ -562,6 +597,7 @@ const approveRequest = async ({ companyId, requestId, actorUserId, isAdmin, comm
       action: 'ATTENDANCE_REQUEST_FINAL_APPROVED',
       meta: {}
     });
+    void notifyRequesterOutcome({ companyId, request, outcome: 'approved' });
     return request;
   }
 
@@ -663,6 +699,8 @@ const rejectRequest = async ({ companyId, requestId, actorUserId, isAdmin, comme
     action: 'ATTENDANCE_REQUEST_REJECTED',
     meta: {}
   });
+
+  void notifyRequesterOutcome({ companyId, request, outcome: 'rejected' });
 
   return request;
 };
@@ -1105,6 +1143,8 @@ const systemAutoRejectRequest = async ({ companyId, requestId, comment }) => {
     action: 'ATTENDANCE_REQUEST_AUTO_REJECTED',
     meta: {}
   });
+
+  void notifyRequesterOutcome({ companyId, request, outcome: 'auto_rejected' });
 };
 
 const runAttendanceRequestAutomationTick = async () => {

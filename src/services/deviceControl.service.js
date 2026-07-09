@@ -226,11 +226,32 @@ async function createDeviceChangeRequest({ userId, companyId, tokenDeviceId, dev
   return created.toObject();
 }
 
-async function getMyDeviceChangeRequest({ userId, companyId }) {
-  const latest = await DeviceChangeRequest.findOne({
-    companyId: toOid(companyId),
-    userId: toOid(userId)
-  })
+async function getMyDeviceChangeRequest({ userId, companyId, deviceId }) {
+  const cid = toOid(companyId);
+  const uid = toOid(userId);
+
+  // Prefer an open PENDING request (at most one per user) so the waiting UI stays correct.
+  const pending = await DeviceChangeRequest.findOne({
+    companyId: cid,
+    userId: uid,
+    status: DEVICE_CHANGE_REQUEST_STATUS.PENDING
+  }).lean();
+  if (pending) return pending;
+
+  // Otherwise only return history for THIS device — avoids showing a stale APPROVED
+  // request that was for a different deviceId (login-loop on the old phone).
+  if (deviceId) {
+    const forThisDevice = await DeviceChangeRequest.findOne({
+      companyId: cid,
+      userId: uid,
+      requestedDeviceId: String(deviceId)
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+    return forThisDevice || null;
+  }
+
+  const latest = await DeviceChangeRequest.findOne({ companyId: cid, userId: uid })
     .sort({ createdAt: -1 })
     .lean();
   return latest || null;
