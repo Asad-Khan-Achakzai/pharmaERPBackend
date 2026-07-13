@@ -77,11 +77,13 @@ const products = async (companyId, query = {}) => {
     const rx = escapeRegex(searchTerm);
     filter.$or = [
       { name: { $regex: rx, $options: 'i' } },
-      { composition: { $regex: rx, $options: 'i' } }
+      { composition: { $regex: rx, $options: 'i' } },
+      { genericName: { $regex: rx, $options: 'i' } },
+      { sku: { $regex: rx, $options: 'i' } }
     ];
   }
   const rows = await Product.find(filter)
-    .select('name composition mrp tp casting')
+    .select('name composition genericName sku packSize mrp tp casting isSampleEligible')
     .sort({ name: 1 })
     .limit(limit)
     .lean();
@@ -92,9 +94,13 @@ const products = async (companyId, query = {}) => {
       _id: p._id,
       name: p.name,
       composition: p.composition,
+      genericName: p.genericName,
+      sku: p.sku,
+      packSize: p.packSize,
       mrp: p.mrp,
       tp: p.tp,
-      casting: p.casting
+      casting: p.casting,
+      isSampleEligible: p.isSampleEligible
     }))
   );
 };

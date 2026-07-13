@@ -7,8 +7,10 @@
  *  - EXPENSE_RECEIPT                 -> configurable; default PERMANENT, becomes
  *                                       TEMPORARY only if the company sets
  *                                       expenseReceiptRetentionDays
- *  - PRODUCT_VISUAL, USER_AVATAR,
- *    DOCTOR_PHOTO, PHARMACY_PHOTO    -> PERMANENT always (entity images)
+ *  - PRODUCT_VISUAL, PRODUCT_BROCHURE, PRODUCT_LITERATURE,
+ *    PRODUCT_CLINICAL_STUDY, PRODUCT_VIDEO, PRODUCT_PROMO,
+ *    PRESENTATION_SLIDE, CAMPAIGN_BANNER, KIT_HERO,
+ *    USER_AVATAR, DOCTOR_PHOTO, PHARMACY_PHOTO -> PERMANENT always
  *  - PAYMENT_RECEIPT, OTHER          -> PERMANENT (no auto-delete)
  *
  * A retention value of null/0 means "never delete" -> PERMANENT with no expiry.

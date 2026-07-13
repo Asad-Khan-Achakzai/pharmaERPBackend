@@ -34,6 +34,27 @@ const markVisitSchema = Joi.object({
   doctorId: Joi.string().allow(null, ''),
   productsDiscussed: Joi.array().items(Joi.string().hex().length(24)).max(50),
   primaryProductId: Joi.string().hex().length(24).allow(null, ''),
+  presentedKitIds: Joi.array().items(Joi.string().hex().length(24)).max(20),
+  presentationSessions: Joi.array()
+    .items(
+      Joi.object({
+        productId: Joi.string().hex().length(24),
+        presentationId: Joi.string().hex().length(24).allow(null, ''),
+        presentationVersion: Joi.number().allow(null),
+        completed: Joi.boolean(),
+        startedAt: Joi.date().allow(null),
+        endedAt: Joi.date().allow(null)
+      })
+    )
+    .max(50),
+  sampleLines: Joi.array()
+    .items(
+      Joi.object({
+        productId: Joi.string().hex().length(24).required(),
+        qty: Joi.number().min(0).required()
+      })
+    )
+    .max(50),
   samplesQty: Joi.number().integer().min(0).allow(null),
   samplesGiven: Joi.string().trim().max(500).allow('', null),
   followUpDate: Joi.alternatives().try(Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/), Joi.date()).allow(null, ''),
@@ -57,6 +78,27 @@ const unplannedVisitSchema = Joi.object({
   }),
   productsDiscussed: Joi.array().items(Joi.string().hex().length(24)).max(50),
   primaryProductId: Joi.string().hex().length(24).allow(null, ''),
+  presentedKitIds: Joi.array().items(Joi.string().hex().length(24)).max(20),
+  presentationSessions: Joi.array()
+    .items(
+      Joi.object({
+        productId: Joi.string().hex().length(24),
+        presentationId: Joi.string().hex().length(24).allow(null, ''),
+        presentationVersion: Joi.number().allow(null),
+        completed: Joi.boolean(),
+        startedAt: Joi.date().allow(null),
+        endedAt: Joi.date().allow(null)
+      })
+    )
+    .max(50),
+  sampleLines: Joi.array()
+    .items(
+      Joi.object({
+        productId: Joi.string().hex().length(24).required(),
+        qty: Joi.number().min(0).required()
+      })
+    )
+    .max(50),
   samplesQty: Joi.number().integer().min(0).allow(null),
   samplesGiven: Joi.string().trim().max(500).allow('', null),
   followUpDate: Joi.alternatives().try(Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/), Joi.date()).allow(null, '')

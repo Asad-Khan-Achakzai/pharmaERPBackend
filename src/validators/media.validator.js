@@ -6,7 +6,7 @@ const presignSchema = Joi.object({
     .valid(...MEDIA_KINDS)
     .required(),
   mime: Joi.string().required(),
-  size: Joi.number().integer().min(1).max(50 * 1024 * 1024).required()
+  size: Joi.number().integer().min(1).max(100 * 1024 * 1024).required()
 });
 
 const finalizeSchema = Joi.object({

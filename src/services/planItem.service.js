@@ -515,6 +515,11 @@ const markVisit = async (companyId, planItemId, body, reqUser, timeZone, company
           orderTaken,
           productsDiscussed: pDiscussed,
           primaryProductId: primary,
+          presentedKitIds: Array.isArray(body.presentedKitIds) ? body.presentedKitIds : undefined,
+          presentationSessions: Array.isArray(body.presentationSessions)
+            ? body.presentationSessions
+            : undefined,
+          sampleLines: Array.isArray(body.sampleLines) ? body.sampleLines : undefined,
           samplesQty,
           samplesGiven:
             body.samplesGiven != null ? String(body.samplesGiven).trim().slice(0, 500) : undefined,
@@ -868,6 +873,11 @@ const createUnplannedAsPlanItem = async (companyId, body, reqUser, timeZone, com
           orderTaken: Boolean(orderTaken),
           productsDiscussed: pDiscussed,
           primaryProductId: primary,
+          presentedKitIds: Array.isArray(body.presentedKitIds) ? body.presentedKitIds : undefined,
+          presentationSessions: Array.isArray(body.presentationSessions)
+            ? body.presentationSessions
+            : undefined,
+          sampleLines: Array.isArray(body.sampleLines) ? body.sampleLines : undefined,
           samplesQty,
           samplesGiven:
             body.samplesGiven != null ? String(body.samplesGiven).trim().slice(0, 500) : undefined,

@@ -2,6 +2,16 @@ const PERMISSIONS = {
   system:       ['admin.access', 'roles.manage'],
   dashboard:    ['view'],
   products:     ['view', 'create', 'edit', 'delete', 'viewCostPrice'],
+  /** Product brand master (catalog). */
+  brands:       ['view', 'create', 'edit', 'delete'],
+  /** Hierarchical product taxonomy (Therapy / Area / Class). */
+  productTaxonomy: ['view', 'manage'],
+  /** Detailing presentations (Marketing slide decks). */
+  presentations: ['view', 'edit', 'publish'],
+  /** Catalog marketing campaigns (featured / seasonal / collections). */
+  campaigns:    ['view', 'create', 'edit', 'delete'],
+  /** Product kits / bundles for visit detailing. */
+  kits:         ['view', 'create', 'edit', 'delete'],
   distributors: ['view', 'create', 'edit', 'delete'],
   inventory:    ['view', 'transfer'],
   pharmacies:   ['view', 'create', 'edit', 'delete'],

@@ -30,6 +30,16 @@ const ownershipHistory = asyncHandler(async (req, res) => {
   ApiResponse.success(res, data, 'OK');
 });
 
+const productHistory = asyncHandler(async (req, res) => {
+  const doctorProductHistoryService = require('../services/doctorProductHistory.service');
+  const data = await doctorProductHistoryService.productHistoryForDoctor(
+    req.companyId,
+    req.params.id,
+    req.query
+  );
+  ApiResponse.success(res, data, 'OK');
+});
+
 const update = asyncHandler(async (req, res) => {
   const doctor = await doctorService.update(req.companyId, req.params.id, req.body, req.user);
   ApiResponse.success(res, doctor, 'Doctor updated');
@@ -45,4 +55,4 @@ const assign = asyncHandler(async (req, res) => {
   ApiResponse.success(res, doctor, 'Doctor assignment updated');
 });
 
-module.exports = { lookup, list, create, getById, ownershipHistory, update, remove, assign };
+module.exports = { lookup, list, create, getById, ownershipHistory, productHistory, update, remove, assign };

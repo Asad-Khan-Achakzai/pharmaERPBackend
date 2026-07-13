@@ -33,6 +33,29 @@ const visitLogSchema = new mongoose.Schema(
     /** Quick quantity (e.g. rep +/-); optional note string still in samplesGiven. */
     samplesQty: { type: Number, min: 0, default: null },
     samplesGiven: { type: String, trim: true, maxlength: 500 },
+    /** Kits expanded into productsDiscussed during this visit (analytics). */
+    presentedKitIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'ProductKit' }],
+    /** Lightweight presentation session summaries (slide-level events live in ProductEngagementEvent). */
+    presentationSessions: [
+      {
+        productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+        presentationId: { type: mongoose.Schema.Types.ObjectId, ref: 'ProductPresentation' },
+        presentationVersion: { type: Number, default: null },
+        completed: { type: Boolean, default: false },
+        startedAt: { type: Date, default: null },
+        endedAt: { type: Date, default: null }
+      }
+    ],
+    /**
+     * Reserved for future Sample Inventory module — unused until that ships.
+     * Keep samplesQty / samplesGiven as the operational fields today.
+     */
+    sampleLines: [
+      {
+        productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+        qty: { type: Number, min: 0 }
+      }
+    ],
     followUpDate: { type: Date, default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   },
