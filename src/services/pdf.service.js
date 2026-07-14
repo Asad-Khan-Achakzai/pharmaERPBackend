@@ -86,40 +86,58 @@ const generateInvoice = async (deliveryId) => {
     for (const line of delivery.items) {
       const pid = line.productId;
       const prod = pid && typeof pid === 'object' ? pid : null;
-      const packDisc = roundPKR((line.tpLineTotal ?? 0) - (line.linePharmacyNet ?? 0));
-      sumPackDisc += packDisc;
       const oid = prod?._id ?? pid;
       const physicalQty = Number(line.quantity) || 0;
-      const tpTotal = Number(line.tpLineTotal ?? 0);
       const oi = orderItemByProduct[String(prod?._id ?? pid)] || {};
       const tpRate = oi.tpAtTime != null ? Number(oi.tpAtTime) : Number(prod?.tp ?? 0);
 
       const storedPaid = line.paidQuantity != null ? Number(line.paidQuantity) : null;
       const storedBon = line.bonusQuantity != null ? Number(line.bonusQuantity) : null;
 
-      /** Paid pack count implied by frozen TP line (matches NET VALUE ÷ TP.RATE). */
-      let paidQty =
-        tpRate > 1e-9 ? Math.min(physicalQty, Math.max(0, Math.round(tpTotal / tpRate))) : physicalQty;
-      let bonQty = Math.max(0, physicalQty - paidQty);
-
+      /**
+       * QTY = paid packs, BON = free packs.
+       * Prefer delivery snapshots. Do not infer paid from tpLineTotal / TP —
+       * tpLineTotal is frozen as TP × physical (paid + bonus).
+       */
+      let paidQty;
+      let bonQty;
       const storedSumOk =
         storedPaid != null &&
         storedBon != null &&
-        storedPaid + storedBon === physicalQty &&
         storedPaid >= 0 &&
-        storedBon >= 0;
-      if (storedSumOk && tpRate > 1e-9) {
-        const expectedTp = roundPKR(storedPaid * tpRate);
-        if (Math.abs(expectedTp - tpTotal) < 0.02) {
-          paidQty = storedPaid;
-          bonQty = storedBon;
-        }
-      } else if (storedSumOk && tpRate <= 1e-9) {
+        storedBon >= 0 &&
+        storedPaid + storedBon === physicalQty;
+      if (storedSumOk) {
         paidQty = storedPaid;
         bonQty = storedBon;
+      } else if (storedPaid != null && storedPaid >= 0 && storedPaid <= physicalQty) {
+        paidQty = storedPaid;
+        bonQty = physicalQty - paidQty;
+      } else if (storedBon != null && storedBon >= 0 && storedBon <= physicalQty) {
+        bonQty = storedBon;
+        paidQty = physicalQty - bonQty;
+      } else {
+        const orderPaid = Number(oi.quantity) || 0;
+        const orderBon = Number(oi.bonusQuantity) || 0;
+        const orderPhysical = orderPaid + orderBon;
+        if (orderPhysical > 0 && physicalQty === orderPhysical) {
+          paidQty = orderPaid;
+          bonQty = orderBon;
+        } else if (orderPhysical > 0) {
+          const ratio = physicalQty / orderPhysical;
+          paidQty = Math.min(physicalQty, Math.max(0, Math.round(orderPaid * ratio)));
+          bonQty = physicalQty - paidQty;
+        } else {
+          paidQty = physicalQty;
+          bonQty = 0;
+        }
       }
 
+      /** NET VALUE = paid × TP.RATE (bonus packs are free). */
       const netVal = roundPKR(paidQty * tpRate);
+      /** NET DISC = billed TP minus pharmacy net (excludes free-goods TP). */
+      const packDisc = roundPKR(netVal - Number(line.linePharmacyNet ?? 0));
+      sumPackDisc += packDisc;
 
       const descParts = [prod?.name, prod?.composition].filter(Boolean);
       rows.push({
