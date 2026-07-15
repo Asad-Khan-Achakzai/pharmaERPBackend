@@ -74,22 +74,112 @@ const visitContext = asyncHandler(async (req, res) => {
   ApiResponse.success(res, data);
 });
 
+async function assertCanViewRouteUser(req, targetUserId) {
+  if (String(targetUserId) === String(req.user.userId)) return;
+  if (userHasPermission(req.user, 'admin.access')) return;
+  const subtree = await resolveSubtreeUserIds(req.companyId, req.user.userId, {
+    includeSelf: true,
+    activeOnly: true
+  });
+  const ok = subtree.some((id) => String(id) === String(targetUserId));
+  if (!ok) throw new ApiError(403, 'You can only view routes for yourself or your team');
+}
+
+function parseDownsampleOptions(query) {
+  const options = { company: undefined };
+  if (query.downsample === true || query.downsample === 'true') {
+    options.downsample = true;
+  }
+  if (query.maxPoints != null) {
+    options.maxPoints = Number(query.maxPoints);
+  }
+  return options;
+}
+
 const replay = asyncHandler(async (req, res) => {
   const targetUserId = req.query.userId || req.user.userId;
-  if (String(targetUserId) !== String(req.user.userId)) {
-    if (!userHasPermission(req.user, 'admin.access')) {
-      const subtree = await resolveSubtreeUserIds(req.companyId, req.user.userId, {
-        includeSelf: true,
-        activeOnly: true
-      });
-      const ok = subtree.some((id) => String(id) === String(targetUserId));
-      if (!ok) throw new ApiError(403, 'You can only replay routes for yourself or your team');
-    }
-  }
+  await assertCanViewRouteUser(req, targetUserId);
+  const options = parseDownsampleOptions(req.query);
+  options.company = req.context.company;
   const data = await dayRouteService.getRouteReplay(
     req.companyId,
     targetUserId,
     req.query.date,
+    req.context.timeZone,
+    options
+  );
+  ApiResponse.success(res, data);
+});
+
+const routeHistory = asyncHandler(async (req, res) => {
+  const routeHistoryService = require('../services/routeHistory.service');
+  const targetUserId = req.query.userId || req.user.userId;
+  await assertCanViewRouteUser(req, targetUserId);
+  const options = parseDownsampleOptions(req.query);
+  options.company = req.context.company;
+  const data = await routeHistoryService.getRouteHistory(
+    req.companyId,
+    targetUserId,
+    req.query.date,
+    req.context.timeZone,
+    options
+  );
+  ApiResponse.success(res, data);
+});
+
+const routeHistorySummary = asyncHandler(async (req, res) => {
+  const routeHistoryService = require('../services/routeHistory.service');
+  const targetUserId = req.query.userId || req.user.userId;
+  await assertCanViewRouteUser(req, targetUserId);
+  const data = await routeHistoryService.getRouteHistory(
+    req.companyId,
+    targetUserId,
+    req.query.date,
+    req.context.timeZone,
+    { company: req.context.company, summaryOnly: true }
+  );
+  ApiResponse.success(res, data);
+});
+
+const routeHistoryCompare = asyncHandler(async (req, res) => {
+  const routeHistoryService = require('../services/routeHistory.service');
+  const targetUserId = req.query.userId || req.user.userId;
+  await assertCanViewRouteUser(req, targetUserId);
+  const data = await routeHistoryService.compareRouteHistory(
+    req.companyId,
+    targetUserId,
+    req.query.dateA,
+    req.query.dateB,
+    req.context.timeZone,
+    { company: req.context.company }
+  );
+  ApiResponse.success(res, data);
+});
+
+const routeHistoryRange = asyncHandler(async (req, res) => {
+  const routeHistoryService = require('../services/routeHistory.service');
+  const targetUserId = req.query.userId || req.user.userId;
+  await assertCanViewRouteUser(req, targetUserId);
+  const data = await routeHistoryService.getRouteHistoryRange(
+    req.companyId,
+    targetUserId,
+    req.query.from,
+    req.query.to,
+    req.context.timeZone,
+    { company: req.context.company }
+  );
+  ApiResponse.success(res, data);
+});
+
+const routeHistoryHeatmap = asyncHandler(async (req, res) => {
+  const routeHistoryService = require('../services/routeHistory.service');
+  const targetUserId = req.query.userId || req.user.userId;
+  await assertCanViewRouteUser(req, targetUserId);
+  const data = await routeHistoryService.getRouteHistoryHeatmap(
+    req.companyId,
+    targetUserId,
+    req.query.from,
+    req.query.to,
     req.context.timeZone
   );
   ApiResponse.success(res, data);
@@ -253,6 +343,11 @@ module.exports = {
   callPointsMap,
   visitContext,
   replay,
+  routeHistory,
+  routeHistorySummary,
+  routeHistoryCompare,
+  routeHistoryRange,
+  routeHistoryHeatmap,
   geocode,
   reverseGeocode,
   placesAutocomplete,

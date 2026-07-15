@@ -109,10 +109,25 @@ async function recordHeartbeat(params) {
 
 async function recordHeartbeatsBatch(params) {
   const { company, heartbeats, ...rest } = params;
+  const { isHistoricalCapturedAt } = require('../../utils/heartbeatRateLimit');
+
+  const sorted = [...heartbeats].sort((a, b) => {
+    const ta = a.capturedAt ? new Date(a.capturedAt).getTime() : Date.now();
+    const tb = b.capturedAt ? new Date(b.capturedAt).getTime() : Date.now();
+    return ta - tb;
+  });
+
   const results = [];
-  for (const beat of heartbeats) {
+  for (const beat of sorted) {
+    const captured = beat.capturedAt ? new Date(beat.capturedAt) : new Date();
+    const historical = isHistoricalCapturedAt(captured);
     // eslint-disable-next-line no-await-in-loop
-    const doc = await recordHeartbeat({ ...rest, company, ...beat });
+    const doc = await recordHeartbeat({
+      ...rest,
+      company,
+      ...beat,
+      skipRateLimit: historical
+    });
     results.push(doc);
   }
   return results;

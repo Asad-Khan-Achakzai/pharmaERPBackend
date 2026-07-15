@@ -174,24 +174,28 @@ async function getRouteAnalytics(companyId, query, timeZone) {
 async function getTravelAnalytics(companyId, query, timeZone) {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   const ymd = query.date || businessTime.nowInBusinessTime(tz).toISODate();
-  const replay = require('./dayRoute.service');
+  const routeHistoryService = require('./routeHistory.service');
   const userId = query.userId;
   if (!userId) throw new ApiError(400, 'userId is required');
 
-  const pathData = await replay.getRouteReplay(companyId, userId, ymd, timeZone);
-  let distanceMeters = 0;
-  for (let i = 1; i < pathData.path.length; i += 1) {
-    const a = pathData.path[i - 1];
-    const b = pathData.path[i];
-    distanceMeters += haversineMeters(a.lat, a.lng, b.lat, b.lng);
-  }
+  const day = await routeHistoryService.getRouteHistory(companyId, userId, ymd, timeZone, {
+    summaryOnly: false,
+    downsample: true,
+    maxPoints: 2000
+  });
 
   return {
     date: ymd,
     userId,
-    heartbeatPings: pathData.path.length,
-    estimatedDistanceMeters: Math.round(distanceMeters),
-    visitsCompleted: pathData.visits.length
+    heartbeatPings: day.path?.length || 0,
+    estimatedDistanceMeters: Math.round(day.summary?.distanceMeters || 0),
+    visitsCompleted: day.summary?.visitCount || day.visits?.length || 0,
+    drivingTimeMs: day.summary?.drivingTimeMs || 0,
+    visitTimeMs: day.summary?.visitTimeMs || 0,
+    idleTimeMs: day.summary?.idleTimeMs || 0,
+    productiveTimeMs: day.summary?.productiveTimeMs || 0,
+    coveragePercent: day.summary?.coveragePercent || 0,
+    quality: day.quality || null
   };
 }
 

@@ -5,12 +5,21 @@ const BURST_LIMIT = 6;
 const WINDOW_MS = 60_000;
 /** Align with mobile background throttle (~30s) so foreground+background races don't 429. */
 const MIN_GAP_MS = 25_000;
+/** Points older than this are historical backfill — skip per-point min-gap / burst limits. */
+const HISTORICAL_AGE_MS = 2 * 60 * 1000;
 
 /** In-process fallback buckets when Redis is unavailable. */
 const buckets = new Map();
 
 let redisClient = null;
 let redisReady = false;
+
+function isHistoricalCapturedAt(capturedAt, now = Date.now()) {
+  if (capturedAt == null) return false;
+  const ts = capturedAt instanceof Date ? capturedAt.getTime() : new Date(capturedAt).getTime();
+  if (!Number.isFinite(ts)) return false;
+  return now - ts > HISTORICAL_AGE_MS;
+}
 
 async function initHeartbeatRateLimit() {
   if (!env.REDIS_URL || redisClient) return;
@@ -65,7 +74,18 @@ function assertMemoryRateLimit(key, now) {
   buckets.set(key, entries);
 }
 
-async function assertHeartbeatRateLimit(companyId, userId) {
+/**
+ * Rate-limit live heartbeats. Historical backfill (capturedAt older than 2 min)
+ * skips min-gap / burst so batch trail uploads can succeed; live points stay limited.
+ * @param {string|import('mongoose').Types.ObjectId} companyId
+ * @param {string|import('mongoose').Types.ObjectId} userId
+ * @param {{ capturedAt?: Date|string|null }} [options]
+ */
+async function assertHeartbeatRateLimit(companyId, userId, options = {}) {
+  if (isHistoricalCapturedAt(options.capturedAt)) {
+    return;
+  }
+
   const key = `${companyId}:${userId}`;
   const now = Date.now();
 
@@ -77,4 +97,10 @@ async function assertHeartbeatRateLimit(companyId, userId) {
   assertMemoryRateLimit(key, now);
 }
 
-module.exports = { assertHeartbeatRateLimit, initHeartbeatRateLimit };
+module.exports = {
+  assertHeartbeatRateLimit,
+  initHeartbeatRateLimit,
+  isHistoricalCapturedAt,
+  HISTORICAL_AGE_MS,
+  MIN_GAP_MS
+};

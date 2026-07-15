@@ -98,6 +98,50 @@ const ownedDoctorsFilter = async (companyId, repId) => {
   };
 };
 
+/**
+ * Mongo `$or` clauses for doctors owned by any of the given users
+ * (explicit assignedRepId pin OR unassigned doctor on a brick in those users' footprints).
+ * Used by doctor list for `assignedRepId` (rep + reporting subtree) and `scope=team`.
+ *
+ * @param {string|ObjectId} companyId
+ * @param {Array<string|ObjectId>} userIds
+ * @returns {Promise<object[]>} clauses suitable for `{ $or: ... }` (empty if no users)
+ */
+async function ownershipOrClausesForUsers(companyId, userIds) {
+  const cid = new mongoose.Types.ObjectId(String(companyId));
+  const ids = (userIds || [])
+    .map((id) => (mongoose.Types.ObjectId.isValid(String(id)) ? new mongoose.Types.ObjectId(String(id)) : null))
+    .filter(Boolean);
+  if (!ids.length) return [];
+
+  const reps = await User.find({
+    _id: { $in: ids },
+    companyId: cid,
+    isDeleted: { $ne: true },
+    isActive: true
+  })
+    .select('_id territoryId coverageTerritoryIds')
+    .lean();
+
+  const brickSet = new Set();
+  for (const rep of reps) {
+    const bricks = await unionBrickIdsForRep(cid, rep);
+    for (const b of bricks) brickSet.add(String(b));
+  }
+  const brickIds = [...brickSet].map((s) => new mongoose.Types.ObjectId(s));
+
+  const orClauses = [{ assignedRepId: { $in: ids } }];
+  if (brickIds.length) {
+    orClauses.push({
+      $and: [
+        { $or: [{ assignedRepId: null }, { assignedRepId: { $exists: false } }] },
+        { territoryId: { $in: brickIds } }
+      ]
+    });
+  }
+  return orClauses;
+}
+
 const idKey = (v) => {
   if (!v) return null;
   if (typeof v === 'object' && v._id) return String(v._id);
@@ -173,6 +217,7 @@ module.exports = {
   unionBrickIdsForRep,
   effectiveBrickCoverageSummary,
   ownedDoctorsFilter,
+  ownershipOrClausesForUsers,
   ownershipForRepCoverageRow,
   summarizeDoctorDocument,
   ownershipForTerritoryRollupRow,

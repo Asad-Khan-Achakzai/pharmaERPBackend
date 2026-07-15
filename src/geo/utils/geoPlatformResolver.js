@@ -5,27 +5,41 @@ const DEFAULT_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_ACCURACY_METERS = 150;
 const DEFAULT_STALE_DISPLAY_MS = 30 * 60 * 1000;
 const DEFAULT_RETENTION_DAYS = 90;
+const DEFAULT_SAMPLE_INTERVAL_MS = 60 * 1000;
+const DEFAULT_UPLOAD_BATCH_INTERVAL_MS = 90 * 1000;
+
+function pickMs(stored, prev, key, fallback) {
+  if (stored != null && stored[key] != null) return Number(stored[key]);
+  if (prev != null && prev[key] != null) return Number(prev[key]);
+  return fallback;
+}
 
 function normalizeLiveTrackingSettings(stored, prev) {
   const p = prev && typeof prev === 'object' ? prev : {};
   const s = stored && typeof stored === 'object' ? stored : {};
   return {
-    heartbeatIntervalMs:
-      s.heartbeatIntervalMs != null ? Number(s.heartbeatIntervalMs) : DEFAULT_HEARTBEAT_INTERVAL_MS,
-    maxAccuracyMeters:
-      s.maxAccuracyMeters != null ? Number(s.maxAccuracyMeters) : DEFAULT_MAX_ACCURACY_METERS,
+    heartbeatIntervalMs: pickMs(s, p, 'heartbeatIntervalMs', DEFAULT_HEARTBEAT_INTERVAL_MS),
+    maxAccuracyMeters: pickMs(s, p, 'maxAccuracyMeters', DEFAULT_MAX_ACCURACY_METERS),
+    sampleIntervalMs: pickMs(s, p, 'sampleIntervalMs', DEFAULT_SAMPLE_INTERVAL_MS),
+    uploadBatchIntervalMs: pickMs(s, p, 'uploadBatchIntervalMs', DEFAULT_UPLOAD_BATCH_INTERVAL_MS),
     trackingProfile: s.trackingProfile || p.trackingProfile || 'balanced',
-    schedulerMinIntervalMs:
-      s.schedulerMinIntervalMs != null ? Number(s.schedulerMinIntervalMs) : 30_000,
-    schedulerMaxIntervalMs:
-      s.schedulerMaxIntervalMs != null ? Number(s.schedulerMaxIntervalMs) : 600_000,
-    staleDisplayMs:
-      s.staleDisplayMs != null ? Number(s.staleDisplayMs) : DEFAULT_STALE_DISPLAY_MS,
-    staleHideMs: s.staleHideMs != null ? Number(s.staleHideMs) : DEFAULT_STALE_DISPLAY_MS * 2,
-    retentionDays: s.retentionDays != null ? Number(s.retentionDays) : DEFAULT_RETENTION_DAYS,
-    geofenceContextEnabled: s.geofenceContextEnabled !== false,
-    snapshotQualityGateEnabled: s.snapshotQualityGateEnabled !== false,
-    lowBatteryModeEnabled: s.lowBatteryModeEnabled !== false
+    schedulerMinIntervalMs: pickMs(s, p, 'schedulerMinIntervalMs', 30_000),
+    schedulerMaxIntervalMs: pickMs(s, p, 'schedulerMaxIntervalMs', 600_000),
+    staleDisplayMs: pickMs(s, p, 'staleDisplayMs', DEFAULT_STALE_DISPLAY_MS),
+    staleHideMs: pickMs(s, p, 'staleHideMs', DEFAULT_STALE_DISPLAY_MS * 2),
+    retentionDays: pickMs(s, p, 'retentionDays', DEFAULT_RETENTION_DAYS),
+    geofenceContextEnabled:
+      s.geofenceContextEnabled !== undefined
+        ? s.geofenceContextEnabled !== false
+        : p.geofenceContextEnabled !== false,
+    snapshotQualityGateEnabled:
+      s.snapshotQualityGateEnabled !== undefined
+        ? s.snapshotQualityGateEnabled !== false
+        : p.snapshotQualityGateEnabled !== false,
+    lowBatteryModeEnabled:
+      s.lowBatteryModeEnabled !== undefined
+        ? s.lowBatteryModeEnabled !== false
+        : p.lowBatteryModeEnabled !== false
   };
 }
 
@@ -220,5 +234,9 @@ module.exports = {
   buildGeoPlatformPatch,
   syncLegacyFlagsToGeoPlatform,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
-  DEFAULT_MAX_ACCURACY_METERS
+  DEFAULT_MAX_ACCURACY_METERS,
+  DEFAULT_SAMPLE_INTERVAL_MS,
+  DEFAULT_UPLOAD_BATCH_INTERVAL_MS,
+  DEFAULT_RETENTION_DAYS,
+  DEFAULT_STALE_DISPLAY_MS
 };

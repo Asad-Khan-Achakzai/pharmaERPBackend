@@ -20,4 +20,14 @@ describe('heartbeatRateLimit', () => {
       message: 'Location updates too frequent',
     });
   });
+
+  it('skips rate limit for historical capturedAt older than 2 minutes', async () => {
+    const old = new Date(Date.now() - 5 * 60 * 1000);
+    await expect(
+      assertHeartbeatRateLimit('co-3', 'user-3', { capturedAt: old })
+    ).resolves.toBeUndefined();
+    await expect(
+      assertHeartbeatRateLimit('co-3', 'user-3', { capturedAt: old })
+    ).resolves.toBeUndefined();
+  });
 });

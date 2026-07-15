@@ -23,6 +23,8 @@ const geoPlatformSchema = Joi.object({
   liveTracking: Joi.object({
     heartbeatIntervalMs: Joi.number().integer().min(60000).max(3600000),
     maxAccuracyMeters: Joi.number().min(10).max(500),
+    sampleIntervalMs: Joi.number().integer().min(30000).max(3600000),
+    uploadBatchIntervalMs: Joi.number().integer().min(25000).max(3600000),
     trackingProfile: Joi.string().valid('balanced', 'fresh', 'conservative'),
     schedulerMinIntervalMs: Joi.number().integer().min(15000).max(600000),
     schedulerMaxIntervalMs: Joi.number().integer().min(60000).max(3600000),
@@ -42,7 +44,39 @@ const dayRouteQuerySchema = Joi.object({
 
 const replayQuerySchema = Joi.object({
   userId: Joi.string().hex().length(24).required(),
+  date: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/),
+  downsample: Joi.boolean().truthy('true').falsy('false'),
+  maxPoints: Joi.number().integer().min(50).max(5000)
+});
+
+const routeHistoryQuerySchema = Joi.object({
+  userId: Joi.string().hex().length(24).required(),
+  date: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/),
+  downsample: Joi.boolean().truthy('true').falsy('false'),
+  maxPoints: Joi.number().integer().min(50).max(5000)
+});
+
+const routeHistorySummaryQuerySchema = Joi.object({
+  userId: Joi.string().hex().length(24).required(),
   date: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/)
+});
+
+const routeHistoryCompareQuerySchema = Joi.object({
+  userId: Joi.string().hex().length(24).required(),
+  dateA: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).required(),
+  dateB: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).required()
+});
+
+const routeHistoryRangeQuerySchema = Joi.object({
+  userId: Joi.string().hex().length(24).required(),
+  from: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).required(),
+  to: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).required()
+});
+
+const routeHistoryHeatmapQuerySchema = Joi.object({
+  userId: Joi.string().hex().length(24).required(),
+  from: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).required(),
+  to: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).required()
 });
 
 const doctorsMapQuerySchema = Joi.object({
@@ -139,6 +173,11 @@ module.exports = {
   geoPlatformSchema,
   dayRouteQuerySchema,
   replayQuerySchema,
+  routeHistoryQuerySchema,
+  routeHistorySummaryQuerySchema,
+  routeHistoryCompareQuerySchema,
+  routeHistoryRangeQuerySchema,
+  routeHistoryHeatmapQuerySchema,
   doctorsMapQuerySchema,
   geocodeBodySchema,
   reverseGeocodeBodySchema,

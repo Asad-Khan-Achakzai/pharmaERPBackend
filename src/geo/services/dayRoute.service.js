@@ -1,10 +1,6 @@
-const mongoose = require('mongoose');
 const Doctor = require('../../models/Doctor');
 const CallPoint = require('../../models/CallPoint');
 const PlanItem = require('../../models/PlanItem');
-const AttendanceHeartbeat = require('../../models/AttendanceHeartbeat');
-const Attendance = require('../../models/Attendance');
-const VisitLog = require('../../models/VisitLog');
 const planItemService = require('../../services/planItem.service');
 const checkInPolicyServiceV2 = require('../../services/checkInPolicyServiceV2');
 const businessTime = require('../../utils/businessTime');
@@ -118,66 +114,13 @@ async function listCallPointsForMap(companyId) {
   }));
 }
 
-async function getRouteReplay(companyId, userId, dateYmd, timeZone) {
-  const tz = businessTime.requireCompanyIanaZone(timeZone);
-  const ymd = dateYmd || businessTime.nowInBusinessTime(tz).toISODate();
-  const range = businessTime.businessDayToUtcRange(ymd, tz);
-  const start = range.$gte;
-  const end = range.$lte;
-  const cid = new mongoose.Types.ObjectId(String(companyId));
-  const uid = new mongoose.Types.ObjectId(String(userId));
-
-  const [heartbeats, attendance, visits] = await Promise.all([
-    AttendanceHeartbeat.find({
-      companyId: cid,
-      userId: uid,
-      capturedAt: { $gte: start, $lte: end }
-    })
-      .sort({ capturedAt: 1 })
-      .select('lat lng accuracy capturedAt')
-      .lean(),
-    Attendance.findOne({ companyId: cid, employeeId: uid, date: start, ...nd })
-      .select('checkInLat checkInLng checkInTime checkOutLat checkOutLng checkOutTime')
-      .lean(),
-    VisitLog.find({
-      companyId: cid,
-      employeeId: uid,
-      createdAt: { $gte: start, $lte: end },
-      ...nd
-    })
-      .sort({ createdAt: 1 })
-      .select('location createdAt doctorId distanceFromDoctor geoFenceResult')
-      .lean()
-  ]);
-
-  const path = heartbeats.map((h) => ({
-    lat: h.lat,
-    lng: h.lng,
-    accuracy: h.accuracy,
-    capturedAt: h.capturedAt,
-    type: 'heartbeat'
-  }));
-
-  return {
-    date: ymd,
-    path,
-    checkIn:
-      attendance?.checkInLat != null
-        ? { lat: attendance.checkInLat, lng: attendance.checkInLng, at: attendance.checkInTime }
-        : null,
-    checkOut:
-      attendance?.checkOutLat != null
-        ? { lat: attendance.checkOutLat, lng: attendance.checkOutLng, at: attendance.checkOutTime }
-        : null,
-    visits: visits.map((v) => ({
-      lat: v.location?.lat,
-      lng: v.location?.lng,
-      at: v.createdAt,
-      doctorId: v.doctorId,
-      geoFenceResult: v.geoFenceResult,
-      distanceFromDoctor: v.distanceFromDoctor
-    }))
-  };
+/**
+ * Thin wrapper — full day Route History (enriched replay).
+ * Attendance uses business-day date anchor; heartbeats use UTC day range.
+ */
+async function getRouteReplay(companyId, userId, dateYmd, timeZone, options = {}) {
+  const routeHistoryService = require('./routeHistory.service');
+  return routeHistoryService.getRouteHistory(companyId, userId, dateYmd, timeZone, options);
 }
 
 async function getVisitContext(companyId, planItemId) {

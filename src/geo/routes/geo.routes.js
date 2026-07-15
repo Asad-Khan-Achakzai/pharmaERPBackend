@@ -9,6 +9,11 @@ const { checkPermission, checkPermissionAny } = require('../../middleware/checkP
 const {
   dayRouteQuerySchema,
   replayQuerySchema,
+  routeHistoryQuerySchema,
+  routeHistorySummaryQuerySchema,
+  routeHistoryCompareQuerySchema,
+  routeHistoryRangeQuerySchema,
+  routeHistoryHeatmapQuerySchema,
   doctorsMapQuerySchema,
   geocodeBodySchema,
   reverseGeocodeBodySchema,
@@ -68,6 +73,37 @@ router.get(
 );
 
 router.get('/replay', requireGeoFeature('routeReplay'), validateQuery(replayQuerySchema), c.replay);
+
+router.get(
+  '/route-history',
+  requireGeoFeature('routeReplay'),
+  validateQuery(routeHistoryQuerySchema),
+  c.routeHistory
+);
+router.get(
+  '/route-history/summary',
+  requireGeoFeature('routeReplay'),
+  validateQuery(routeHistorySummaryQuerySchema),
+  c.routeHistorySummary
+);
+router.get(
+  '/route-history/compare',
+  requireGeoFeature('routeReplay'),
+  validateQuery(routeHistoryCompareQuerySchema),
+  c.routeHistoryCompare
+);
+router.get(
+  '/route-history/range',
+  requireGeoFeature('routeReplay'),
+  validateQuery(routeHistoryRangeQuerySchema),
+  c.routeHistoryRange
+);
+router.get(
+  '/route-history/heatmap',
+  requireGeoFeature('routeReplay'),
+  validateQuery(routeHistoryHeatmapQuerySchema),
+  c.routeHistoryHeatmap
+);
 
 router.get(
   '/attendance-zones',

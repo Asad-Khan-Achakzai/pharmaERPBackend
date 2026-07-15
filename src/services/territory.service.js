@@ -103,6 +103,38 @@ const lookup = async (companyId, query = {}) => {
   if (query.parentId && mongoose.Types.ObjectId.isValid(query.parentId)) {
     filter.parentId = oid(query.parentId);
   }
+
+  /**
+   * `underUserId` — bricks in that user's reporting-subtree footprint
+   * (primary + coverage territories expanded to bricks). Same ownership model as doctor list.
+   */
+  const underUserId = qScalar(query.underUserId);
+  if (underUserId && mongoose.Types.ObjectId.isValid(underUserId)) {
+    const { resolveSubtreeUserIds } = require('../utils/teamScope');
+    const mrepOwnership = require('./mrepOwnership.service');
+    const userIds = await resolveSubtreeUserIds(companyId, underUserId, {
+      includeSelf: true,
+      activeOnly: true
+    });
+    if (!userIds.length) return [];
+    const users = await User.find({
+      _id: { $in: userIds },
+      companyId,
+      isDeleted: { $ne: true },
+      isActive: true
+    })
+      .select('territoryId coverageTerritoryIds')
+      .lean();
+    const brickSet = new Set();
+    for (const u of users) {
+      const bricks = await mrepOwnership.unionBrickIdsForRep(companyId, u);
+      for (const b of bricks) brickSet.add(String(b));
+    }
+    if (!brickSet.size) return [];
+    filter._id = { $in: [...brickSet].map((s) => oid(s)) };
+    filter.kind = TERRITORY_KIND.BRICK;
+  }
+
   const term = qScalar(query.search);
   if (term) {
     const rx = escapeRegex(term);

@@ -226,7 +226,22 @@ const companySchema = new mongoose.Schema(
       },
       liveTracking: {
         heartbeatIntervalMs: { type: Number, default: 5 * 60 * 1000, min: 60000 },
-        maxAccuracyMeters: { type: Number, default: 150, min: 10, max: 500 }
+        maxAccuracyMeters: { type: Number, default: 150, min: 10, max: 500 },
+        /** Dense trail sample cadence for mobile (ms). */
+        sampleIntervalMs: { type: Number, default: 60 * 1000, min: 30000 },
+        /** Batch upload cadence for background breadcrumbs (ms). */
+        uploadBatchIntervalMs: { type: Number, default: 90 * 1000, min: 25000 },
+        /** Soft retention for purge jobs; Mongo TTL indexes remain 90 days. */
+        retentionDays: { type: Number, default: 90, min: 7, max: 365 },
+        staleDisplayMs: { type: Number, default: 30 * 60 * 1000, min: 60000 },
+        trackingProfile: {
+          type: String,
+          enum: ['balanced', 'fresh', 'conservative'],
+          default: 'balanced'
+        },
+        schedulerMinIntervalMs: { type: Number, default: 30 * 1000, min: 15000 },
+        schedulerMaxIntervalMs: { type: Number, default: 10 * 60 * 1000, min: 60000 },
+        geofenceContextEnabled: { type: Boolean, default: true }
       }
     }
   },

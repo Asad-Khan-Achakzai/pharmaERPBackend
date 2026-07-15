@@ -166,37 +166,70 @@ const list = async (companyId, query, timeZone = "UTC", opts = {}) => {
   if (territoryFilter !== null) {
     filter.territoryId = territoryFilter;
   }
-  if (query.assignedRepId && mongoose.Types.ObjectId.isValid(query.assignedRepId)) {
-    filter.assignedRepId = new mongoose.Types.ObjectId(query.assignedRepId);
-  }
+
   /**
-   * Manager team scope (Phase 2A): when `opts.scopedUserIds` is an array, only return
-   * doctors explicitly assigned to a user in the subtree. Doctors with no `assignedRepId`
-   * are intentionally excluded — managers should treat unassigned doctors as a separate
-   * "Unassigned" view (filterable via `?assignedRepId=null` later if needed).
+   * Ownership scope:
+   * - `assignedRepId` → doctors owned by that user **and their reporting subtree**
+   *   (explicit pin OR unassigned doctor on a brick in those users' footprints).
+   * - `opts.scopedUserIds` (scope=team) → same ownership rules across that id list.
+   * When both are present, ownership user ids are intersected with the team scope.
    */
+  let ownershipUserIds = null;
+  if (query.assignedRepId && mongoose.Types.ObjectId.isValid(query.assignedRepId)) {
+    const { resolveSubtreeUserIds } = require('../utils/teamScope');
+    ownershipUserIds = await resolveSubtreeUserIds(companyId, query.assignedRepId, {
+      includeSelf: true,
+      activeOnly: true
+    });
+  }
   if (Array.isArray(opts.scopedUserIds)) {
     if (opts.scopedUserIds.length === 0) {
-      // Empty subtree -> empty result, but stay consistent with normal pagination shape.
       return { docs: [], total: 0, page, limit };
     }
-    filter.assignedRepId = { $in: opts.scopedUserIds };
+    if (ownershipUserIds) {
+      const scopeSet = new Set(opts.scopedUserIds.map((id) => String(id)));
+      ownershipUserIds = ownershipUserIds.filter((id) => scopeSet.has(String(id)));
+    } else {
+      ownershipUserIds = opts.scopedUserIds;
+    }
   }
+
+  const andParts = [];
+  if (ownershipUserIds) {
+    if (!ownershipUserIds.length) {
+      return { docs: [], total: 0, page, limit };
+    }
+    const ownershipOr = await mrepOwnership.ownershipOrClausesForUsers(companyId, ownershipUserIds);
+    if (!ownershipOr.length) {
+      return { docs: [], total: 0, page, limit };
+    }
+    andParts.push({ $or: ownershipOr });
+  }
+
   if (searchTerm) {
     const rx = escapeRegex(searchTerm);
-    filter.$or = [
-      { name: { $regex: rx, $options: 'i' } },
-      { specialization: { $regex: rx, $options: 'i' } },
-      { doctorCode: { $regex: rx, $options: 'i' } },
-      { city: { $regex: rx, $options: 'i' } },
-      { zone: { $regex: rx, $options: 'i' } },
-      { mobileNo: { $regex: rx, $options: 'i' } },
-      { phone: { $regex: rx, $options: 'i' } },
-      { qualification: { $regex: rx, $options: 'i' } },
-      { designation: { $regex: rx, $options: 'i' } },
-      { pmdcRegistration: { $regex: rx, $options: 'i' } }
-    ];
+    andParts.push({
+      $or: [
+        { name: { $regex: rx, $options: 'i' } },
+        { specialization: { $regex: rx, $options: 'i' } },
+        { doctorCode: { $regex: rx, $options: 'i' } },
+        { city: { $regex: rx, $options: 'i' } },
+        { zone: { $regex: rx, $options: 'i' } },
+        { mobileNo: { $regex: rx, $options: 'i' } },
+        { phone: { $regex: rx, $options: 'i' } },
+        { qualification: { $regex: rx, $options: 'i' } },
+        { designation: { $regex: rx, $options: 'i' } },
+        { pmdcRegistration: { $regex: rx, $options: 'i' } }
+      ]
+    });
   }
+
+  if (andParts.length === 1) {
+    Object.assign(filter, andParts[0]);
+  } else if (andParts.length > 1) {
+    filter.$and = andParts;
+  }
+
   applyCreatedAtRangeFromQuery(filter, query, timeZone);
   applyCreatedByFromQuery(filter, query);
   const [docs, total] = await Promise.all([

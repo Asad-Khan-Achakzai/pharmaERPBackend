@@ -65,7 +65,10 @@ async function recordHeartbeat({
   speed,
   heading,
   trackingContext,
-  expectedNextPingMs
+  expectedNextPingMs,
+  source,
+  battery,
+  skipRateLimit = false
 }) {
   await assertLiveTrackingEnabled(companyId);
 
@@ -78,7 +81,10 @@ async function recordHeartbeat({
     if (existing) return existing;
   }
 
-  await assertHeartbeatRateLimit(companyId, userId);
+  const captured = capturedAt ? new Date(capturedAt) : new Date();
+  if (!skipRateLimit) {
+    await assertHeartbeatRateLimit(companyId, userId, { capturedAt: captured });
+  }
 
   const geo = resolveGeoPlatform(company);
   const maxAccuracyMeters = geo.liveTracking?.maxAccuracyMeters ?? MAX_ACCURACY_METERS;
@@ -103,9 +109,11 @@ async function recordHeartbeat({
     heading: heading ?? null,
     trackingContext: trackingContext || null,
     expectedNextPingMs: expectedNextPingMs ?? null,
-    capturedAt: capturedAt ? new Date(capturedAt) : new Date(),
+    capturedAt: captured,
     clientUuid: clientUuid || null
   };
+  if (source) payload.source = source;
+  if (battery != null && Number.isFinite(Number(battery))) payload.battery = Number(battery);
 
   try {
     const doc = await AttendanceHeartbeat.create(payload);

@@ -150,8 +150,17 @@ const doctors = async (companyId, query = {}) => {
   if (territoryFilter !== null) {
     f.territoryId = territoryFilter;
   }
+
   if (query.assignedRepId && mongoose.Types.ObjectId.isValid(query.assignedRepId)) {
-    f.assignedRepId = new mongoose.Types.ObjectId(query.assignedRepId);
+    const { resolveSubtreeUserIds } = require('../utils/teamScope');
+    const ownershipUserIds = await resolveSubtreeUserIds(companyId, query.assignedRepId, {
+      includeSelf: true,
+      activeOnly: true
+    });
+    if (!ownershipUserIds.length) return [];
+    const ownershipOr = await mrepOwnership.ownershipOrClausesForUsers(companyId, ownershipUserIds);
+    if (!ownershipOr.length) return [];
+    f.$and = [...(f.$and || []), { $or: ownershipOr }];
   }
 
   const searchTerm = qScalar(query.search);

@@ -17,7 +17,9 @@ const heartbeat = asyncHandler(async (req, res) => {
     speed: req.body.speed,
     heading: req.body.heading,
     trackingContext: req.body.trackingContext,
-    expectedNextPingMs: req.body.expectedNextPingMs
+    expectedNextPingMs: req.body.expectedNextPingMs,
+    source: req.body.source,
+    battery: req.body.battery
   });
   ApiResponse.success(res, data, 'Heartbeat recorded');
 });
@@ -31,6 +33,18 @@ const heartbeatsBatch = asyncHandler(async (req, res) => {
     heartbeats: req.body.heartbeats
   });
   ApiResponse.success(res, data, 'Heartbeats recorded');
+});
+
+const trackingDiagnostics = asyncHandler(async (req, res) => {
+  const TrackingDiagnostic = require('../models/TrackingDiagnostic');
+  const doc = await TrackingDiagnostic.create({
+    companyId: req.companyId,
+    userId: req.user.userId,
+    type: req.body.type,
+    capturedAt: req.body.capturedAt ? new Date(req.body.capturedAt) : new Date(),
+    meta: req.body.meta && typeof req.body.meta === 'object' ? req.body.meta : {}
+  });
+  ApiResponse.success(res, doc.toObject(), 'Diagnostic recorded');
 });
 
 const live = asyncHandler(async (req, res) => {
@@ -69,4 +83,4 @@ const liveSnapshot = asyncHandler(async (req, res) => {
   ApiResponse.success(res, { rows: result.rows, etag: result.etag });
 });
 
-module.exports = { heartbeat, heartbeatsBatch, live, liveSnapshot };
+module.exports = { heartbeat, heartbeatsBatch, trackingDiagnostics, live, liveSnapshot };
