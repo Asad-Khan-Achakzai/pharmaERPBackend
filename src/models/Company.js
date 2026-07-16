@@ -226,7 +226,13 @@ const companySchema = new mongoose.Schema(
       },
       liveTracking: {
         heartbeatIntervalMs: { type: Number, default: 5 * 60 * 1000, min: 60000 },
+        /** Max accuracy (m) for live pin / snapshot updates. */
         maxAccuracyMeters: { type: Number, default: 150, min: 10, max: 500 },
+        /**
+         * Max accuracy (m) retained for Route History.
+         * Points between maxAccuracyMeters and this value are history-only (low confidence).
+         */
+        historyMaxAccuracyMeters: { type: Number, default: 500, min: 50, max: 2000 },
         /** Dense trail sample cadence for mobile (ms). */
         sampleIntervalMs: { type: Number, default: 60 * 1000, min: 30000 },
         /** Batch upload cadence for background breadcrumbs (ms). */

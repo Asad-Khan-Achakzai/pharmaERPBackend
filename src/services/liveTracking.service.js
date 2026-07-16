@@ -12,12 +12,15 @@ const { resolveSubtreeUserIds } = require('../utils/teamScope');
 const { userHasTenantWideAccess } = require('../utils/effectivePermissions');
 const { resolveGeoPlatform } = require('../geo/utils/geoPlatformResolver');
 const { assertHeartbeatRateLimit } = require('../utils/heartbeatRateLimit');
+const {
+  resolveAccuracyPolicy,
+  classifyGpsQuality
+} = require('../geo/utils/gpsQuality');
 
 const todayYmd = (tz) => businessTime.nowInBusinessTime(tz).toISODate();
 const dateDocFromYmd = (ymd, tz) => businessTime.businessDayStartUtc(ymd, tz);
 
 const nd = { isDeleted: { $ne: true } };
-const MAX_ACCURACY_METERS = 150;
 const DEFAULT_STALE_MS = 30 * 60 * 1000;
 
 async function assertLiveTrackingEnabled(companyId) {
@@ -87,10 +90,21 @@ async function recordHeartbeat({
   }
 
   const geo = resolveGeoPlatform(company);
-  const maxAccuracyMeters = geo.liveTracking?.maxAccuracyMeters ?? MAX_ACCURACY_METERS;
+  const policy = resolveAccuracyPolicy(geo.liveTracking || {});
+  const classified = classifyGpsQuality(accuracy, policy);
 
-  if (accuracy != null && accuracy > maxAccuracyMeters) {
-    throw new ApiError(422, `Location accuracy too low (>${maxAccuracyMeters}m)`);
+  if (!classified.retainForHistory) {
+    const err = new ApiError(
+      422,
+      `Location accuracy too low for route history (>${policy.historyMaxAccuracyMeters}m)`
+    );
+    err.code = 'GPS_ACCURACY_INVALID';
+    err.data = {
+      qualityLevel: 'invalid',
+      usableForLive: false,
+      historyMaxAccuracyMeters: policy.historyMaxAccuracyMeters
+    };
+    throw err;
   }
 
   const attendance = await findOpenAttendanceForHeartbeat(companyId, userId, timeZone);
@@ -105,6 +119,8 @@ async function recordHeartbeat({
     lng,
     accuracy: accuracy ?? null,
     confidence: confidence ?? null,
+    qualityLevel: classified.qualityLevel,
+    usableForLive: classified.usableForLive,
     speed: speed ?? null,
     heading: heading ?? null,
     trackingContext: trackingContext || null,
@@ -166,14 +182,17 @@ function resolveAttendanceStatus(attendance) {
 }
 
 function pickBestLocationFix(snapshot, heartbeat) {
-  if (snapshot && heartbeat) {
+  // Prefer snapshot (only updated for live-eligible points). Ignore history-only heartbeats for live pin.
+  const liveHeartbeat =
+    heartbeat && heartbeat.usableForLive !== false ? heartbeat : null;
+  if (snapshot && liveHeartbeat) {
     const snapAt = new Date(snapshot.capturedAt).getTime();
-    const beatAt = new Date(heartbeat.capturedAt).getTime();
-    if (beatAt !== snapAt) return beatAt > snapAt ? heartbeat : snapshot;
+    const beatAt = new Date(liveHeartbeat.capturedAt).getTime();
+    if (beatAt !== snapAt) return beatAt > snapAt ? liveHeartbeat : snapshot;
     const snapUploaded = snapshot.uploadedAt ? new Date(snapshot.uploadedAt).getTime() : snapAt;
-    return beatAt >= snapUploaded ? heartbeat : snapshot;
+    return beatAt >= snapUploaded ? liveHeartbeat : snapshot;
   }
-  return snapshot || heartbeat || null;
+  return snapshot || liveHeartbeat || null;
 }
 
 function pickLocationFields(snapshot, heartbeat, attendance, staleMs) {
@@ -187,6 +206,8 @@ function pickLocationFields(snapshot, heartbeat, attendance, staleMs) {
         lng: source.lng,
         accuracy: source.accuracy,
         confidence: source.confidence ?? null,
+        qualityLevel: source.qualityLevel ?? null,
+        usableForLive: source.usableForLive !== false,
         speed: source.speed ?? null,
         heading: source.heading ?? null,
         trackingContext: source.trackingContext ?? null,
@@ -207,6 +228,8 @@ function pickLocationFields(snapshot, heartbeat, attendance, staleMs) {
       lng: checkInLng,
       accuracy: attendance.checkInAccuracy ?? null,
       confidence: 40,
+      qualityLevel: 'acceptable',
+      usableForLive: true,
       speed: null,
       heading: null,
       trackingContext: null,
@@ -222,6 +245,8 @@ function pickLocationFields(snapshot, heartbeat, attendance, staleMs) {
     lng: null,
     accuracy: null,
     confidence: null,
+    qualityLevel: null,
+    usableForLive: null,
     speed: null,
     heading: null,
     trackingContext: null,
@@ -302,7 +327,9 @@ async function listLive(companyId, reqUser, timeZone, company, query = {}) {
         $match: {
           companyId: cid,
           userId: { $in: scopedIds },
-          capturedAt: { $gte: since }
+          capturedAt: { $gte: since },
+          // Prefer live-eligible samples for the live map fallback
+          usableForLive: { $ne: false }
         }
       },
       { $sort: { capturedAt: -1 } },
@@ -313,6 +340,8 @@ async function listLive(companyId, reqUser, timeZone, company, query = {}) {
           lng: { $first: '$lng' },
           accuracy: { $first: '$accuracy' },
           confidence: { $first: '$confidence' },
+          qualityLevel: { $first: '$qualityLevel' },
+          usableForLive: { $first: '$usableForLive' },
           speed: { $first: '$speed' },
           heading: { $first: '$heading' },
           trackingContext: { $first: '$trackingContext' },
@@ -351,6 +380,5 @@ module.exports = {
   listLive,
   computeEtag,
   pickBestLocationFix,
-  pickLocationFields,
-  MAX_ACCURACY_METERS
+  pickLocationFields
 };

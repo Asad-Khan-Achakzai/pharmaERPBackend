@@ -23,6 +23,7 @@ const geoPlatformSchema = Joi.object({
   liveTracking: Joi.object({
     heartbeatIntervalMs: Joi.number().integer().min(60000).max(3600000),
     maxAccuracyMeters: Joi.number().min(10).max(500),
+    historyMaxAccuracyMeters: Joi.number().min(50).max(2000),
     sampleIntervalMs: Joi.number().integer().min(30000).max(3600000),
     uploadBatchIntervalMs: Joi.number().integer().min(25000).max(3600000),
     trackingProfile: Joi.string().valid('balanced', 'fresh', 'conservative'),

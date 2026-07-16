@@ -13,6 +13,10 @@ const { DateTime } = require('luxon');
 const businessTime = require('../../utils/businessTime');
 const { haversineMeters } = require('../../utils/haversine');
 const { resolveGeoPlatform } = require('../utils/geoPlatformResolver');
+const {
+  classifyGpsQuality,
+  resolveAccuracyPolicy
+} = require('../utils/gpsQuality');
 const dayRouteService = require('./dayRoute.service');
 const { PLAN_ITEM_STATUS } = require('../../constants/enums');
 
@@ -205,10 +209,148 @@ function classifyStop(stop, visits, doctors, pharmacies, callPoints) {
   return stop;
 }
 
+const QUALITY_LEVELS_SET = new Set([
+  'excellent',
+  'good',
+  'acceptable',
+  'low_confidence',
+  'invalid'
+]);
+
+function enrichPathQuality(path, policy) {
+  return path.map((p) => {
+    const classified =
+      p.qualityLevel && QUALITY_LEVELS_SET.has(p.qualityLevel)
+        ? {
+            qualityLevel: p.qualityLevel,
+            usableForLive: p.usableForLive !== false
+          }
+        : classifyGpsQuality(p.accuracy, policy);
+    return {
+      ...p,
+      qualityLevel: classified.qualityLevel,
+      usableForLive:
+        p.usableForLive != null ? p.usableForLive !== false : classified.usableForLive,
+      confidence: p.confidence ?? null
+    };
+  });
+}
+
+/** Collapse consecutive points of the same quality band into styled segments. */
+function buildQualitySegments(path) {
+  if (!path.length) return [];
+
+  const bandOf = (level) =>
+    level === 'low_confidence' ? 'low_confidence' : 'high_confidence';
+
+  const segments = [];
+  let current = {
+    qualityLevel: path[0].qualityLevel || 'acceptable',
+    band: bandOf(path[0].qualityLevel || 'acceptable'),
+    coordinates: [path[0]],
+    fromCapturedAt: path[0].capturedAt,
+    toCapturedAt: path[0].capturedAt
+  };
+
+  for (let i = 1; i < path.length; i += 1) {
+    const p = path[i];
+    const level = p.qualityLevel || 'acceptable';
+    const band = bandOf(level);
+    if (band !== current.band) {
+      segments.push(finalizeSegment(current));
+      current = {
+        qualityLevel: level,
+        band,
+        coordinates: [path[i - 1], p],
+        fromCapturedAt: path[i - 1].capturedAt,
+        toCapturedAt: p.capturedAt
+      };
+    } else {
+      current.coordinates.push(p);
+      current.toCapturedAt = p.capturedAt;
+      // Prefer low_confidence label if any point in segment is low
+      if (level === 'low_confidence') current.qualityLevel = 'low_confidence';
+    }
+  }
+  segments.push(finalizeSegment(current));
+  return segments;
+}
+
+function finalizeSegment(seg) {
+  const coords = seg.coordinates.map((c) => ({
+    lat: c.lat,
+    lng: c.lng,
+    capturedAt: c.capturedAt,
+    accuracy: c.accuracy ?? null,
+    qualityLevel: c.qualityLevel || seg.qualityLevel
+  }));
+  return {
+    qualityLevel: seg.qualityLevel,
+    band: seg.band,
+    pointCount: coords.length,
+    distanceMeters: Math.round(pathDistanceMeters(coords)),
+    fromCapturedAt: seg.fromCapturedAt,
+    toCapturedAt: seg.toCapturedAt,
+    coordinates: coords
+  };
+}
+
+/** Informational GPS quality timeline events (coalesced). */
+function buildGpsEvents(path) {
+  const events = [];
+  if (path.length < 2) return events;
+
+  let inLow = (path[0].qualityLevel || '') === 'low_confidence';
+  if (inLow) {
+    events.push({
+      type: 'GPS_LOW_ACCURACY',
+      at: path[0].capturedAt,
+      qualityLevel: 'low_confidence',
+      accuracy: path[0].accuracy ?? null
+    });
+  }
+
+  for (let i = 1; i < path.length; i += 1) {
+    const prevLow = (path[i - 1].qualityLevel || '') === 'low_confidence';
+    const currLow = (path[i].qualityLevel || '') === 'low_confidence';
+    if (!prevLow && currLow) {
+      events.push({
+        type: 'LOCATION_CONFIDENCE_REDUCED',
+        at: path[i].capturedAt,
+        qualityLevel: 'low_confidence',
+        accuracy: path[i].accuracy ?? null
+      });
+      events.push({
+        type: 'GPS_LOW_ACCURACY',
+        at: path[i].capturedAt,
+        qualityLevel: 'low_confidence',
+        accuracy: path[i].accuracy ?? null
+      });
+      inLow = true;
+    } else if (prevLow && !currLow) {
+      events.push({
+        type: 'GPS_RECOVERED',
+        at: path[i].capturedAt,
+        qualityLevel: path[i].qualityLevel || 'acceptable',
+        accuracy: path[i].accuracy ?? null
+      });
+      inLow = false;
+    }
+  }
+
+  return events;
+}
+
 function buildQuality({ path, gaps, expectedSampleIntervalMs, diagnostics, workingHoursMs }) {
   const reasons = [];
   const accuracies = path.map((p) => p.accuracy).filter((a) => typeof a === 'number');
   const medianAccuracy = median(accuracies);
+  const sortedAcc = [...accuracies].sort((a, b) => a - b);
+  const p90Accuracy =
+    sortedAcc.length > 0
+      ? sortedAcc[Math.min(sortedAcc.length - 1, Math.floor(sortedAcc.length * 0.9))]
+      : null;
+
   const gapMinutes = gaps
     .filter((g) => g.type === 'SIGNAL_GAP')
     .reduce((sum, g) => sum + g.durationMs, 0) / 60000;
@@ -216,6 +358,34 @@ function buildQuality({ path, gaps, expectedSampleIntervalMs, diagnostics, worki
   const expectedPings =
     workingHoursMs > 0 ? Math.max(1, Math.floor(workingHoursMs / expectedSampleIntervalMs)) : path.length || 1;
   const completenessRatio = Math.min(1, path.length / expectedPings);
+
+  const counts = { excellent: 0, good: 0, acceptable: 0, low_confidence: 0 };
+  for (const p of path) {
+    const level = p.qualityLevel || 'acceptable';
+    if (counts[level] != null) counts[level] += 1;
+    else counts.acceptable += 1;
+  }
+  const total = path.length || 1;
+  const gpsQualityBreakdown = {
+    excellent: Math.round((counts.excellent / total) * 1000) / 1000,
+    good: Math.round((counts.good / total) * 1000) / 1000,
+    acceptable: Math.round((counts.acceptable / total) * 1000) / 1000,
+    low_confidence: Math.round((counts.low_confidence / total) * 1000) / 1000
+  };
+
+  let lowConfidenceDistanceMeters = 0;
+  let lowConfidenceDurationMs = 0;
+  for (let i = 1; i < path.length; i += 1) {
+    const a = path[i - 1];
+    const b = path[i];
+    if (a.qualityLevel === 'low_confidence' || b.qualityLevel === 'low_confidence') {
+      lowConfidenceDistanceMeters += haversineMeters(a.lat, a.lng, b.lat, b.lng);
+      const dt = new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime();
+      if (Number.isFinite(dt) && dt > 0 && dt < 15 * 60 * 1000) {
+        lowConfidenceDurationMs += dt;
+      }
+    }
+  }
 
   let score = Math.round(completenessRatio * 70);
   if (medianAccuracy != null) {
@@ -225,6 +395,15 @@ function buildQuality({ path, gaps, expectedSampleIntervalMs, diagnostics, worki
     else reasons.push('Poor GPS accuracy');
   } else if (path.length) {
     reasons.push('Missing accuracy metadata');
+  }
+
+  const lowShare = gpsQualityBreakdown.low_confidence;
+  if (lowShare >= 0.35) {
+    score -= 15;
+    reasons.push(`${Math.round(lowShare * 100)}% of route used low-confidence GPS`);
+  } else if (lowShare >= 0.15) {
+    score -= 8;
+    reasons.push(`${Math.round(lowShare * 100)}% of route used low-confidence GPS`);
   }
 
   if (gapMinutes > 30) {
@@ -270,7 +449,11 @@ function buildQuality({ path, gaps, expectedSampleIntervalMs, diagnostics, worki
     completenessRatio: Math.round(completenessRatio * 1000) / 1000,
     gapMinutes: Math.round(gapMinutes * 10) / 10,
     medianAccuracy: medianAccuracy != null ? Math.round(medianAccuracy) : null,
-    backgroundHealthHint
+    p90Accuracy: p90Accuracy != null ? Math.round(p90Accuracy) : null,
+    backgroundHealthHint,
+    gpsQualityBreakdown,
+    lowConfidenceDistanceMeters: Math.round(lowConfidenceDistanceMeters),
+    lowConfidenceDurationMs: Math.round(lowConfidenceDurationMs)
   };
 }
 
@@ -315,6 +498,7 @@ async function getRouteHistory(companyId, userId, dateYmd, timeZone, options = {
   const geo = resolveGeoPlatform(options.company);
   const expectedSampleIntervalMs =
     geo.liveTracking?.sampleIntervalMs || DEFAULT_SAMPLE_INTERVAL_MS;
+  const accuracyPolicy = resolveAccuracyPolicy(geo.liveTracking || {});
 
   const [heartbeats, attendance, visitLogs, diagnostics, plannedRoute, orders, user] =
     await Promise.all([
@@ -324,7 +508,9 @@ async function getRouteHistory(companyId, userId, dateYmd, timeZone, options = {
         capturedAt: { $gte: start, $lte: end }
       })
         .sort({ capturedAt: 1 })
-        .select('lat lng accuracy speed heading source capturedAt')
+        .select(
+          'lat lng accuracy confidence qualityLevel usableForLive speed heading source capturedAt'
+        )
         .lean(),
       Attendance.findOne({ companyId: cid, employeeId: uid, date: dateDoc, ...nd })
         .select('checkInLat checkInLng checkInTime checkOutLat checkOutLng checkOutTime')
@@ -424,16 +610,22 @@ async function getRouteHistory(companyId, userId, dateYmd, timeZone, options = {
           .lean()
       : doctorsNear;
 
-  let path = heartbeats.map((h) => ({
-    lat: h.lat,
-    lng: h.lng,
-    accuracy: h.accuracy ?? null,
-    speed: h.speed ?? null,
-    heading: h.heading ?? null,
-    source: h.source ?? null,
-    capturedAt: h.capturedAt,
-    type: 'heartbeat'
-  }));
+  let path = enrichPathQuality(
+    heartbeats.map((h) => ({
+      lat: h.lat,
+      lng: h.lng,
+      accuracy: h.accuracy ?? null,
+      confidence: h.confidence ?? null,
+      qualityLevel: h.qualityLevel ?? null,
+      usableForLive: h.usableForLive,
+      speed: h.speed ?? null,
+      heading: h.heading ?? null,
+      source: h.source ?? null,
+      capturedAt: h.capturedAt,
+      type: 'heartbeat'
+    })),
+    accuracyPolicy
+  );
 
   const maxPoints =
     options.maxPoints != null
@@ -444,6 +636,9 @@ async function getRouteHistory(companyId, userId, dateYmd, timeZone, options = {
   if (maxPoints) {
     path = downsamplePath(path, maxPoints);
   }
+
+  const segments = buildQualitySegments(path);
+  const gpsEvents = buildGpsEvents(path);
 
   const visits = visitLogs.map((v) => {
     const at = v.visitTime || v.createdAt;
@@ -542,6 +737,15 @@ async function getRouteHistory(companyId, userId, dateYmd, timeZone, options = {
     });
   }
 
+  for (const ge of gpsEvents) {
+    events.push({
+      type: ge.type,
+      at: ge.at,
+      qualityLevel: ge.qualityLevel,
+      accuracy: ge.accuracy
+    });
+  }
+
   // Best-effort territory events — skip quietly if geometry unavailable
   try {
     if (user?.territoryId) {
@@ -592,7 +796,20 @@ async function getRouteHistory(companyId, userId, dateYmd, timeZone, options = {
   const gapMs = gaps
     .filter((g) => g.type === 'SIGNAL_GAP')
     .reduce((sum, g) => sum + g.durationMs, 0);
-  const drivingTimeMs = Math.max(0, workingHoursMs - visitTimeMs - idleTimeMs - gapMs * 0.5);
+
+  // Driving time from moving path segments (not a residual that collapses to 0).
+  let movingMs = 0;
+  for (let i = 1; i < path.length; i += 1) {
+    const a = path[i - 1];
+    const b = path[i];
+    const dt = new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime();
+    if (!Number.isFinite(dt) || dt <= 0 || dt > 15 * 60 * 1000) continue;
+    const dist = haversineMeters(a.lat, a.lng, b.lat, b.lng);
+    const speed = a.speed != null && Number.isFinite(a.speed) ? a.speed : dist / (dt / 1000);
+    // Treat as driving/moving when covering meaningful distance or > ~1 m/s
+    if (dist >= 25 || speed >= 1) movingMs += dt;
+  }
+  const drivingTimeMs = Math.min(workingHoursMs, Math.round(movingMs));
 
   const plannedItems = plannedRoute?.items || [];
   const plannedCompleted = plannedItems.filter(
@@ -657,6 +874,8 @@ async function getRouteHistory(companyId, userId, dateYmd, timeZone, options = {
     date: ymd,
     userId: String(userId),
     path,
+    segments,
+    gpsEvents,
     events,
     stops,
     gaps,

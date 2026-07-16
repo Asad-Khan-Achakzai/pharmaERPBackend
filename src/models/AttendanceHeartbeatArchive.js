@@ -13,6 +13,8 @@ const attendanceHeartbeatArchiveSchema = new mongoose.Schema(
     lng: { type: Number, required: true },
     accuracy: { type: Number },
     confidence: { type: Number },
+    qualityLevel: { type: String },
+    usableForLive: { type: Boolean },
     speed: { type: Number },
     heading: { type: Number },
     trackingContext: { type: String },

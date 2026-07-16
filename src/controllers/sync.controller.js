@@ -51,6 +51,7 @@ const serverConfig = asyncHandler(async (req, res) => {
         (geoResolved.features.liveTracking || geoResolved.features.managerLiveMap)
       ),
       maxAccuracyMeters: geoResolved.liveTracking.maxAccuracyMeters,
+      historyMaxAccuracyMeters: geoResolved.liveTracking.historyMaxAccuracyMeters,
       heartbeatIntervalMs: geoResolved.liveTracking.heartbeatIntervalMs,
       sampleIntervalMs: geoResolved.liveTracking.sampleIntervalMs,
       uploadBatchIntervalMs: geoResolved.liveTracking.uploadBatchIntervalMs,

@@ -47,6 +47,8 @@ async function runHeartbeatRetentionArchiveTick() {
         lng: h.lng,
         accuracy: h.accuracy,
         confidence: h.confidence,
+        qualityLevel: h.qualityLevel,
+        usableForLive: h.usableForLive,
         speed: h.speed,
         heading: h.heading,
         trackingContext: h.trackingContext,

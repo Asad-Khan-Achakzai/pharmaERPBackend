@@ -17,6 +17,17 @@ const attendanceHeartbeatSchema = new mongoose.Schema(
     lng: { type: Number, required: true },
     accuracy: { type: Number, default: null },
     confidence: { type: Number, default: null, min: 0, max: 100 },
+    /**
+     * Server-derived GPS quality for Live vs Route History.
+     * low_confidence = retained for history but not applied to live pin.
+     */
+    qualityLevel: {
+      type: String,
+      enum: ['excellent', 'good', 'acceptable', 'low_confidence', 'invalid'],
+      default: undefined
+    },
+    /** False when history-only (accuracy above live max but within history max). */
+    usableForLive: { type: Boolean, default: true },
     speed: { type: Number, default: null },
     heading: { type: Number, default: null, min: 0, max: 360 },
     trackingContext: { type: String, trim: true, maxlength: 32, default: null },

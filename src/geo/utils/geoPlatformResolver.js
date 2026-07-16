@@ -3,6 +3,7 @@ const { defaultFeaturesObject } = require('../config/geoFeatureRegistry');
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_ACCURACY_METERS = 150;
+const DEFAULT_HISTORY_MAX_ACCURACY_METERS = 500;
 const DEFAULT_STALE_DISPLAY_MS = 30 * 60 * 1000;
 const DEFAULT_RETENTION_DAYS = 90;
 const DEFAULT_SAMPLE_INTERVAL_MS = 60 * 1000;
@@ -17,9 +18,21 @@ function pickMs(stored, prev, key, fallback) {
 function normalizeLiveTrackingSettings(stored, prev) {
   const p = prev && typeof prev === 'object' ? prev : {};
   const s = stored && typeof stored === 'object' ? stored : {};
+  const maxAccuracyMeters = pickMs(s, p, 'maxAccuracyMeters', DEFAULT_MAX_ACCURACY_METERS);
+  let historyMaxAccuracyMeters = pickMs(
+    s,
+    p,
+    'historyMaxAccuracyMeters',
+    DEFAULT_HISTORY_MAX_ACCURACY_METERS
+  );
+  if (historyMaxAccuracyMeters < maxAccuracyMeters) {
+    historyMaxAccuracyMeters = maxAccuracyMeters;
+  }
+
   return {
     heartbeatIntervalMs: pickMs(s, p, 'heartbeatIntervalMs', DEFAULT_HEARTBEAT_INTERVAL_MS),
-    maxAccuracyMeters: pickMs(s, p, 'maxAccuracyMeters', DEFAULT_MAX_ACCURACY_METERS),
+    maxAccuracyMeters,
+    historyMaxAccuracyMeters,
     sampleIntervalMs: pickMs(s, p, 'sampleIntervalMs', DEFAULT_SAMPLE_INTERVAL_MS),
     uploadBatchIntervalMs: pickMs(s, p, 'uploadBatchIntervalMs', DEFAULT_UPLOAD_BATCH_INTERVAL_MS),
     trackingProfile: s.trackingProfile || p.trackingProfile || 'balanced',
@@ -235,6 +248,7 @@ module.exports = {
   syncLegacyFlagsToGeoPlatform,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   DEFAULT_MAX_ACCURACY_METERS,
+  DEFAULT_HISTORY_MAX_ACCURACY_METERS,
   DEFAULT_SAMPLE_INTERVAL_MS,
   DEFAULT_UPLOAD_BATCH_INTERVAL_MS,
   DEFAULT_RETENTION_DAYS,
