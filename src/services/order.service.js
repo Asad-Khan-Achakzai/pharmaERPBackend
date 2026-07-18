@@ -91,6 +91,106 @@ const buildLineItemsFromPayload = (data, productMap, pharmacy, distributor) => {
   });
 };
 
+const PAYMENT_STATUS = {
+  UNPAID: 'UNPAID',
+  PARTIALLY_PAID: 'PARTIALLY_PAID',
+  PAID: 'PAID'
+};
+
+const PAYMENT_EPS = 0.001;
+
+/**
+ * Derive receivable payment status from invoice total vs remaining open (FIFO open).
+ * Returns null when the order has no invoice yet (not delivered).
+ */
+const deriveOrderPaymentStatus = (invoiceAmount, outstanding) => {
+  if (invoiceAmount <= PAYMENT_EPS) return null;
+  if (outstanding <= PAYMENT_EPS) return PAYMENT_STATUS.PAID;
+  if (outstanding + PAYMENT_EPS >= invoiceAmount) return PAYMENT_STATUS.UNPAID;
+  return PAYMENT_STATUS.PARTIALLY_PAID;
+};
+
+const pharmacyIdOfOrder = (order) => {
+  const p = order.pharmacyId;
+  if (!p) return null;
+  return String(p._id || p);
+};
+
+/**
+ * Attach invoiceAmount / outstanding / paymentStatus to a page of orders.
+ * Reuses pharmacy FIFO receivable state (same engine as collections) — one call per
+ * distinct pharmacy on the page, plus one delivery query for invoice totals.
+ */
+const enrichOrdersWithPaymentSummary = async (companyId, docs) => {
+  if (!docs.length) return [];
+
+  const plain = docs.map((d) => (typeof d.toObject === 'function' ? d.toObject() : { ...d }));
+  const orderIdStrs = plain.map((o) => String(o._id));
+  const orderIdSet = new Set(orderIdStrs);
+  const orderOids = plain.map((o) => o._id);
+
+  const deliveries = await DeliveryRecord.find({
+    companyId,
+    orderId: { $in: orderOids },
+    isDeleted: { $ne: true }
+  })
+    .select('orderId pharmacyNetPayable totalAmount')
+    .lean();
+
+  const invoiceByOrder = {};
+  for (const d of deliveries) {
+    const oid = String(d.orderId);
+    const amt = roundPKR(d.pharmacyNetPayable ?? d.totalAmount ?? 0);
+    invoiceByOrder[oid] = roundPKR((invoiceByOrder[oid] || 0) + amt);
+  }
+
+  const pharmacyIdsNeeded = [
+    ...new Set(
+      plain
+        .filter((o) => (invoiceByOrder[String(o._id)] || 0) > PAYMENT_EPS)
+        .map(pharmacyIdOfOrder)
+        .filter(Boolean)
+    )
+  ];
+
+  const outstandingByOrder = {};
+  await Promise.all(
+    pharmacyIdsNeeded.map(async (pid) => {
+      const state = await financialService.computePharmacyReceivableState(companyId, pid);
+      for (const row of state.rows) {
+        const oid = String(row.orderId);
+        if (!orderIdSet.has(oid)) continue;
+        outstandingByOrder[oid] = roundPKR(
+          (outstandingByOrder[oid] || 0) + Math.max(0, roundPKR(row.open || 0))
+        );
+      }
+    })
+  );
+
+  return plain.map((o) => {
+    const id = String(o._id);
+    const invoiceAmount = roundPKR(invoiceByOrder[id] || 0);
+    if (invoiceAmount <= PAYMENT_EPS) {
+      return {
+        ...o,
+        invoiceAmount: null,
+        outstanding: null,
+        paymentStatus: null
+      };
+    }
+
+    const rawOpen =
+      outstandingByOrder[id] !== undefined ? outstandingByOrder[id] : invoiceAmount;
+    const outstanding = roundPKR(Math.min(Math.max(0, rawOpen), invoiceAmount));
+    return {
+      ...o,
+      invoiceAmount,
+      outstanding,
+      paymentStatus: deriveOrderPaymentStatus(invoiceAmount, outstanding)
+    };
+  });
+};
+
 const list = async (companyId, query, timeZone = 'UTC', opts = {}) => {
   const { page, limit, skip, sort, search } = parsePagination(query);
   const searchTerm = qScalar(search);
@@ -138,7 +238,9 @@ const list = async (companyId, query, timeZone = 'UTC', opts = {}) => {
       .sort(sort).skip(skip).limit(limit),
     Order.countDocuments(filter)
   ]);
-  return { docs, total, page, limit };
+
+  const enriched = await enrichOrdersWithPaymentSummary(companyId, docs);
+  return { docs: enriched, total, page, limit };
 };
 
 const create = async (companyId, data, reqUser, _timeZone) => {
