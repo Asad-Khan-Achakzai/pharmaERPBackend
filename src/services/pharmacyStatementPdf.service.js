@@ -8,6 +8,7 @@ const ledgerService = require('./ledger.service');
 const pharmacyWorkspaceService = require('./pharmacyWorkspace.service');
 const businessTime = require('../utils/businessTime');
 const ApiError = require('../utils/ApiError');
+const { companyPhoneList, resolveCompanyLogoFile } = require('../utils/companyContact');
 
 const REF_LABEL = {
   DELIVERY: 'SALES INVOICE',
@@ -100,26 +101,46 @@ const buildPdfBuffer = async ({
     };
 
     const companyAddrLine = [co?.address, co?.city, co?.state].filter(Boolean).join(', ');
-    const companyPhone = co?.phone ? `PHONE / FAX #: ${co.phone}` : '';
+    const phones = companyPhoneList(co);
+    const companyPhone = phones.length ? `PHONE / FAX #: ${phones.join(', ')}` : '';
     const companyEmail = co?.email ? `EMAIL ID: ${co.email}` : '';
+    const logoSrc = resolveCompanyLogoFile(co?.logo);
 
-    doc.font('Times-Bold').fontSize(15).text(up(co?.name || 'COMPANY'), innerLeft, y, { width: innerW * 0.62 });
+    const logoSize = 48;
+    const logoGap = 10;
+    let textLeft = innerLeft;
+    let logoDrawn = false;
+    if (logoSrc) {
+      try {
+        doc.image(logoSrc, innerLeft, y, { fit: [logoSize, logoSize] });
+        textLeft = innerLeft + logoSize + logoGap;
+        logoDrawn = true;
+      } catch {
+        /* skip broken logo */
+      }
+    }
+
+    const nameW = logoDrawn ? innerW - (logoSize + logoGap) - innerW * 0.42 : innerW * 0.62;
+    doc.font('Times-Bold').fontSize(15).text(up(co?.name || 'COMPANY'), textLeft, y, { width: nameW });
     doc.font('Helvetica').fontSize(8).text(`GENERATED: ${nowLine}`, innerLeft + innerW * 0.5, y, {
       width: innerW * 0.48,
       align: 'right'
     });
-    y += 22;
+    y += (logoDrawn ? logoSize : 22) + 4;
 
+    const contactW = innerW * 0.72;
     doc.font('Helvetica').fontSize(8);
-    if (companyAddrLine) doc.text(up(companyAddrLine), innerLeft, y, { width: innerW * 0.72 });
-    y += 11;
+    if (companyAddrLine) {
+      doc.text(`ADDRESS: ${up(companyAddrLine)}`, innerLeft, y, { width: contactW });
+      y = doc.y + 2;
+    }
     if (companyPhone) {
-      doc.text(companyPhone, innerLeft, y);
-      y += 11;
+      doc.text(companyPhone, innerLeft, y, { width: contactW });
+      y = doc.y + 2;
     }
     if (companyEmail) {
-      doc.text(companyEmail, innerLeft, y);
-      y += 11;
+      doc.text(companyEmail, innerLeft, y, { width: contactW });
+      y = doc.y + 2;
     }
     y += 6;
 

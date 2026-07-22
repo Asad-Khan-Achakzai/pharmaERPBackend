@@ -18,8 +18,21 @@ const { tenantAggregateMatch } = require('../utils/tenantAggregate');
 const { resolveCompanyTimeZone } = require('../utils/countryTimeZone');
 const { Info } = require('luxon');
 const { buildGeoPlatformPatch, syncLegacyFlagsToGeoPlatform } = require('../geo/utils/geoPlatformResolver');
+const { normalizePhones, persistCompanyLogo } = require('../utils/companyContact');
 
 const notDeleted = { isDeleted: { $ne: true } };
+
+const applyPhoneFields = (target, payload) => {
+  const phonesTouched =
+    Object.prototype.hasOwnProperty.call(payload, 'phones') ||
+    Object.prototype.hasOwnProperty.call(payload, 'phone');
+  if (!phonesTouched) return;
+  const { phones, phone } = normalizePhones(payload);
+  target.phones = phones;
+  target.phone = phone;
+  delete payload.phones;
+  delete payload.phone;
+};
 
 const listCompanies = async (query) => {
   const { page, limit, skip, sort, search } = parsePagination(query);
@@ -73,7 +86,14 @@ const createCompany = async (payload) => {
   const tz = resolveCompanyTimeZone({ timeZone: data.timeZone, country: data.country });
   data.timeZone = tz;
   mergeGeoIntoPlainCompany(data, data);
+  applyPhoneFields(data, data);
+  const logoInput = Object.prototype.hasOwnProperty.call(data, 'logo') ? data.logo : undefined;
+  delete data.logo;
   const company = await Company.create(data);
+  if (logoInput !== undefined) {
+    company.logo = await persistCompanyLogo(company._id, logoInput);
+    await company.save();
+  }
   await seedDefaultRolesForCompany(company._id, {});
   await coaSeed.ensureCoaForCompany(company._id);
   return company;
@@ -84,6 +104,11 @@ const updateCompany = async (id, payload) => {
   if (!company) throw new ApiError(404, 'Company not found');
   const patch = { ...payload };
   applyGeoPlatformPatch(company, patch);
+  applyPhoneFields(company, patch);
+  if (Object.prototype.hasOwnProperty.call(patch, 'logo')) {
+    company.logo = await persistCompanyLogo(company._id, patch.logo);
+    delete patch.logo;
+  }
   if (Object.prototype.hasOwnProperty.call(patch, 'timeZone')) {
     const mergedCountry = patch.country != null ? patch.country : company.country;
     company.timeZone = resolveCompanyTimeZone({ timeZone: patch.timeZone, country: mergedCountry });

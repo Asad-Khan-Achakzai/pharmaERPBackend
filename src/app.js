@@ -16,6 +16,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(morgan('dev'));
 
 app.use('/invoices', express.static(path.join(__dirname, '../invoices')));
+app.use('/company-logos', express.static(path.join(__dirname, '../uploads/company-logos')));
 
 app.use('/api/v1', routes);
 

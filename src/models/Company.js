@@ -35,12 +35,25 @@ const companySchema = new mongoose.Schema(
     city: { type: String, trim: true },
     state: { type: String, trim: true },
     country: { type: String, default: 'Pakistan' },
+    /** Legacy single phone — kept in sync with phones[0] for older consumers. */
     phone: { type: String, trim: true },
+    /** One or more company contact numbers (printed on invoices). */
+    phones: { type: [String], default: undefined },
     /** Pakistan FBR National Tax Number — printed on delivery invoices. */
     ntnNo: { type: String, trim: true, maxlength: 64 },
     email: { type: String, trim: true, lowercase: true },
+    /** Public path or URL for company logo (e.g. /company-logos/<id>.png). */
     logo: { type: String },
     currency: { type: String, default: 'PKR' },
+    /**
+     * Unit-price label basis on delivery invoices.
+     * TRADE → "TP. RATE", NET → "NP. RATE". Default TRADE preserves existing invoices.
+     */
+    invoicePriceMode: {
+      type: String,
+      enum: ['TRADE', 'NET'],
+      default: 'TRADE'
+    },
     /** Starting bank/cash position for implied cash balance (collections + settlements − outflows) */
     cashOpeningBalance: { type: Number, default: 0 },
     /**

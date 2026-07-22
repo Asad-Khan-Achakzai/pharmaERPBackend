@@ -5,6 +5,7 @@ const DeliveryRecord = require('../models/DeliveryRecord');
 const { roundPKR } = require('../utils/currency');
 const { getTimeZone, toBusinessTime } = require('../utils/businessTime');
 const env = require('../config/env');
+const { companyPhoneList, resolveCompanyLogoFile } = require('../utils/companyContact');
 
 const invoiceDir = path.join(__dirname, '../../invoices');
 
@@ -171,27 +172,52 @@ const generateInvoice = async (deliveryId) => {
     let y = margin;
 
     const companyAddrLine = [company.address, company.city, company.state].filter(Boolean).join(', ');
-    const companyPhone = company.phone ? `PHONE / FAX #: ${company.phone}` : '';
+    const phones = companyPhoneList(company);
+    const companyPhone = phones.length ? `PHONE / FAX #: ${phones.join(', ')}` : '';
     const companyEmail = company.email ? `EMAIL ID: ${company.email}` : '';
+    const logoSrc = resolveCompanyLogoFile(company.logo);
 
     const delivered = delivery.deliveredBy;
     const userCode = delivered?.employeeCode || (delivered?._id ? String(delivered._id).slice(-4) : '');
     const userLine = delivered ? `USER : ${userCode} = ${up(delivered.name)}` : '';
 
-    doc.font('Times-Bold').fontSize(15).text(up(company.name), innerLeft, y, { width: innerW * 0.55 });
+    const logoSize = 48;
+    const logoGap = 10;
+    let textLeft = innerLeft;
+    let logoDrawn = false;
+    if (logoSrc) {
+      try {
+        doc.image(logoSrc, innerLeft, y, { fit: [logoSize, logoSize] });
+        textLeft = innerLeft + logoSize + logoGap;
+        logoDrawn = true;
+      } catch {
+        /* skip broken logo */
+      }
+    }
+
+    const nameW = logoDrawn ? innerW - (logoSize + logoGap) - innerW * 0.42 : innerW * 0.55;
+    doc.font('Times-Bold').fontSize(15).text(up(company.name), textLeft, y, { width: nameW });
     doc.font('Helvetica').fontSize(8).text(userLine, innerLeft + innerW * 0.52, y, {
       width: innerW * 0.48,
       align: 'right'
     });
-    y += 22;
+    y += (logoDrawn ? logoSize : 22) + 4;
 
+    const contactW = innerW * 0.72;
     doc.font('Helvetica').fontSize(8);
-    if (companyAddrLine) doc.text(up(companyAddrLine), innerLeft, y, { width: innerW * 0.62 });
-    y += 11;
-    if (companyPhone) doc.text(companyPhone, innerLeft, y);
-    y += 11;
-    if (companyEmail) doc.text(companyEmail, innerLeft, y);
-    y += 14;
+    if (companyAddrLine) {
+      doc.text(`ADDRESS: ${up(companyAddrLine)}`, innerLeft, y, { width: contactW });
+      y = doc.y + 2;
+    }
+    if (companyPhone) {
+      doc.text(companyPhone, innerLeft, y, { width: contactW });
+      y = doc.y + 2;
+    }
+    if (companyEmail) {
+      doc.text(companyEmail, innerLeft, y, { width: contactW });
+      y = doc.y + 2;
+    }
+    y += 12;
 
     const titleBoxW = 120;
     const titleBoxX = innerLeft + (innerW - titleBoxW) / 2;
@@ -282,7 +308,8 @@ const generateInvoice = async (deliveryId) => {
     doc.text('BATCH', tblLeft + c.batch + 2, hy, { width: 34 });
     doc.text('QTY', tblLeft + c.qty + 2, hy, { width: 22, align: 'right' });
     doc.text('BON', tblLeft + c.bon + narrowPad / 2, hy, { width: bonColW - narrowPad, align: 'center' });
-    doc.text('TP. RATE', tblLeft + c.tp + 2, hy, { width: 34, align: 'right' });
+    const rateLabel = company.invoicePriceMode === 'NET' ? 'NP. RATE' : 'TP. RATE';
+    doc.text(rateLabel, tblLeft + c.tp + 2, hy, { width: 34, align: 'right' });
     doc.text('NET VALUE', tblLeft + c.pval + 2, hy, { width: 44, align: 'right' });
     doc.text('NET DISC', tblLeft + c.pdisc + 2, hy, { width: 42, align: 'right' });
     doc.text('S.TAX VALUE', tblLeft + c.stax + narrowPad / 2, hy, { width: staxColW - narrowPad, align: 'center' });

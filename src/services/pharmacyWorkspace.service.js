@@ -190,6 +190,7 @@ const pharmacyFinancialWorkspace = async (companyId, pharmacyId, _query = {}, ti
           city: company.city,
           state: company.state,
           phone: company.phone,
+          phones: Array.isArray(company.phones) ? company.phones : company.phone ? [company.phone] : [],
           email: company.email,
           logo: company.logo || null,
           currency: company.currency || 'PKR'

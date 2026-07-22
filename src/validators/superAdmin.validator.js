@@ -29,16 +29,23 @@ const mediaFlagFields = {
   mediaRetention: mediaRetentionSchema
 };
 
+const phoneListSchema = Joi.array().items(Joi.string().trim().allow('')).max(10);
+
 const createCompanySchema = Joi.object({
   name: Joi.string().required().trim().min(1).max(200),
   address: Joi.string().trim().allow('', null),
   city: Joi.string().trim().allow('', null),
   state: Joi.string().trim().allow('', null),
   country: Joi.string().trim().default('Pakistan'),
+  /** @deprecated Prefer `phones`. Kept for older clients. */
   phone: Joi.string().trim().allow('', null),
+  phones: phoneListSchema,
   ntnNo: Joi.string().trim().allow('', null).max(64),
   email: Joi.string().email().trim().lowercase().allow('', null),
+  /** Data URL (data:image/...) or existing public path; null/'' clears. */
+  logo: Joi.string().allow('', null).max(3_500_000),
   currency: Joi.string().trim().default('PKR'),
+  invoicePriceMode: Joi.string().valid('TRADE', 'NET'),
   timeZone: Joi.string().trim().allow('', null),
   weeklyPlanApprovalRequired: Joi.boolean(),
   strictVisitSequence: Joi.boolean(),
@@ -68,10 +75,15 @@ const updateCompanySchema = Joi.object({
   city: Joi.string().trim().allow('', null),
   state: Joi.string().trim().allow('', null),
   country: Joi.string().trim(),
+  /** @deprecated Prefer `phones`. Kept for older clients. */
   phone: Joi.string().trim().allow('', null),
+  phones: phoneListSchema,
   ntnNo: Joi.string().trim().allow('', null).max(64),
   email: Joi.string().email().trim().lowercase().allow('', null),
+  /** Data URL (data:image/...) or existing public path; null/'' clears. */
+  logo: Joi.string().allow('', null).max(3_500_000),
   currency: Joi.string().trim(),
+  invoicePriceMode: Joi.string().valid('TRADE', 'NET'),
   timeZone: Joi.string().trim().allow('', null),
   weeklyPlanApprovalRequired: Joi.boolean(),
   strictVisitSequence: Joi.boolean(),
