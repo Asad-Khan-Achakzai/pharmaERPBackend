@@ -104,7 +104,7 @@ const buildPdfBuffer = async ({
     const phones = companyPhoneList(co);
     const companyPhone = phones.length ? `PHONE / FAX #: ${phones.join(', ')}` : '';
     const companyEmail = co?.email ? `EMAIL ID: ${co.email}` : '';
-    const logoSrc = resolveCompanyLogoFile(co?.logo);
+    const logoSrc = resolveCompanyLogoFile(co);
 
     const logoSize = 48;
     const logoGap = 10;

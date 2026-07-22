@@ -76,7 +76,9 @@ const pharmacyFinancialWorkspace = async (companyId, pharmacyId, _query = {}, ti
   if (!pharmacy) return null;
 
   const [company, territory, receivableState, lastCollection, lastOrder, repAgg, byRef] = await Promise.all([
-    Company.findById(cid).select('name address city state phone email logo currency').lean(),
+    Company.findById(cid)
+      .select('name address city state phone phones email logo currency +logoBase64 +logoMime')
+      .lean(),
     pharmacy.territoryId
       ? Territory.findOne({ _id: pharmacy.territoryId, companyId: cid, isDeleted: nd }).select('name code kind').lean()
       : null,
@@ -193,6 +195,8 @@ const pharmacyFinancialWorkspace = async (companyId, pharmacyId, _query = {}, ti
           phones: Array.isArray(company.phones) ? company.phones : company.phone ? [company.phone] : [],
           email: company.email,
           logo: company.logo || null,
+          logoBase64: company.logoBase64 || null,
+          logoMime: company.logoMime || null,
           currency: company.currency || 'PKR'
         }
       : null,

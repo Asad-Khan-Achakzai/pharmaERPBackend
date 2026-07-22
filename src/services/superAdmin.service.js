@@ -18,7 +18,7 @@ const { tenantAggregateMatch } = require('../utils/tenantAggregate');
 const { resolveCompanyTimeZone } = require('../utils/countryTimeZone');
 const { Info } = require('luxon');
 const { buildGeoPlatformPatch, syncLegacyFlagsToGeoPlatform } = require('../geo/utils/geoPlatformResolver');
-const { normalizePhones, persistCompanyLogo } = require('../utils/companyContact');
+const { normalizePhones, persistCompanyLogo, applyLogoPersistResult } = require('../utils/companyContact');
 
 const notDeleted = { isDeleted: { $ne: true } };
 
@@ -91,7 +91,7 @@ const createCompany = async (payload) => {
   delete data.logo;
   const company = await Company.create(data);
   if (logoInput !== undefined) {
-    company.logo = await persistCompanyLogo(company._id, logoInput);
+    applyLogoPersistResult(company, await persistCompanyLogo(company._id, logoInput));
     await company.save();
   }
   await seedDefaultRolesForCompany(company._id, {});
@@ -106,7 +106,7 @@ const updateCompany = async (id, payload) => {
   applyGeoPlatformPatch(company, patch);
   applyPhoneFields(company, patch);
   if (Object.prototype.hasOwnProperty.call(patch, 'logo')) {
-    company.logo = await persistCompanyLogo(company._id, patch.logo);
+    applyLogoPersistResult(company, await persistCompanyLogo(company._id, patch.logo));
     delete patch.logo;
   }
   if (Object.prototype.hasOwnProperty.call(patch, 'timeZone')) {

@@ -48,7 +48,7 @@ const generateInvoice = async (deliveryId) => {
   ensureDir();
 
   const delivery = await DeliveryRecord.findById(deliveryId)
-    .populate('companyId')
+    .populate({ path: 'companyId', select: '+logoBase64 +logoMime' })
     .populate({
       path: 'orderId',
       populate: [
@@ -175,7 +175,7 @@ const generateInvoice = async (deliveryId) => {
     const phones = companyPhoneList(company);
     const companyPhone = phones.length ? `PHONE / FAX #: ${phones.join(', ')}` : '';
     const companyEmail = company.email ? `EMAIL ID: ${company.email}` : '';
-    const logoSrc = resolveCompanyLogoFile(company.logo);
+    const logoSrc = resolveCompanyLogoFile(company);
 
     const delivered = delivery.deliveredBy;
     const userCode = delivered?.employeeCode || (delivered?._id ? String(delivered._id).slice(-4) : '');

@@ -16,7 +16,9 @@ app.use(express.urlencoded({ extended: true }));
 app.use(morgan('dev'));
 
 app.use('/invoices', express.static(path.join(__dirname, '../invoices')));
-app.use('/company-logos', express.static(path.join(__dirname, '../uploads/company-logos')));
+// Serve logos from disk, with MongoDB fallback when the file is missing.
+const { serveCompanyLogo } = require('./utils/companyContact');
+app.get('/company-logos/:filename', serveCompanyLogo);
 
 app.use('/api/v1', routes);
 

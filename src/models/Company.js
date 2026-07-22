@@ -44,6 +44,12 @@ const companySchema = new mongoose.Schema(
     email: { type: String, trim: true, lowercase: true },
     /** Public path or URL for company logo (e.g. /company-logos/<id>.png). */
     logo: { type: String },
+    /**
+     * Raw base64 (no data: prefix) so invoices still render when the disk file is
+     * missing (ephemeral hosts, other machines). Omitted from default queries.
+     */
+    logoBase64: { type: String, select: false },
+    logoMime: { type: String, select: false },
     currency: { type: String, default: 'PKR' },
     /**
      * Unit-price label basis on delivery invoices.
