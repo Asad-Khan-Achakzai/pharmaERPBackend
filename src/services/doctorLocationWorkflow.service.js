@@ -35,7 +35,7 @@ async function maybeCreateSuggestionFromVisit({
   visitLocation,
   session
 }) {
-  if (!visitLocation || !doctor?._id) return;
+  if (!visitLocation || !doctor?._id) return null;
 
   const existing = await DoctorLocationSuggestion.findOne({
     companyId,
@@ -45,11 +45,11 @@ async function maybeCreateSuggestionFromVisit({
     .session(session)
     .select('_id')
     .lean();
-  if (existing) return;
+  if (existing) return null;
 
-  if (!passesSuggestionAccuracy(visitLocation.accuracy)) return;
+  if (!passesSuggestionAccuracy(visitLocation.accuracy)) return null;
 
-  await DoctorLocationSuggestion.create(
+  const [created] = await DoctorLocationSuggestion.create(
     [
       {
         companyId,
@@ -73,6 +73,7 @@ async function maybeCreateSuggestionFromVisit({
     doctor.locationStatus = DOCTOR_LOCATION_STATUS.SUGGESTED;
     await doctor.save({ session });
   }
+  return created;
 }
 
 /**
@@ -127,13 +128,19 @@ async function applyDoctorLocationOnVisitComplete({
   }
 
   if (status === DOCTOR_LOCATION_STATUS.UNVERIFIED) {
-    await maybeCreateSuggestionFromVisit({
+    const created = await maybeCreateSuggestionFromVisit({
       companyId,
       doctor,
       submittedByEmployeeId,
       visitLocation,
       session
     });
+    if (created?._id) {
+      baseFields.newSuggestionId = String(created._id);
+      baseFields.suggestionDoctorId = String(doctor._id);
+      baseFields.suggestionDoctorName = doctor.name || null;
+      baseFields.suggestionSubmittedBy = String(submittedByEmployeeId);
+    }
     return baseFields;
   }
 

@@ -113,6 +113,8 @@ const reorderPlanItemsSchema = Joi.object({
 const updatePlanItemSchema = Joi.object({
   status: Joi.string().valid('PENDING', 'VISITED', 'MISSED'),
   notes: Joi.string().trim().allow(''),
+  /** HH:mm or free-form planned time; schedule change triggers co-visit notify. */
+  plannedTime: Joi.string().trim().max(32).allow('', null),
   participantUserIds: Joi.array().items(Joi.string().hex().length(24)).max(20)
 }).min(1);
 

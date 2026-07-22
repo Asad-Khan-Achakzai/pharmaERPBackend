@@ -407,6 +407,8 @@ const submit = async (companyId, planId, reqUser) => {
     entityId: plan._id,
     changes: { before, after: plan.toObject() }
   });
+
+  void notifyWeeklyPlanSubmitted(companyId, plan).catch(() => null);
   return plan;
 };
 
@@ -430,6 +432,8 @@ const approve = async (companyId, planId, reqUser) => {
     entityId: plan._id,
     changes: { before, after: plan.toObject() }
   });
+
+  void notifyWeeklyPlanOutcome(companyId, plan, 'approved').catch(() => null);
   return plan;
 };
 
@@ -458,8 +462,50 @@ const reject = async (companyId, planId, { reason } = {}, reqUser) => {
     entityId: plan._id,
     changes: { before, after: plan.toObject() }
   });
+
+  void notifyWeeklyPlanOutcome(companyId, plan, 'rejected', plan.rejectedReason).catch(() => null);
   return plan;
 };
+
+const { publishEventSafe } = require('./notificationPublisher.service');
+
+async function notifyWeeklyPlanSubmitted(companyId, plan) {
+  const owner = await User.findById(plan.medicalRepId).select('name managerId').lean();
+  if (!owner?.managerId) return;
+  const planId = String(plan._id);
+  const ownerName = owner.name || 'Team member';
+  await publishEventSafe({
+    eventName: 'weeklyPlan.submitted',
+    companyId,
+    userId: owner.managerId,
+    title: 'Weekly plan pending approval',
+    body: `${ownerName} submitted a weekly plan for review`,
+    link: '/(manager)/approvals',
+    meta: { weeklyPlanId: planId },
+    dedupeKey: `weeklyPlan:${planId}:submitted:${owner.managerId}`
+  });
+}
+
+async function notifyWeeklyPlanOutcome(companyId, plan, outcome, reason) {
+  if (!plan?.medicalRepId) return;
+  const planId = String(plan._id);
+  const title =
+    outcome === 'approved' ? 'Weekly plan approved' : 'Weekly plan needs changes';
+  const body =
+    outcome === 'approved'
+      ? 'Your weekly plan was approved'
+      : reason || 'Your weekly plan was rejected — please revise and resubmit';
+  await publishEventSafe({
+    eventName: outcome === 'approved' ? 'weeklyPlan.approved' : 'weeklyPlan.rejected',
+    companyId,
+    userId: plan.medicalRepId,
+    title,
+    body,
+    link: '/plan/weekly',
+    meta: { weeklyPlanId: planId, outcome },
+    dedupeKey: `weeklyPlan:${planId}:${outcome}`
+  });
+}
 
 /**
  * Manager helper: list plans pending approval in the caller's subtree.

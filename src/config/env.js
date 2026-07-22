@@ -66,6 +66,10 @@ const schema = Joi.object({
   MOBILE_SYNC_POLL_INTERVAL_MS: Joi.number().integer().min(15000).default(60000),
   /** Optional — Expo push notifications when Company.mobilePushEnabled is true. */
   EXPO_ACCESS_TOKEN: Joi.string().allow('').default(''),
+  /** Future multi-channel adapters (no-op unless enabled + provider wired). */
+  NOTIFICATION_EMAIL_ENABLED: Joi.string().valid('0', '1').default('0'),
+  NOTIFICATION_SMS_ENABLED: Joi.string().valid('0', '1').default('0'),
+  NOTIFICATION_WHATSAPP_ENABLED: Joi.string().valid('0', '1').default('0'),
   /** Geo Platform — server-side Google Maps API key (Routes, Geocoding, Places, Matrix). */
   GOOGLE_MAPS_SERVER_API_KEY: Joi.string().allow('').default(''),
   GOOGLE_MAPS_WEB_API_KEY: Joi.string().allow('').default(''),

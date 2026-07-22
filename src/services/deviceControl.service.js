@@ -16,7 +16,8 @@ const {
   DEVICE_CHANGE_REQUEST_STATUS,
   DEVICE_BINDING_SOURCE
 } = require('../constants/enums');
-const { DEFAULT_MEDICAL_REP_CODE } = require('../constants/rbac');
+const { DEFAULT_MEDICAL_REP_CODE, ADMIN_ACCESS, DEFAULT_ADMIN_CODE } = require('../constants/rbac');
+const { publishEventSafe } = require('./notificationPublisher.service');
 
 const toOid = (id) => {
   if (id instanceof mongoose.Types.ObjectId) return id;
@@ -211,6 +212,7 @@ async function createDeviceChangeRequest({ userId, companyId, tokenDeviceId, dev
     existing.requestedDevice = snap;
     if (reason !== undefined) existing.reason = reason ? String(reason).slice(0, 500) : null;
     await existing.save();
+    void notifyDeviceChangeRequested(cid, existing).catch(() => null);
     return existing.toObject();
   }
 
@@ -223,6 +225,7 @@ async function createDeviceChangeRequest({ userId, companyId, tokenDeviceId, dev
     status: DEVICE_CHANGE_REQUEST_STATUS.PENDING,
     reason: reason ? String(reason).slice(0, 500) : null
   });
+  void notifyDeviceChangeRequested(cid, created).catch(() => null);
   return created.toObject();
 }
 
@@ -391,6 +394,7 @@ async function approveRequest({ companyId, requestId, adminUserId }) {
   request.decidedBy = toOid(adminUserId);
   request.decidedAt = new Date();
   await request.save();
+  void notifyDeviceChangeOutcome(cid, request, 'approved').catch(() => null);
   return request.toObject();
 }
 
@@ -406,7 +410,74 @@ async function rejectRequest({ companyId, requestId, adminUserId, note }) {
   request.decidedAt = new Date();
   request.decisionNote = note ? String(note).slice(0, 500) : null;
   await request.save();
+  void notifyDeviceChangeOutcome(cid, request, 'rejected', request.decisionNote).catch(() => null);
   return request.toObject();
+}
+
+async function findDeviceControlAdminUserIds(companyId) {
+  const adminRoles = await Role.find({
+    companyId,
+    isDeleted: { $ne: true },
+    $or: [
+      { code: DEFAULT_ADMIN_CODE },
+      { permissions: ADMIN_ACCESS },
+      { permissions: 'deviceControl.manage' }
+    ]
+  })
+    .select('_id')
+    .lean();
+  const roleIds = adminRoles.map((r) => r._id);
+  const or = [{ role: ROLES.ADMIN }];
+  if (roleIds.length) or.push({ roleId: { $in: roleIds } });
+
+  const users = await User.find({
+    companyId,
+    isActive: true,
+    isDeleted: { $ne: true },
+    $or: or
+  })
+    .select('_id')
+    .lean();
+  return [...new Set(users.map((u) => String(u._id)))];
+}
+
+async function notifyDeviceChangeRequested(companyId, request) {
+  const requester = await User.findById(request.userId).select('name').lean();
+  const name = requester?.name || 'A team member';
+  const requestId = String(request._id);
+  const targets = await findDeviceControlAdminUserIds(companyId);
+  await Promise.all(
+    targets.map((userId) =>
+      publishEventSafe({
+        eventName: 'deviceChange.requested',
+        companyId,
+        userId,
+        title: 'Device change pending',
+        body: `${name} requested a new device`,
+        link: '/notifications',
+        meta: { deviceChangeRequestId: requestId },
+        dedupeKey: `deviceChange:${requestId}:requested:${userId}`
+      })
+    )
+  );
+}
+
+async function notifyDeviceChangeOutcome(companyId, request, outcome, note) {
+  if (!request?.userId) return;
+  const requestId = String(request._id);
+  const approved = outcome === 'approved';
+  await publishEventSafe({
+    eventName: approved ? 'deviceChange.approved' : 'deviceChange.rejected',
+    companyId,
+    userId: request.userId,
+    title: approved ? 'Device change approved' : 'Device change rejected',
+    body: approved
+      ? 'You can sign in on the new device'
+      : note || 'Your device change request was rejected',
+    link: '/notifications',
+    meta: { deviceChangeRequestId: requestId, outcome },
+    dedupeKey: `deviceChange:${requestId}:${outcome}`
+  });
 }
 
 /**

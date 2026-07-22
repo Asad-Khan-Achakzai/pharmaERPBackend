@@ -9,6 +9,7 @@ const { createAnnouncementSchema } = require('../../validators/phase2.validator'
 
 router.use(authenticate, companyScope);
 router.get('/feed', c.feed);
+router.get('/admin', checkPermission('admin.access'), c.adminList);
 router.post('/', checkPermission('admin.access'), validate(createAnnouncementSchema), c.create);
 router.post('/:id/publish', checkPermission('admin.access'), c.publish);
 

@@ -9,6 +9,8 @@ const { startMediaRetentionCleanupJob } = require('./src/jobs/mediaRetentionClea
 const { startHeartbeatRetentionArchiveJob } = require('./src/jobs/heartbeatRetentionArchive.job');
 const { startPushOutboxJob } = require('./src/jobs/pushOutbox.job');
 const { startPushReceiptsJob } = require('./src/jobs/pushReceipts.job');
+const { startAnnouncementFanoutJob } = require('./src/jobs/announcementFanout.job');
+const { startNotificationAnalyticsJob } = require('./src/jobs/notificationAnalytics.job');
 const { seedMrepRolesForAllCompanies } = require('./src/jobs/seedMrepRoles.bootstrap');
 const realtimeHub = require('./src/realtime/RealtimeHub');
 const { initHeartbeatRateLimit } = require('./src/utils/heartbeatRateLimit');
@@ -26,6 +28,8 @@ const startServer = async () => {
     startHeartbeatRetentionArchiveJob();
     startPushOutboxJob();
     startPushReceiptsJob();
+    startAnnouncementFanoutJob();
+    startNotificationAnalyticsJob();
     /** Idempotent — ensures every company has DEFAULT_ASM + DEFAULT_RM seeded. */
     void seedMrepRolesForAllCompanies();
   }

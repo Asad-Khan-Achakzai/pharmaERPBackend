@@ -554,6 +554,10 @@ const markVisit = async (companyId, planItemId, body, reqUser, timeZone, company
 
     await activeVisitService.clearByPlanItemId(companyId, reqUser.userId, item._id);
 
+    if (geoFields?.newSuggestionId) {
+      void notifyDoctorLocationPendingSuggestion(companyId, geoFields).catch(() => null);
+    }
+
     await auditService.log({
       companyId,
       userId: reqUser.userId,
@@ -601,7 +605,7 @@ const updateByAdmin = async (companyId, planItemId, data, reqUser, timeZone) => 
   }
 
   const before = item.toObject();
-  const notesBefore = item.notes;
+  const plannedTimeBefore = item.plannedTime || '';
   if (data.status !== undefined) {
     if (locked) throw new ApiError(400, 'Cannot change status for locked days');
     if (!Object.values(PLAN_ITEM_STATUS).includes(data.status)) {
@@ -615,7 +619,15 @@ const updateByAdmin = async (companyId, planItemId, data, reqUser, timeZone) => 
   }
   if (data.notes !== undefined) item.notes = data.notes;
 
-  let scheduleTouched = data.notes !== undefined && data.notes !== notesBefore;
+  // Co-visit "schedule changed" notify only on plannedTime (not notes-only edits).
+  let scheduleTouched = false;
+  if (data.plannedTime !== undefined) {
+    const nextTime = data.plannedTime == null || data.plannedTime === '' ? '' : String(data.plannedTime).trim();
+    if (nextTime !== String(plannedTimeBefore || '').trim()) {
+      item.plannedTime = nextTime || undefined;
+      scheduleTouched = true;
+    }
+  }
 
   if (data.participantUserIds !== undefined) {
     coVisit.assertOwnerCanManageParticipants(item, reqUser);
@@ -895,6 +907,10 @@ const createUnplannedAsPlanItem = async (companyId, body, reqUser, timeZone, com
 
     await activeVisitService.clearUnplannedByDoctorId(companyId, reqUser.userId, doctorId);
 
+    if (geoFields?.newSuggestionId) {
+      void notifyDoctorLocationPendingSuggestion(companyId, geoFields).catch(() => null);
+    }
+
     await auditService.log({
       companyId,
       userId: reqUser.userId,
@@ -917,9 +933,67 @@ const createUnplannedAsPlanItem = async (companyId, body, reqUser, timeZone, com
   }
 };
 
+const { publishEventSafe } = require('./notificationPublisher.service');
+const templates = require('./notificationTemplates');
+const User = require('../models/User');
+
+async function notifyDoctorLocationPendingSuggestion(companyId, geoFields) {
+  const submitterId = geoFields.suggestionSubmittedBy;
+  if (!submitterId || !geoFields.newSuggestionId) return;
+  const submitter = await User.findById(submitterId).select('managerId').lean();
+  if (!submitter?.managerId) return;
+  const copy = templates.doctorLocationPending({ doctorName: geoFields.suggestionDoctorName });
+  await publishEventSafe({
+    eventName: 'doctorLocation.pending',
+    companyId,
+    userId: submitter.managerId,
+    title: copy.title,
+    body: copy.body,
+    link: '/notifications',
+    meta: {
+      suggestionId: geoFields.newSuggestionId,
+      doctorId: geoFields.suggestionDoctorId
+    },
+    dedupeKey: `doctorLocation:${geoFields.newSuggestionId}:pending:${submitter.managerId}`
+  });
+}
+
+async function notifyPlanItemsMissed(companyId, items) {
+  for (const item of items) {
+    const planItemId = String(item._id);
+    const doctorLabel =
+      item.doctorId && typeof item.doctorId === 'object' && item.doctorId.name
+        ? `Dr. ${item.doctorId.name}`
+        : 'A planned visit';
+    const copy = templates.planItemMissed({ doctorLabel });
+    if (item.employeeId) {
+      await publishEventSafe({
+        eventName: 'planItem.missed',
+        companyId,
+        userId: item.employeeId,
+        title: copy.title,
+        body: copy.body,
+        link: `/visit/${planItemId}`,
+        meta: { planItemId },
+        dedupeKey: `plan:${planItemId}:missed:${item.employeeId}`
+      });
+    }
+  }
+}
+
 const markMissedForCompanyBusinessDay = async (companyId, ymd, timeZone) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   const dateDoc = businessTime.businessDayStartUtc(ymd, tz);
+  const pending = await PlanItem.find({
+    companyId,
+    date: dateDoc,
+    status: PLAN_ITEM_STATUS.PENDING,
+    isDeleted: { $ne: true }
+  })
+    .select('_id employeeId doctorId')
+    .populate('doctorId', 'name')
+    .lean();
+
   const res = await PlanItem.updateMany(
     {
       companyId,
@@ -955,6 +1029,10 @@ const markMissedForCompanyBusinessDay = async (companyId, ymd, timeZone) => {
       arrayFilters: [{ 'p.lifecycleStatus': { $in: openStatuses } }]
     }
   );
+
+  if (pending.length) {
+    void notifyPlanItemsMissed(companyId, pending).catch(() => null);
+  }
 
   return (res.modifiedCount || 0) + (participantRes.modifiedCount || 0);
 };

@@ -592,6 +592,8 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts
       });
     });
 
+    void notifyOrderStatus(companyId, order, 'delivered').catch(() => null);
+
     return delivery;
   } catch (error) {
     await session.abortTransaction();
@@ -836,8 +838,32 @@ const cancel = async (companyId, id, reqUser, opts = {}) => {
   order.updatedBy = reqUser.userId;
   await order.save();
   await auditService.log({ companyId, userId: reqUser.userId, action: 'order.cancel', entityType: 'Order', entityId: order._id, changes: { after: { status: 'CANCELLED' } } });
+  void notifyOrderStatus(companyId, order, 'cancelled').catch(() => null);
   return order;
 };
+
+const { publishEventSafe } = require('./notificationPublisher.service');
+const orderNotifyTemplates = require('./notificationTemplates');
+
+async function notifyOrderStatus(companyId, order, outcome) {
+  if (!order?.medicalRepId) return;
+  const orderId = String(order._id);
+  const label = order.orderNumber ? `Order ${order.orderNumber}` : 'Your order';
+  const copy =
+    outcome === 'delivered'
+      ? orderNotifyTemplates.orderDelivered({ label })
+      : orderNotifyTemplates.orderCancelled({ label });
+  await publishEventSafe({
+    eventName: outcome === 'delivered' ? 'order.delivered' : 'order.cancelled',
+    companyId,
+    userId: order.medicalRepId,
+    title: copy.title,
+    body: copy.body,
+    link: `/order/${orderId}`,
+    meta: { orderId },
+    dedupeKey: `order:${orderId}:${outcome}`
+  });
+}
 
 const ensureDeliveryInvoicePdfPath = async (companyId, orderId, deliveryId, opts = {}) => {
   const order = await Order.findOne({ _id: orderId, companyId }).select('medicalRepId');

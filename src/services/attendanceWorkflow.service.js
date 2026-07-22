@@ -222,6 +222,9 @@ async function notifyRequesterOutcome({ companyId, request, outcome }) {
   } else if (outcome === 'auto_rejected') {
     title = 'Attendance request auto-rejected';
     body = `Your ${typeLabel} was automatically rejected`;
+  } else if (outcome === 'cancelled') {
+    title = 'Attendance request cancelled';
+    body = `Your ${typeLabel} was cancelled`;
   }
 
   await notificationService
@@ -231,6 +234,7 @@ async function notifyRequesterOutcome({ companyId, request, outcome }) {
       title,
       body,
       kind: NOTIFICATION_KIND.ATTENDANCE,
+      // Requesters are often field reps without manager attendance access — keep center deep link.
       link: '/notifications',
       meta: { requestId, requestType: request.type, outcome },
       dedupeKey: `attendance:${requestId}:outcome:${outcome}`
@@ -1276,6 +1280,7 @@ const resolveLinkedRequestsForAdminAttendanceOverride = async ({
         action: 'ATTENDANCE_REQUEST_CLOSED_BY_ADMIN_OVERRIDE',
         meta: { attendanceStatus: newAttendanceStatus }
       });
+      void notifyRequesterOutcome({ companyId, request, outcome: 'approved' });
     } else {
       request.status = ATTENDANCE_REQUEST_STATUS.CANCELLED;
       request.currentApproverId = null;
@@ -1298,6 +1303,7 @@ const resolveLinkedRequestsForAdminAttendanceOverride = async ({
         action: 'ATTENDANCE_REQUEST_CANCELLED_BY_ADMIN_OVERRIDE',
         meta: { attendanceStatus: newAttendanceStatus }
       });
+      void notifyRequesterOutcome({ companyId, request, outcome: 'cancelled' });
     }
   }
 

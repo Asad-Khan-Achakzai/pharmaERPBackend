@@ -94,7 +94,32 @@ const NOTIFICATION_KIND = {
   ANNOUNCEMENT: 'ANNOUNCEMENT',
   EXPENSE: 'EXPENSE',
   PLAN: 'PLAN',
-  ATTENDANCE: 'ATTENDANCE'
+  ATTENDANCE: 'ATTENDANCE',
+  WEEKLY_PLAN: 'WEEKLY_PLAN',
+  DEVICE: 'DEVICE',
+  DOCTOR_LOCATION: 'DOCTOR_LOCATION',
+  ORDER: 'ORDER'
+};
+
+/** Logical category for channels / preferences (orthogonal to kind). */
+const NOTIFICATION_CATEGORY = {
+  APPROVALS: 'approvals',
+  OUTCOMES: 'outcomes',
+  FIELD_OPS: 'field_ops',
+  BROADCAST: 'broadcast',
+  SECURITY: 'security',
+  COMMERCE: 'commerce',
+  PERFORMANCE: 'performance',
+  FINANCE: 'finance',
+  HR: 'hr',
+  GENERAL: 'general'
+};
+
+const NOTIFICATION_PRIORITY = {
+  URGENT: 'urgent',
+  HIGH: 'high',
+  NORMAL: 'normal',
+  LOW: 'low'
 };
 
 const PAYROLL_STATUS = {
@@ -474,6 +499,8 @@ module.exports = {
   EXPENSE_CATEGORY,
   EXPENSE_STATUS,
   NOTIFICATION_KIND,
+  NOTIFICATION_CATEGORY,
+  NOTIFICATION_PRIORITY,
   PAYROLL_STATUS,
   ATTENDANCE_STATUS,
   ATTENDANCE_MARKED_BY,

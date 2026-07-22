@@ -1,12 +1,13 @@
 const Notification = require('../models/Notification');
 const NotificationOutbox = require('../models/NotificationOutbox');
+const NotificationPreference = require('../models/NotificationPreference');
 const { OUTBOX_STATUS } = require('../models/NotificationOutbox');
 const { PUSH_STATUS, READ_SOURCE } = require('../models/Notification');
 const Company = require('../models/Company');
 const ApiError = require('../utils/ApiError');
-const { NOTIFICATION_KIND } = require('../constants/enums');
+const { NOTIFICATION_KIND, NOTIFICATION_CATEGORY } = require('../constants/enums');
 const { parsePagination } = require('../utils/pagination');
-const { sanitizePushContent, buildPushData } = require('../utils/pushPayload');
+const { sanitizePushContent, buildPushData, channelIdForMeta } = require('../utils/pushPayload');
 const logger = require('../utils/logger');
 
 async function unreadCount(companyId, userId) {
@@ -15,6 +16,17 @@ async function unreadCount(companyId, userId) {
     userId,
     readAt: null
   });
+}
+
+async function getPreference(companyId, userId) {
+  return NotificationPreference.findOne({ companyId, userId }).lean();
+}
+
+function isCategoryMuted(pref, category) {
+  if (!pref) return false;
+  if (pref.pushEnabled === false) return true;
+  const cat = category || NOTIFICATION_CATEGORY.GENERAL;
+  return Array.isArray(pref.mutedCategories) && pref.mutedCategories.includes(cat);
 }
 
 /**
@@ -31,6 +43,17 @@ async function createForUser({
   dedupeKey
 }) {
   const key = dedupeKey ? String(dedupeKey).trim().slice(0, 200) : null;
+  const category = meta?.category || NOTIFICATION_CATEGORY.GENERAL;
+  const pref = await getPreference(companyId, userId);
+
+  if (pref?.muteInApp && isCategoryMuted(pref, category)) {
+    logger.info('notification.suppressed_preference', {
+      userId: String(userId),
+      category,
+      eventName: meta?.eventName
+    });
+    return { _suppressed: true };
+  }
 
   if (key) {
     const existing = await Notification.findOne({ companyId, userId, dedupeKey: key }).lean();
@@ -61,7 +84,10 @@ async function createForUser({
   }
 
   const company = await Company.findById(companyId).select('mobilePushEnabled').lean();
-  if (!company?.mobilePushEnabled) {
+  const skipPush =
+    !company?.mobilePushEnabled || isCategoryMuted(pref, category) || pref?.pushEnabled === false;
+
+  if (skipPush) {
     await Notification.updateOne(
       { _id: doc._id },
       { $set: { pushStatus: PUSH_STATUS.SKIPPED } }
@@ -76,6 +102,7 @@ async function createForUser({
     link,
     meta
   });
+  const channelId = channelIdForMeta(meta);
   const badge = await unreadCount(companyId, userId);
 
   try {
@@ -90,7 +117,8 @@ async function createForUser({
         title: sanitized.title,
         body: sanitized.body,
         data,
-        badge
+        badge,
+        channelId
       }
     });
   } catch (err) {
@@ -108,12 +136,30 @@ async function createForUser({
     }
   }
 
+  try {
+    const realtimeHub = require('../realtime/RealtimeHub');
+    realtimeHub.publish(String(companyId), 'notifications', {
+      type: 'notification.created',
+      payload: {
+        notificationId: String(doc._id),
+        userId: String(userId),
+        kind,
+        title
+      }
+    });
+  } catch {
+    /* realtime optional */
+  }
+
   return doc.toObject();
 }
 
 async function feed(companyId, userId, query = {}) {
   const { page, limit, skip } = parsePagination(query);
   const filter = { companyId, userId };
+  if (query.kind && Object.values(NOTIFICATION_KIND).includes(String(query.kind))) {
+    filter.kind = String(query.kind);
+  }
   const [docs, total] = await Promise.all([
     Notification.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
     Notification.countDocuments(filter)
@@ -125,7 +171,8 @@ async function feed(companyId, userId, query = {}) {
     kind: d.kind,
     read: !!d.readAt,
     createdAt: d.createdAt,
-    link: d.link
+    link: d.link,
+    meta: d.meta || null
   }));
   return { docs: rows, total, page, limit };
 }
@@ -146,11 +193,58 @@ async function markRead(companyId, userId, notificationId, source = READ_SOURCE.
   return doc;
 }
 
+async function markAllRead(companyId, userId, source = READ_SOURCE.IN_APP) {
+  const readSource = Object.values(READ_SOURCE).includes(source) ? source : READ_SOURCE.OTHER;
+  const result = await Notification.updateMany(
+    { companyId, userId, readAt: null },
+    { $set: { readAt: new Date(), readSource } }
+  );
+  logger.info('notification.mark_all_read', {
+    userId: String(userId),
+    count: result.modifiedCount || 0
+  });
+  return { modifiedCount: result.modifiedCount || 0 };
+}
+
+async function getOrCreatePreferences(companyId, userId) {
+  let doc = await NotificationPreference.findOne({ companyId, userId });
+  if (!doc) {
+    doc = await NotificationPreference.create({
+      companyId,
+      userId,
+      mutedCategories: [],
+      muteInApp: false,
+      pushEnabled: true
+    });
+  }
+  return doc.toObject();
+}
+
+async function updatePreferences(companyId, userId, data) {
+  const update = {};
+  if (data.mutedCategories !== undefined) {
+    const allowed = new Set(Object.values(NOTIFICATION_CATEGORY));
+    update.mutedCategories = (data.mutedCategories || []).filter((c) => allowed.has(c));
+  }
+  if (data.muteInApp !== undefined) update.muteInApp = !!data.muteInApp;
+  if (data.pushEnabled !== undefined) update.pushEnabled = !!data.pushEnabled;
+
+  const doc = await NotificationPreference.findOneAndUpdate(
+    { companyId, userId },
+    { $set: update },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  ).lean();
+  return doc;
+}
+
 module.exports = {
   createForUser,
   feed,
   markRead,
+  markAllRead,
   unreadCount,
+  getOrCreatePreferences,
+  updatePreferences,
   NOTIFICATION_KIND,
   PUSH_STATUS,
   READ_SOURCE

@@ -45,7 +45,8 @@ async function processOutboxBatch(limit = BATCH_SIZE) {
         title: payload.title,
         body: payload.body,
         data: payload.data || {},
-        badge: payload.badge
+        badge: payload.badge,
+        channelId: payload.channelId || 'default'
       });
 
       if (result.skipped) {

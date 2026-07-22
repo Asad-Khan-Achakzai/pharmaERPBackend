@@ -7,6 +7,11 @@ const feed = asyncHandler(async (req, res) => {
   ApiResponse.paginated(res, data);
 });
 
+const adminList = asyncHandler(async (req, res) => {
+  const data = await announcementService.adminList(req.companyId, req.query);
+  ApiResponse.paginated(res, data);
+});
+
 const create = asyncHandler(async (req, res) => {
   const data = await announcementService.create(req.companyId, req.body, req.user);
   ApiResponse.created(res, data);
@@ -17,4 +22,4 @@ const publish = asyncHandler(async (req, res) => {
   ApiResponse.success(res, data, 'Announcement published');
 });
 
-module.exports = { feed, create, publish };
+module.exports = { feed, adminList, create, publish };

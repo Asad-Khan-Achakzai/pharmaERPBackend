@@ -27,7 +27,7 @@ function getExpoClient() {
  * Send push to all active device sessions for a user.
  * Returns ticket ids for receipt polling. Never throws for empty tokens.
  */
-async function sendToUser({ userId, title, body, data = {}, badge }) {
+async function sendToUser({ userId, title, body, data = {}, badge, channelId = 'default' }) {
   if (!isPushConfigured()) {
     logger.warn('push.skipped_not_configured', { userId: String(userId) });
     return { sent: 0, failed: 0, skipped: true, ticketIds: [], permanentFailure: false };
@@ -68,7 +68,7 @@ async function sendToUser({ userId, title, body, data = {}, badge }) {
       body: body || '',
       data,
       priority: 'high',
-      channelId: 'default'
+      channelId: channelId || 'default'
     };
     if (typeof badge === 'number' && Number.isFinite(badge) && badge >= 0) {
       msg.badge = Math.floor(badge);

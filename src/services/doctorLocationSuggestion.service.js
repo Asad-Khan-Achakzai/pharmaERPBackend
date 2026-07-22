@@ -119,6 +119,7 @@ const approve = async (companyId, id, reqUser) => {
       }
     });
 
+    void notifyDoctorLocationResolved(companyId, suggestion, 'approved').catch(() => null);
     return suggestion.toObject();
   } catch (err) {
     await session.abortTransaction();
@@ -165,7 +166,28 @@ const reject = async (companyId, id, { rejectionReason }, reqUser) => {
     changes: { rejectionReason: suggestion.rejectionReason }
   });
 
+  void notifyDoctorLocationResolved(companyId, suggestion, 'rejected').catch(() => null);
   return suggestion.toObject();
 };
+
+const { publishEventSafe } = require('./notificationPublisher.service');
+const templates = require('./notificationTemplates');
+
+async function notifyDoctorLocationResolved(companyId, suggestion, outcome) {
+  if (!suggestion?.submittedByEmployeeId) return;
+  const copy = templates.doctorLocationResolved({ outcome });
+  const suggestionId = String(suggestion._id);
+  const doctorId = suggestion.doctorId ? String(suggestion.doctorId) : null;
+  await publishEventSafe({
+    eventName: 'doctorLocation.resolved',
+    companyId,
+    userId: suggestion.submittedByEmployeeId,
+    title: copy.title,
+    body: copy.body,
+    link: doctorId ? `/doctor/${doctorId}` : '/notifications',
+    meta: { suggestionId, doctorId, outcome },
+    dedupeKey: `doctorLocation:${suggestionId}:${outcome}`
+  });
+}
 
 module.exports = { list, approve, reject };
