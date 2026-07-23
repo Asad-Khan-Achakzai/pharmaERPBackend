@@ -18,6 +18,8 @@ const {
 } = require('../constants/enums');
 const { DEFAULT_MEDICAL_REP_CODE, ADMIN_ACCESS, DEFAULT_ADMIN_CODE } = require('../constants/rbac');
 const { publishEventSafe } = require('./notificationPublisher.service');
+const { resolveVisibleDeviceChangeRequest } = require('../utils/deviceControlStatus.util');
+const logger = require('../utils/logger');
 
 const toOid = (id) => {
   if (id instanceof mongoose.Types.ObjectId) return id;
@@ -135,6 +137,11 @@ async function enforceLoginBinding({ user, company, device }) {
     companyId,
     deviceId: snap.deviceId
   });
+  logger.debug('deviceControl.enforceLoginBinding blocked', {
+    userId: String(user._id),
+    currentDeviceId: snap.deviceId,
+    boundDeviceId: binding.deviceId
+  });
   const pending = await DeviceChangeRequest.findOne({
     companyId: toOid(companyId),
     userId: toOid(user._id),
@@ -216,48 +223,80 @@ async function createDeviceChangeRequest({ userId, companyId, tokenDeviceId, dev
     return existing.toObject();
   }
 
-  const created = await DeviceChangeRequest.create({
-    companyId: cid,
-    userId: uid,
-    currentDeviceId: binding ? binding.deviceId : null,
-    requestedDeviceId: snap.deviceId,
-    requestedDevice: snap,
-    status: DEVICE_CHANGE_REQUEST_STATUS.PENDING,
-    reason: reason ? String(reason).slice(0, 500) : null
-  });
-  void notifyDeviceChangeRequested(cid, created).catch(() => null);
-  return created.toObject();
+  try {
+    const created = await DeviceChangeRequest.create({
+      companyId: cid,
+      userId: uid,
+      currentDeviceId: binding ? binding.deviceId : null,
+      requestedDeviceId: snap.deviceId,
+      requestedDevice: snap,
+      status: DEVICE_CHANGE_REQUEST_STATUS.PENDING,
+      reason: reason ? String(reason).slice(0, 500) : null
+    });
+    void notifyDeviceChangeRequested(cid, created).catch(() => null);
+    return created.toObject();
+  } catch (err) {
+    // Concurrent create race: unique PENDING index — reload and update the winner.
+    if (err && err.code === 11000) {
+      const raced = await DeviceChangeRequest.findOne({
+        companyId: cid,
+        userId: uid,
+        status: DEVICE_CHANGE_REQUEST_STATUS.PENDING
+      });
+      if (raced) {
+        raced.currentDeviceId = binding ? binding.deviceId : null;
+        raced.requestedDeviceId = snap.deviceId;
+        raced.requestedDevice = snap;
+        if (reason !== undefined) raced.reason = reason ? String(reason).slice(0, 500) : null;
+        await raced.save();
+        void notifyDeviceChangeRequested(cid, raced).catch(() => null);
+        return raced.toObject();
+      }
+    }
+    throw err;
+  }
 }
 
 async function getMyDeviceChangeRequest({ userId, companyId, deviceId }) {
   const cid = toOid(companyId);
   const uid = toOid(userId);
+  const currentDeviceId = deviceId ? String(deviceId) : null;
 
-  // Prefer an open PENDING request (at most one per user) so the waiting UI stays correct.
-  const pending = await DeviceChangeRequest.findOne({
-    companyId: cid,
-    userId: uid,
-    status: DEVICE_CHANGE_REQUEST_STATUS.PENDING
-  }).lean();
-  if (pending) return pending;
-
-  // Otherwise only return history for THIS device — avoids showing a stale APPROVED
-  // request that was for a different deviceId (login-loop on the old phone).
-  if (deviceId) {
-    const forThisDevice = await DeviceChangeRequest.findOne({
+  const [pending, binding, latestForThisDevice] = await Promise.all([
+    DeviceChangeRequest.findOne({
       companyId: cid,
       userId: uid,
-      requestedDeviceId: String(deviceId)
-    })
-      .sort({ createdAt: -1 })
-      .lean();
-    return forThisDevice || null;
-  }
+      status: DEVICE_CHANGE_REQUEST_STATUS.PENDING
+    }).lean(),
+    MobileDeviceBinding.findOne({ companyId: cid, userId: uid }).select('deviceId').lean(),
+    currentDeviceId
+      ? DeviceChangeRequest.findOne({
+          companyId: cid,
+          userId: uid,
+          requestedDeviceId: currentDeviceId
+        })
+          .sort({ createdAt: -1 })
+          .lean()
+      : Promise.resolve(null)
+  ]);
 
-  const latest = await DeviceChangeRequest.findOne({ companyId: cid, userId: uid })
-    .sort({ createdAt: -1 })
-    .lean();
-  return latest || null;
+  const visible = resolveVisibleDeviceChangeRequest({
+    pending,
+    latestForThisDevice,
+    boundDeviceId: binding ? binding.deviceId : null,
+    currentDeviceId
+  });
+
+  logger.debug('deviceControl.getMyDeviceChangeRequest', {
+    userId: String(uid),
+    currentDeviceId,
+    boundDeviceId: binding ? binding.deviceId : null,
+    pendingId: pending ? String(pending._id) : null,
+    latestForThisDeviceStatus: latestForThisDevice ? latestForThisDevice.status : null,
+    visibleStatus: visible ? visible.status : null
+  });
+
+  return visible;
 }
 
 async function cancelDeviceChangeRequest({ userId, companyId }) {
@@ -372,44 +411,125 @@ async function listRequests({ companyId, query }) {
 
 async function approveRequest({ companyId, requestId, adminUserId }) {
   const cid = toOid(companyId);
-  const request = await DeviceChangeRequest.findOne({ _id: requestId, companyId: cid });
-  if (!request) throw new ApiError(404, 'Device change request not found');
-  if (request.status !== DEVICE_CHANGE_REQUEST_STATUS.PENDING) {
-    throw new ApiError(400, `Request already ${request.status.toLowerCase()}`);
+  const session = await mongoose.startSession();
+  let approved = null;
+
+  try {
+    await session.withTransaction(async () => {
+      // Atomic claim: only one concurrent approve/reject can win this PENDING row.
+      const request = await DeviceChangeRequest.findOneAndUpdate(
+        {
+          _id: requestId,
+          companyId: cid,
+          status: DEVICE_CHANGE_REQUEST_STATUS.PENDING
+        },
+        {
+          $set: {
+            status: DEVICE_CHANGE_REQUEST_STATUS.APPROVED,
+            decidedBy: toOid(adminUserId),
+            decidedAt: new Date()
+          }
+        },
+        { new: true, session }
+      );
+
+      if (!request) {
+        const existing = await DeviceChangeRequest.findOne({ _id: requestId, companyId: cid }).session(
+          session
+        );
+        if (!existing) throw new ApiError(404, 'Device change request not found');
+        throw new ApiError(400, `Request already ${existing.status.toLowerCase()}`);
+      }
+
+      // Binding is the single source of truth for the active device.
+      await MobileDeviceBinding.findOneAndUpdate(
+        { companyId: cid, userId: request.userId },
+        {
+          $set: {
+            deviceId: request.requestedDevice.deviceId,
+            platform: request.requestedDevice.platform,
+            brand: request.requestedDevice.brand,
+            model: request.requestedDevice.model,
+            osVersion: request.requestedDevice.osVersion,
+            appVersion: request.requestedDevice.appVersion,
+            boundAt: new Date(),
+            boundBy: DEVICE_BINDING_SOURCE.ADMIN_APPROVAL,
+            boundByUserId: toOid(adminUserId),
+            lastSeenAt: new Date()
+          }
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true, session }
+      );
+
+      // Kill every live session so the previous device cannot refresh.
+      await DeviceSession.updateMany(
+        { companyId: cid, userId: request.userId, revokedAt: null },
+        { $set: { revokedAt: new Date(), revokedReason: 'DEVICE_REBOUND' } },
+        { session }
+      );
+
+      // Prior APPROVED rows become SUPERSEDED (audit only).
+      await DeviceChangeRequest.updateMany(
+        {
+          companyId: cid,
+          userId: request.userId,
+          status: DEVICE_CHANGE_REQUEST_STATUS.APPROVED,
+          _id: { $ne: request._id }
+        },
+        {
+          $set: {
+            status: DEVICE_CHANGE_REQUEST_STATUS.SUPERSEDED,
+            decidedAt: new Date(),
+            decisionNote: 'Superseded by a later device change approval'
+          }
+        },
+        { session }
+      );
+
+      approved = request;
+    });
+  } finally {
+    session.endSession();
   }
 
-  // Move the binding to the requested device.
-  await upsertBinding({
-    companyId: cid,
-    userId: request.userId,
-    device: request.requestedDevice,
-    boundBy: DEVICE_BINDING_SOURCE.ADMIN_APPROVAL,
-    boundByUserId: adminUserId
+  logger.info('deviceControl.approveRequest', {
+    requestId: String(approved._id),
+    userId: String(approved.userId),
+    approvedDeviceId: approved.requestedDeviceId,
+    adminUserId: String(adminUserId)
   });
 
-  // Old device immediately loses access: kill all live sessions.
-  await revokeUserSessions({ companyId: cid, userId: request.userId, reason: 'DEVICE_REBOUND' });
-
-  request.status = DEVICE_CHANGE_REQUEST_STATUS.APPROVED;
-  request.decidedBy = toOid(adminUserId);
-  request.decidedAt = new Date();
-  await request.save();
-  void notifyDeviceChangeOutcome(cid, request, 'approved').catch(() => null);
-  return request.toObject();
+  void notifyDeviceChangeOutcome(cid, approved, 'approved').catch(() => null);
+  return approved.toObject ? approved.toObject() : approved;
 }
 
 async function rejectRequest({ companyId, requestId, adminUserId, note }) {
   const cid = toOid(companyId);
-  const request = await DeviceChangeRequest.findOne({ _id: requestId, companyId: cid });
-  if (!request) throw new ApiError(404, 'Device change request not found');
-  if (request.status !== DEVICE_CHANGE_REQUEST_STATUS.PENDING) {
-    throw new ApiError(400, `Request already ${request.status.toLowerCase()}`);
+  const decisionNote = note ? String(note).slice(0, 500) : null;
+
+  const request = await DeviceChangeRequest.findOneAndUpdate(
+    {
+      _id: requestId,
+      companyId: cid,
+      status: DEVICE_CHANGE_REQUEST_STATUS.PENDING
+    },
+    {
+      $set: {
+        status: DEVICE_CHANGE_REQUEST_STATUS.REJECTED,
+        decidedBy: toOid(adminUserId),
+        decidedAt: new Date(),
+        decisionNote
+      }
+    },
+    { new: true }
+  );
+
+  if (!request) {
+    const existing = await DeviceChangeRequest.findOne({ _id: requestId, companyId: cid });
+    if (!existing) throw new ApiError(404, 'Device change request not found');
+    throw new ApiError(400, `Request already ${existing.status.toLowerCase()}`);
   }
-  request.status = DEVICE_CHANGE_REQUEST_STATUS.REJECTED;
-  request.decidedBy = toOid(adminUserId);
-  request.decidedAt = new Date();
-  request.decisionNote = note ? String(note).slice(0, 500) : null;
-  await request.save();
+
   void notifyDeviceChangeOutcome(cid, request, 'rejected', request.decisionNote).catch(() => null);
   return request.toObject();
 }
@@ -481,16 +601,68 @@ async function notifyDeviceChangeOutcome(companyId, request, outcome, note) {
 }
 
 /**
- * Force-revoke a user's device: clears the binding and kills sessions. The next
- * successful mobile login auto-binds the device they log in from (grace period).
+ * Force-revoke a user's device: clears the binding, kills sessions, and cancels
+ * any open PENDING / supersedes APPROVED requests so a stale approval cannot
+ * rebind the user after the next first-login grace bind.
  */
 async function forceRevoke({ companyId, userId, adminUserId }) {
   const cid = toOid(companyId);
   const uid = toOid(userId);
-  const binding = await MobileDeviceBinding.findOne({ companyId: cid, userId: uid });
-  await MobileDeviceBinding.deleteOne({ companyId: cid, userId: uid });
-  await revokeUserSessions({ companyId: cid, userId: uid, reason: 'ADMIN_FORCE_REVOKE' });
-  return { revoked: true, hadBinding: Boolean(binding), by: String(adminUserId) };
+  const session = await mongoose.startSession();
+  let hadBinding = false;
+
+  try {
+    await session.withTransaction(async () => {
+      const binding = await MobileDeviceBinding.findOne({ companyId: cid, userId: uid }).session(
+        session
+      );
+      hadBinding = Boolean(binding);
+      await MobileDeviceBinding.deleteOne({ companyId: cid, userId: uid }, { session });
+
+      await DeviceSession.updateMany(
+        { companyId: cid, userId: uid, revokedAt: null },
+        { $set: { revokedAt: new Date(), revokedReason: 'ADMIN_FORCE_REVOKE' } },
+        { session }
+      );
+
+      await DeviceChangeRequest.updateMany(
+        {
+          companyId: cid,
+          userId: uid,
+          status: DEVICE_CHANGE_REQUEST_STATUS.PENDING
+        },
+        {
+          $set: {
+            status: DEVICE_CHANGE_REQUEST_STATUS.CANCELLED,
+            decidedBy: toOid(adminUserId),
+            decidedAt: new Date(),
+            decisionNote: 'Cancelled by admin force revoke'
+          }
+        },
+        { session }
+      );
+
+      await DeviceChangeRequest.updateMany(
+        {
+          companyId: cid,
+          userId: uid,
+          status: DEVICE_CHANGE_REQUEST_STATUS.APPROVED
+        },
+        {
+          $set: {
+            status: DEVICE_CHANGE_REQUEST_STATUS.SUPERSEDED,
+            decidedAt: new Date(),
+            decisionNote: 'Superseded by admin force revoke'
+          }
+        },
+        { session }
+      );
+    });
+  } finally {
+    session.endSession();
+  }
+
+  return { revoked: true, hadBinding, by: String(adminUserId) };
 }
 
 module.exports = {

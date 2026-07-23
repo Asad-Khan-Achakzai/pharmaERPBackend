@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test src/utils/orderBackdate.test.js src/utils/productIncentiveCalculator.test.js src/geo/utils/snapshotQualityGate.test.js src/geo/utils/geoPlatformResolver.test.js src/utils/userTerritoryAssignment.util.test.js src/utils/pushPayload.test.js src/utils/pushOutboxBackoff.test.js ../pharmaERPFE/src/utils/userTerritorySaveMapping.test.js",
+    "test": "node --test src/utils/orderBackdate.test.js src/utils/productIncentiveCalculator.test.js src/utils/productCatalogSync.util.test.js src/geo/utils/snapshotQualityGate.test.js src/geo/utils/geoPlatformResolver.test.js src/utils/userTerritoryAssignment.util.test.js src/utils/pushPayload.test.js src/utils/pushOutboxBackoff.test.js src/utils/deviceControlStatus.util.test.js ../pharmaERPFE/src/utils/userTerritorySaveMapping.test.js",
     "dev": "nodemon server.js",
     "add-super-admin": "node scripts/addSuperAdmin.js",
     "migrate:tenant-safety-indexes": "node scripts/migrateTenantSafetyIndexes.js",

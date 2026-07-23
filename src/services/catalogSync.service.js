@@ -29,6 +29,7 @@ const catalogSync = async (companyId, query, reqUser) => {
     deletedProductIds: productSync.deletedIds,
     maxVersion: productSync.maxVersion,
     hasMore: productSync.hasMore,
+    lastId: productSync.lastId,
     taxonomy,
     brands,
     presentations,

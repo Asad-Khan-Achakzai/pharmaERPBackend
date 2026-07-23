@@ -474,7 +474,9 @@ const DEVICE_CHANGE_REQUEST_STATUS = {
   PENDING: 'PENDING',
   APPROVED: 'APPROVED',
   REJECTED: 'REJECTED',
-  CANCELLED: 'CANCELLED'
+  CANCELLED: 'CANCELLED',
+  /** Replaced by a later approved device change — audit only, never actionable. */
+  SUPERSEDED: 'SUPERSEDED'
 };
 
 /** How a MobileDeviceBinding became the active device (audit). */

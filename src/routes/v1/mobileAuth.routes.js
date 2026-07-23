@@ -3,6 +3,7 @@ const router = express.Router();
 
 const controller = require('../../controllers/mobileAuth.controller');
 const { authenticate } = require('../../middleware/auth');
+const { companyScope } = require('../../middleware/companyScope');
 const { deviceChangeAuth } = require('../../middleware/deviceChangeAuth');
 const { validate } = require('../../middleware/validate');
 const {
@@ -18,23 +19,39 @@ const {
 
 /**
  * Mobile-only auth surface. Existing web auth in /auth/* is untouched.
+ * Authed routes go through companyScope so DEVICE_REBOUND applies — an old
+ * device with an unexpired access token must not revoke the new device's session.
  */
 router.post('/login', validate(mobileLoginSchema), controller.login);
 router.post('/refresh', validate(mobileRefreshSchema), controller.refresh);
-router.post('/register-device', authenticate, validate(registerDeviceSchema), controller.registerDevice);
-router.post('/logout', authenticate, validate(logoutSchema), controller.logout);
-router.get('/sessions', authenticate, controller.listSessions);
-router.delete('/sessions/:id', authenticate, controller.revokeSession);
-router.post('/push-token', authenticate, validate(updatePushTokenSchema), controller.updatePushToken);
+router.post(
+  '/register-device',
+  authenticate,
+  companyScope,
+  validate(registerDeviceSchema),
+  controller.registerDevice
+);
+router.post('/logout', authenticate, companyScope, validate(logoutSchema), controller.logout);
+router.get('/sessions', authenticate, companyScope, controller.listSessions);
+router.delete('/sessions/:id', authenticate, companyScope, controller.revokeSession);
+router.post(
+  '/push-token',
+  authenticate,
+  companyScope,
+  validate(updatePushTokenSchema),
+  controller.updatePushToken
+);
 router.post(
   '/change-password',
   authenticate,
+  companyScope,
   validate(mobileChangePasswordSchema),
   controller.changePassword
 );
 router.post(
   '/switch-company',
   authenticate,
+  companyScope,
   validate(mobileSwitchCompanySchema),
   controller.switchCompany
 );

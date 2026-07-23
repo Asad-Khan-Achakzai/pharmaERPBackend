@@ -224,6 +224,27 @@ async function refresh({ refreshToken, deviceId }) {
     companyId = normalized.tenantCompanyId;
   }
 
+  // Device control: refuse refresh from an unbound device even if a session
+  // somehow survived approve/revoke (defense in depth).
+  if (companyId && (await deviceControlService.appliesToUser(user))) {
+    const company = await Company.findById(companyId).select('deviceControlEnabled').lean();
+    if (company?.deviceControlEnabled) {
+      const bound = await deviceControlService.isRequestDeviceBound({
+        companyId,
+        userId: user._id,
+        deviceId
+      });
+      if (!bound) {
+        session.revokedAt = new Date();
+        session.revokedReason = 'DEVICE_REBOUND';
+        await session.save();
+        const error = new ApiError(401, 'This device is no longer registered. Please log in again.');
+        error.code = 'DEVICE_REBOUND';
+        throw error;
+      }
+    }
+  }
+
   const tokens = generateTokens({
     userId: user._id,
     userType: ut,

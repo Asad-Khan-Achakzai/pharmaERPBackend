@@ -7,6 +7,10 @@ const auditService = require('./audit.service');
 const { userHasPermission } = require('../utils/effectivePermissions');
 const mediaAttach = require('./media.attach');
 const productTaxonomyService = require('./productTaxonomy.service');
+const {
+  buildProductSyncFilter,
+  paginateSyncDocs
+} = require('../utils/productCatalogSync.util');
 
 /** Attach a transient signed imageUrl to product docs from MediaAsset (source of truth). */
 async function withImages(companyId, docs) {
@@ -38,6 +42,61 @@ function omitCostFields(obj) {
 
 async function bumpCatalogVersion(product) {
   product.catalogVersion = (product.catalogVersion || 0) + 1;
+}
+
+/** Company-wide monotonic catalogVersion for new products (mobile delta sync cursor). */
+async function nextCatalogVersion(companyId) {
+  const [activeTop, deletedTop] = await Promise.all([
+    Product.findOne({ companyId })
+      .sort({ catalogVersion: -1 })
+      .select('catalogVersion')
+      .lean(),
+    Product.findDeleted({ companyId })
+      .sort({ catalogVersion: -1 })
+      .select('catalogVersion')
+      .limit(1)
+      .lean()
+  ]);
+  const maxVersion = Math.max(activeTop?.catalogVersion || 0, deletedTop[0]?.catalogVersion || 0);
+  return maxVersion + 1;
+}
+
+/**
+ * Products created while catalogVersion was hard-coded to 1 can sit below the mobile
+ * cursor after other rows were updated. Bump them so the next delta page includes them.
+ */
+async function repairStuckCatalogVersions(companyId) {
+  const maxV = await nextCatalogVersion(companyId) - 1;
+  if (maxV <= 1) return 0;
+
+  const latestUpdatedNonV1 = await Product.findOne({
+    companyId,
+    catalogVersion: { $gt: 1 },
+    isDeleted: { $ne: true }
+  })
+    .sort({ updatedAt: -1 })
+    .select('updatedAt')
+    .lean();
+  if (!latestUpdatedNonV1) return 0;
+
+  const stuck = await Product.find({
+    companyId,
+    catalogVersion: 1,
+    createdAt: { $gt: latestUpdatedNonV1.updatedAt },
+    isDeleted: { $ne: true }
+  })
+    .sort({ createdAt: 1 })
+    .select('_id');
+
+  if (!stuck.length) return 0;
+
+  let version = maxV;
+  for (const product of stuck) {
+    version += 1;
+    product.catalogVersion = version;
+    await product.save();
+  }
+  return stuck.length;
 }
 
 async function applyTaxonomyLabels(companyId, productData) {
@@ -120,7 +179,7 @@ const create = async (companyId, data, reqUser) => {
     productData.genericName = productData.composition;
   }
   productData = await applyTaxonomyLabels(companyId, productData);
-  productData.catalogVersion = 1;
+  productData.catalogVersion = await nextCatalogVersion(companyId);
   const product = await Product.create({ ...productData, companyId, createdBy: reqUser.userId });
   if (assetId) {
     await mediaAttach.attachEntityImage({
@@ -223,35 +282,48 @@ const compare = async (companyId, ids, reqUser) => {
  * Returns products with catalogVersion > sinceVersion, plus soft-deleted ids since then.
  */
 const sync = async (companyId, query, reqUser) => {
+  const sinceId = query.sinceId ? String(query.sinceId) : null;
+  if (!sinceId) {
+    await repairStuckCatalogVersions(companyId);
+  }
+
   const sinceVersion = Math.max(0, Number(query.sinceVersion) || 0);
   const limit = Math.min(Math.max(Number(query.limit) || 200, 1), 500);
-  const filter = { companyId, catalogVersion: { $gt: sinceVersion } };
+  const filter = buildProductSyncFilter(companyId, sinceVersion, sinceId);
   let q = Product.find(filter)
     .populate('brandId', 'name code')
-    .sort({ catalogVersion: 1 })
-    .limit(limit);
+    .sort({ catalogVersion: 1, _id: 1 })
+    .limit(limit + 1);
   if (!canViewProductCostOnProductApi(reqUser)) {
     q = q.select(PRODUCT_COST_PROJECTION_OMIT);
   }
-  const docs = await q.lean();
-  const deletedDocs = await Product.findDeleted({
-    companyId,
-    catalogVersion: { $gt: sinceVersion }
-  })
+  const rawDocs = await q.lean();
+  const { items: docs, hasMore, maxFromItems, lastId } = paginateSyncDocs(
+    rawDocs,
+    limit,
+    sinceVersion
+  );
+
+  const deletedFilter = buildProductSyncFilter(companyId, sinceVersion, sinceId);
+  const rawDeleted = await Product.findDeleted(deletedFilter)
     .select('_id catalogVersion')
-    .limit(limit)
+    .sort({ catalogVersion: 1, _id: 1 })
+    .limit(limit + 1)
     .lean();
-  const deletedIds = (deletedDocs || []).map((d) => String(d._id));
+  const {
+    items: deletedDocs,
+    maxFromItems: maxFromDeleted
+  } = paginateSyncDocs(rawDeleted, limit, sinceVersion);
+  const deletedIds = deletedDocs.map((d) => String(d._id));
 
   const withUrls = await withImages(companyId, docs);
-  const maxFromItems = withUrls.reduce((m, d) => Math.max(m, d.catalogVersion || 0), sinceVersion);
-  const maxFromDeleted = (deletedDocs || []).reduce((m, d) => Math.max(m, d.catalogVersion || 0), sinceVersion);
   const maxVersion = Math.max(maxFromItems, maxFromDeleted);
   return {
     items: withUrls,
     deletedIds,
     maxVersion,
-    hasMore: docs.length >= limit
+    hasMore,
+    lastId
   };
 };
 
@@ -266,5 +338,6 @@ module.exports = {
   withImages,
   canViewProductCostOnProductApi,
   omitCostFields,
-  bumpCatalogVersion
+  bumpCatalogVersion,
+  nextCatalogVersion
 };

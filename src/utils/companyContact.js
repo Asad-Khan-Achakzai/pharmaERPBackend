@@ -235,12 +235,26 @@ async function serveCompanyLogo(req, res, next) {
   }
 }
 
+/** Inline data-URL for browser print clients (prefers MongoDB logoBase64). */
+function companyLogoDataUrl(company) {
+  if (!company) return null;
+  const mime = company.logoMime || 'image/jpeg';
+  if (company.logoBase64 && typeof company.logoBase64 === 'string') {
+    const b64 = String(company.logoBase64).replace(/\s/g, '');
+    if (b64) return `data:${mime};base64,${b64}`;
+  }
+  const logo = company.logo != null ? String(company.logo).trim() : '';
+  if (logo.startsWith('data:image/')) return logo;
+  return null;
+}
+
 module.exports = {
   normalizePhones,
   companyPhoneList,
   persistCompanyLogo,
   applyLogoPersistResult,
   resolveCompanyLogoFile,
+  companyLogoDataUrl,
   serveCompanyLogo,
   LOGO_DIR,
   LOGO_PUBLIC_PREFIX

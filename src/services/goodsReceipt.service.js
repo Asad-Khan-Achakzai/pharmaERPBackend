@@ -5,7 +5,9 @@ const PurchaseOrder = require('../models/PurchaseOrder');
 const PurchaseOrderLine = require('../models/PurchaseOrderLine');
 const Distributor = require('../models/Distributor');
 const Product = require('../models/Product');
+const Company = require('../models/Company');
 const ApiError = require('../utils/ApiError');
+const { companyPhoneList, companyLogoDataUrl } = require('../utils/companyContact');
 const { roundPKR } = require('../utils/currency');
 const { parsePagination } = require('../utils/pagination');
 const {
@@ -92,8 +94,9 @@ const list = async (companyId, query = {}) => {
 
 const getById = async (companyId, id) => {
   const grn = await GoodsReceiptNote.findOne({ _id: id, companyId, isDeleted: { $ne: true } })
-    .populate('supplierId', 'name')
+    .populate('supplierId', 'name phone email address notes')
     .populate('purchaseOrderId', 'orderNumber status supplierId')
+    .populate('createdBy', 'name email employeeCode phone')
     .lean();
   if (!grn) throw new ApiError(404, 'Goods receipt not found');
 
@@ -104,7 +107,29 @@ const getById = async (companyId, id) => {
     .sort({ createdAt: 1 })
     .lean();
 
-  return { ...grn, lines };
+  const company = await Company.findById(companyId)
+    .select('name address city state country phone phones email logo ntnNo currency logoMime +logoBase64')
+    .lean();
+
+  return {
+    ...grn,
+    lines,
+    company: company
+      ? {
+          name: company.name,
+          address: company.address,
+          city: company.city,
+          state: company.state,
+          country: company.country,
+          phones: companyPhoneList(company),
+          email: company.email,
+          logo: company.logo || null,
+          logoDataUrl: companyLogoDataUrl(company),
+          ntnNo: company.ntnNo,
+          currency: company.currency || 'PKR'
+        }
+      : null
+  };
 };
 
 const create = async (companyId, body, reqUser) => {
