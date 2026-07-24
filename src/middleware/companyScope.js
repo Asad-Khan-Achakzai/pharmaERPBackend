@@ -79,12 +79,15 @@ const companyScope = asyncHandler(async (req, _res, next) => {
     email: userDoc.email
   };
 
-  // Hard device-control enforcement: field-force reps hitting the API from a
-  // device that is no longer their bound device are cut off immediately (even
-  // if their access token has not yet expired). Web non-rep clients are never
-  // affected. Fail closed when X-Device-Id is missing for a bound MRep — a
-  // stripped header must not bypass the gate.
-  if (company.deviceControlEnabled && req.user.roleCode === DEFAULT_MEDICAL_REP_CODE) {
+  // Device control is mobile-only. Web never sends X-Client: pharerp-mobile /
+  // X-Device-Id and must never be gated. For the mobile app, fail closed when
+  // the device header is missing or no longer matches the binding.
+  const isMobileClient = String(req.get('X-Client') || '').toLowerCase() === 'pharerp-mobile';
+  if (
+    isMobileClient &&
+    company.deviceControlEnabled &&
+    req.user.roleCode === DEFAULT_MEDICAL_REP_CODE
+  ) {
     const deviceIdHeader = req.get('X-Device-Id');
     if (!deviceIdHeader) {
       const error = new ApiError(401, 'This device is no longer registered. Please log in again.');
