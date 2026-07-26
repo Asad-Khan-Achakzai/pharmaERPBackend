@@ -7,7 +7,7 @@ const orderTools = require('./orders/orderTools');
 const writeOrderTools = require('./orders/writeOrderTools');
 const inventoryTools = require('./inventory/inventoryTools');
 const salesTools = require('./sales/salesTools');
-const coverageTools = require('./coverage/coverageTools');
+const coverageTools = require('./mrepCoverage/coverageTools');
 const userTools = require('./users/userTools');
 
 const ALL_TOOLS = [
