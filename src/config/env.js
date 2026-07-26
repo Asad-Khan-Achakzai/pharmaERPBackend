@@ -77,7 +77,19 @@ const schema = Joi.object({
   GOOGLE_MAPS_IOS_API_KEY: Joi.string().allow('').default(''),
   GEO_BILLING_MONITORING: Joi.string().valid('0', '1').default('0'),
   /** Optional Redis URL for multi-node realtime pub/sub and shared rate limits. */
-  REDIS_URL: Joi.string().allow('').default('')
+  REDIS_URL: Joi.string().allow('').default(''),
+  /** AI Copilot — provider and runtime settings. */
+  AI_PROVIDER: Joi.string().valid('ollama', 'openai', 'claude', 'gemini', 'azure-openai').default('ollama'),
+  AI_STREAMING: Joi.string().valid('0', '1', 'true', 'false').default('true'),
+  AI_MAX_HISTORY: Joi.number().integer().min(4).max(100).default(20),
+  AI_MAX_TOOL_ITERATIONS: Joi.number().integer().min(1).max(15).default(5),
+  AI_REQUEST_TIMEOUT_MS: Joi.number().integer().min(5000).max(600000).default(120000),
+  AI_RATE_LIMIT_PER_MINUTE: Joi.number().integer().min(1).max(1000).default(20),
+  AI_GLOBAL_ENABLED: Joi.string().valid('0', '1', 'true', 'false').default('true'),
+  OLLAMA_BASE_URL: Joi.string().default('http://localhost:11434'),
+  OLLAMA_MODEL: Joi.string().default('qwen3:30b-a3b'),
+  OPENAI_API_KEY: Joi.string().allow('').default(''),
+  OPENAI_MODEL: Joi.string().allow('').default('gpt-4o-mini')
 }).unknown(true);
 
 const { value: env, error } = schema.validate(process.env, { convert: true });

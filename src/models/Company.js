@@ -176,6 +176,10 @@ const companySchema = new mongoose.Schema(
      */
     expenseApprovalRequired: { type: Boolean, default: false },
     /**
+     * AI Copilot — Super Admin toggle. When false, AI API requests are rejected and clients hide entry points.
+     */
+    aiCopilotEnabled: { type: Boolean, default: false },
+    /**
      * Attendance check-in mode (Super Admin only). LEGACY = unchanged production behaviour.
      * CHECKIN_POLICY_V2 = company default + weekly plan overrides with zone metadata (non-blocking).
      */

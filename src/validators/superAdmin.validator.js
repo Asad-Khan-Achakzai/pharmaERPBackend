@@ -66,6 +66,7 @@ const createCompanySchema = Joi.object({
   attendanceSystemMode: Joi.string().valid(...Object.values(ATTENDANCE_SYSTEM_MODE)),
   checkInPolicy: checkInPolicySchema,
   geoPlatform: geoPlatformSchema,
+  aiCopilotEnabled: Joi.boolean(),
   ...mediaFlagFields
 });
 
@@ -104,6 +105,7 @@ const updateCompanySchema = Joi.object({
   attendanceSystemMode: Joi.string().valid(...Object.values(ATTENDANCE_SYSTEM_MODE)),
   checkInPolicy: checkInPolicySchema,
   geoPlatform: geoPlatformSchema,
+  aiCopilotEnabled: Joi.boolean(),
   ...mediaFlagFields
 })
   .min(1)

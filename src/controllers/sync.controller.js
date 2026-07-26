@@ -65,6 +65,9 @@ const serverConfig = asyncHandler(async (req, res) => {
     expenses: {
       approvalRequired: !!(company && company.expenseApprovalRequired)
     },
+    aiCopilot: {
+      enabled: !!(company && company.aiCopilotEnabled)
+    },
     company: company
       ? {
           id: String(company._id),

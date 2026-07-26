@@ -62,7 +62,8 @@ const DEFAULT_MEDICAL_REP_PERMISSIONS = [
   'weeklyPlans.view',
   'weeklyPlans.markVisit',
   'expenses.view',
-  'expenses.create'
+  'expenses.create',
+  'copilot.use'
 ];
 
 /**

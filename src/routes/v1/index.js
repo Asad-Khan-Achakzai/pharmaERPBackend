@@ -52,6 +52,7 @@ const doctorLocationSuggestionRoutes = require('./doctorLocationSuggestion.route
 const announcementRoutes = require('./announcement.routes');
 const calendarRoutes = require('./calendar.routes');
 const geoRoutes = require('../../geo/routes/geo.routes');
+const aiRoutes = require('../../ai/routes/ai.routes');
 const realtimeRoutes = require('./realtime.routes');
 const internalMetricsRoutes = require('./internalMetrics.routes');
 
@@ -108,6 +109,7 @@ router.use('/territories/import', territoryImportRoutes);
 router.use('/territories', territoryRoutes);
 router.use('/onboarding', onboardingRoutes);
 router.use('/geo', geoRoutes);
+router.use('/ai', aiRoutes);
 router.use('/realtime', realtimeRoutes);
 router.use('/internal/metrics', internalMetricsRoutes);
 

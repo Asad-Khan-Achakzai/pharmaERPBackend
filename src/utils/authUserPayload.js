@@ -70,7 +70,7 @@ const formatUserForClient = async (userId, options = {}) => {
   if (companyIdForRole) {
     const tc = await Company.findById(companyIdForRole)
       .select(
-        'weeklyPlanApprovalRequired strictVisitSequence mrepMultiTerritory mrepOwnershipAudit deviceControlEnabled'
+        'weeklyPlanApprovalRequired strictVisitSequence mrepMultiTerritory mrepOwnershipAudit deviceControlEnabled aiCopilotEnabled'
       )
       .lean();
     if (tc) {
@@ -79,7 +79,8 @@ const formatUserForClient = async (userId, options = {}) => {
         strictVisitSequence: !!tc.strictVisitSequence,
         mrepMultiTerritory: !!tc.mrepMultiTerritory,
         mrepOwnershipAudit: !!tc.mrepOwnershipAudit,
-        deviceControlEnabled: !!tc.deviceControlEnabled
+        deviceControlEnabled: !!tc.deviceControlEnabled,
+        aiCopilotEnabled: !!tc.aiCopilotEnabled
       };
     }
   }

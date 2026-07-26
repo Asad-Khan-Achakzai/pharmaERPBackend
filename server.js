@@ -14,11 +14,13 @@ const { startNotificationAnalyticsJob } = require('./src/jobs/notificationAnalyt
 const { seedMrepRolesForAllCompanies } = require('./src/jobs/seedMrepRoles.bootstrap');
 const realtimeHub = require('./src/realtime/RealtimeHub');
 const { initHeartbeatRateLimit } = require('./src/utils/heartbeatRateLimit');
+const { initAiModule } = require('./src/ai');
 
 const startServer = async () => {
   await connectDB();
   await realtimeHub.init();
   await initHeartbeatRateLimit();
+  await initAiModule();
 
   if (env.NODE_ENV !== 'test') {
     startAttendanceAutoCheckoutJob();

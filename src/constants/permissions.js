@@ -83,7 +83,9 @@ const PERMISSIONS = {
    * admin.access satisfies this; grant explicitly to non-admin roles if needed.
    */
   deviceControl: ['manage'],
-  platform:     ['dashboard.view', 'companies.manage']
+  platform:     ['dashboard.view', 'companies.manage'],
+  /** PharmaERP AI Copilot assistant. */
+  copilot:      ['use']
 };
 
 const ALL_PERMISSIONS = [];
