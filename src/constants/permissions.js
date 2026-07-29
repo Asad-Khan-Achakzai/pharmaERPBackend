@@ -19,7 +19,7 @@ const PERMISSIONS = {
   doctors:      ['view', 'create', 'edit', 'delete', 'assign'],
   /** Manager review of rep-submitted doctor GPS suggestions before geo-fencing applies. */
   doctorLocations: ['review'],
-  orders:       ['view', 'create', 'edit', 'deliver', 'return'],
+  orders:       ['view', 'create', 'edit', 'deliver', 'return', 'amend'],
   payments:     ['view', 'create'],
   ledger:       ['view'],
   accounts:     ['view', 'manage'],

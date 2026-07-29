@@ -145,7 +145,7 @@ const sumSalesRevenueAndCogs = async (companyId, { startDate, endDate, distribut
   const baseMatch = {
     companyId: cid,
     isDeleted: nd,
-    type: { $in: [TRANSACTION_TYPE.SALE, TRANSACTION_TYPE.RETURN] },
+    type: { $in: [TRANSACTION_TYPE.SALE, TRANSACTION_TYPE.RETURN, TRANSACTION_TYPE.AMENDMENT] },
     ...(Object.keys(dateR).length ? { date: dateR } : {})
   };
 
@@ -554,7 +554,7 @@ const revenue = async (companyId, query = {}, timeZone) => {
         {
           $match: {
             ...txDate,
-            type: { $in: [TRANSACTION_TYPE.SALE, TRANSACTION_TYPE.RETURN] }
+            type: { $in: [TRANSACTION_TYPE.SALE, TRANSACTION_TYPE.RETURN, TRANSACTION_TYPE.AMENDMENT] }
           }
         },
         {
@@ -842,7 +842,7 @@ const trends = async (companyId, query = {}, timeZone) => {
   const transMatch = {
     companyId: cid,
     isDeleted: nd,
-    type: { $in: [TRANSACTION_TYPE.SALE, TRANSACTION_TYPE.RETURN] },
+    type: { $in: [TRANSACTION_TYPE.SALE, TRANSACTION_TYPE.RETURN, TRANSACTION_TYPE.AMENDMENT] },
     ...(Object.keys(dateR).length ? { date: dateR } : {})
   };
 

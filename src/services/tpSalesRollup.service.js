@@ -1,20 +1,18 @@
 /**
- * Dashboard-aligned net TP Sales (Σ delivery TP×physical packs − return TP reversal) scoped by deliveredAt / returnedAt.
- * Mirrors `computeNetTpAchieved` semantics: fully returned orders excluded from delivery credit and return debit.
+ * Dashboard-aligned net TP Sales (Σ delivery TP×physical packs − return TP − amendment TP).
+ * Fully qty-credited orders (returns + amendments cover all delivered packs) are excluded.
  */
 const DeliveryRecord = require('../models/DeliveryRecord');
 const ReturnRecord = require('../models/ReturnRecord');
+const OrderAmendment = require('../models/OrderAmendment');
 const { ORDER_STATUS } = require('../constants/enums');
 const { roundPKR } = require('../utils/currency');
+const { isOrderFullyQtyCredited } = require('../utils/orderQty.util');
 
 const nd = { $ne: true };
 
 /**
  * Gross Sales (TP) for one delivery line: TP × physical packs (paid + bonus).
- * Pharmacy invoice / commission splits may still use paid qty only; this is the pack-based TP total.
- *
- * @param {{ tpAtTime?: number } | null | undefined} orderItem
- * @param {{ quantity?: number, tpLineTotal?: number, paidQuantity?: number }} deliveryLine
  */
 const grossTpForDeliveryLine = (orderItem, deliveryLine) => {
   const physicalQty = Number(deliveryLine?.quantity) || 0;
@@ -25,7 +23,6 @@ const grossTpForDeliveryLine = (orderItem, deliveryLine) => {
     return roundPKR(tp * physicalQty);
   }
 
-  // Legacy fallback when order line is missing: infer TP rate from the paid slice.
   const paidQty = deliveryLine.paidQuantity ?? physicalQty;
   const tpLineTotal = Number(deliveryLine.tpLineTotal) || 0;
   if (paidQty > 0 && tpLineTotal > 0) {
@@ -34,10 +31,6 @@ const grossTpForDeliveryLine = (orderItem, deliveryLine) => {
   return roundPKR(tpLineTotal);
 };
 
-/**
- * @param {{ items?: Array<{ productId: unknown, quantity?: number, tpLineTotal?: number, paidQuantity?: number }> }} delivery
- * @param {{ items?: Array<{ productId: unknown, tpAtTime?: number }> } | null | undefined} order
- */
 const grossTpForDelivery = (delivery, order) => {
   let total = 0;
   for (const line of delivery.items || []) {
@@ -47,9 +40,35 @@ const grossTpForDelivery = (delivery, order) => {
   return roundPKR(total);
 };
 
+const isOrderFullyCredited = (order) => {
+  if (!order) return false;
+  if (order.status === ORDER_STATUS.RETURNED) return true;
+  return isOrderFullyQtyCredited(order);
+};
+
+const sumReturnTp = (ret, order) => {
+  let debit = 0;
+  for (const ri of ret.items || []) {
+    const oi = order.items.find((i) => String(i.productId) === String(ri.productId));
+    if (oi) debit += roundPKR(Number(oi.tpAtTime) * Number(ri.quantity));
+  }
+  return roundPKR(debit);
+};
+
+const sumAmendmentTp = (amd, order) => {
+  if (amd.tpDeltaTotal != null) return roundPKR(amd.tpDeltaTotal);
+  let debit = 0;
+  for (const ai of amd.items || []) {
+    const oi = order.items.find((i) => String(i.productId) === String(ai.productId));
+    if (oi) debit += roundPKR(Number(oi.tpAtTime) * Number(ai.deltaQty || 0));
+    else if (ai.tpDelta != null) debit += roundPKR(ai.tpDelta);
+  }
+  return roundPKR(debit);
+};
+
 /**
  * @param {import('mongoose').Types.ObjectId} cid
- * @param {{ $gte: Date, $lte: Date } | null} dateRange deliveredAt / returnedAt
+ * @param {{ $gte: Date, $lte: Date } | null} dateRange
  * @param {import('mongoose').Types.ObjectId | null} medicalRepOid
  */
 const computeDashboardNetGrossSalesTp = async (cid, dateRange, medicalRepOid = null) => {
@@ -59,19 +78,16 @@ const computeDashboardNetGrossSalesTp = async (cid, dateRange, medicalRepOid = n
   const returnFilter = { companyId: cid, isDeleted: nd };
   if (dateRange) returnFilter.returnedAt = dateRange;
 
+  const amendmentFilter = { companyId: cid, isDeleted: nd };
+  if (dateRange) amendmentFilter.amendedAt = dateRange;
+
   const repIdStr = medicalRepOid ? String(medicalRepOid) : null;
+  const orderSelect = 'items status medicalRepId';
 
-  /** @param {any} order */
-  const isOrderFullyReturned = (order) => {
-    if (!order) return false;
-    if (order.status === ORDER_STATUS.RETURNED) return true;
-    if (!order.items?.length) return false;
-    return order.items.every((i) => (i.returnedQty || 0) >= (i.deliveredQty || 0));
-  };
-
-  const [deliveries, returns] = await Promise.all([
-    DeliveryRecord.find(deliveryFilter).populate({ path: 'orderId', select: 'items status medicalRepId' }).lean(),
-    ReturnRecord.find(returnFilter).populate({ path: 'orderId', select: 'items status medicalRepId' }).lean()
+  const [deliveries, returns, amendments] = await Promise.all([
+    DeliveryRecord.find(deliveryFilter).populate({ path: 'orderId', select: orderSelect }).lean(),
+    ReturnRecord.find(returnFilter).populate({ path: 'orderId', select: orderSelect }).lean(),
+    OrderAmendment.find(amendmentFilter).populate({ path: 'orderId', select: orderSelect }).lean()
   ]);
 
   let deliveredTp = 0;
@@ -79,7 +95,7 @@ const computeDashboardNetGrossSalesTp = async (cid, dateRange, medicalRepOid = n
     const order = d.orderId;
     if (!order) continue;
     if (repIdStr && String(order.medicalRepId) !== repIdStr) continue;
-    if (isOrderFullyReturned(order)) continue;
+    if (isOrderFullyCredited(order)) continue;
     deliveredTp += grossTpForDelivery(d, order);
   }
   deliveredTp = roundPKR(deliveredTp);
@@ -89,23 +105,26 @@ const computeDashboardNetGrossSalesTp = async (cid, dateRange, medicalRepOid = n
     const order = ret.orderId;
     if (!order) continue;
     if (repIdStr && String(order.medicalRepId) !== repIdStr) continue;
-    if (isOrderFullyReturned(order)) continue;
-    for (const ri of ret.items || []) {
-      const oi = order.items.find((i) => String(i.productId) === String(ri.productId));
-      if (oi) returnedTp += roundPKR(Number(oi.tpAtTime) * Number(ri.quantity));
-    }
+    if (isOrderFullyCredited(order)) continue;
+    returnedTp += sumReturnTp(ret, order);
   }
   returnedTp = roundPKR(returnedTp);
 
-  return roundPKR(deliveredTp - returnedTp);
+  let amendedTp = 0;
+  for (const amd of amendments) {
+    const order = amd.orderId;
+    if (!order) continue;
+    if (repIdStr && String(order.medicalRepId) !== repIdStr) continue;
+    if (isOrderFullyCredited(order)) continue;
+    amendedTp += sumAmendmentTp(amd, order);
+  }
+  amendedTp = roundPKR(amendedTp);
+
+  return roundPKR(deliveredTp - returnedTp - amendedTp);
 };
 
 /**
- * Net gross TP per medical rep in one delivery/return fetch (avoids N+1 per rep).
- * @param {import('mongoose').Types.ObjectId} cid
- * @param {{ $gte: Date, $lte: Date } | null} dateRange
- * @param {import('mongoose').Types.ObjectId[]} medicalRepOids
- * @returns {Promise<Map<string, number>>}
+ * Net gross TP per medical rep in one fetch.
  */
 const computeDashboardNetGrossSalesTpByReps = async (cid, dateRange, medicalRepOids = []) => {
   const repSet = new Set(medicalRepOids.map((id) => String(id)));
@@ -119,17 +138,15 @@ const computeDashboardNetGrossSalesTpByReps = async (cid, dateRange, medicalRepO
   const returnFilter = { companyId: cid, isDeleted: nd };
   if (dateRange) returnFilter.returnedAt = dateRange;
 
-  /** @param {any} order */
-  const isOrderFullyReturned = (order) => {
-    if (!order) return false;
-    if (order.status === ORDER_STATUS.RETURNED) return true;
-    if (!order.items?.length) return false;
-    return order.items.every((i) => (i.returnedQty || 0) >= (i.deliveredQty || 0));
-  };
+  const amendmentFilter = { companyId: cid, isDeleted: nd };
+  if (dateRange) amendmentFilter.amendedAt = dateRange;
 
-  const [deliveries, returns] = await Promise.all([
-    DeliveryRecord.find(deliveryFilter).populate({ path: 'orderId', select: 'items status medicalRepId' }).lean(),
-    ReturnRecord.find(returnFilter).populate({ path: 'orderId', select: 'items status medicalRepId' }).lean()
+  const orderSelect = 'items status medicalRepId';
+
+  const [deliveries, returns, amendments] = await Promise.all([
+    DeliveryRecord.find(deliveryFilter).populate({ path: 'orderId', select: orderSelect }).lean(),
+    ReturnRecord.find(returnFilter).populate({ path: 'orderId', select: orderSelect }).lean(),
+    OrderAmendment.find(amendmentFilter).populate({ path: 'orderId', select: orderSelect }).lean()
   ]);
 
   for (const d of deliveries) {
@@ -137,7 +154,7 @@ const computeDashboardNetGrossSalesTpByReps = async (cid, dateRange, medicalRepO
     if (!order?.medicalRepId) continue;
     const repId = String(order.medicalRepId);
     if (!repSet.has(repId)) continue;
-    if (isOrderFullyReturned(order)) continue;
+    if (isOrderFullyCredited(order)) continue;
     totals.set(repId, roundPKR((totals.get(repId) || 0) + grossTpForDelivery(d, order)));
   }
 
@@ -146,13 +163,17 @@ const computeDashboardNetGrossSalesTpByReps = async (cid, dateRange, medicalRepO
     if (!order?.medicalRepId) continue;
     const repId = String(order.medicalRepId);
     if (!repSet.has(repId)) continue;
-    if (isOrderFullyReturned(order)) continue;
-    let debit = 0;
-    for (const ri of ret.items || []) {
-      const oi = order.items.find((i) => String(i.productId) === String(ri.productId));
-      if (oi) debit += roundPKR(Number(oi.tpAtTime) * Number(ri.quantity));
-    }
-    totals.set(repId, roundPKR((totals.get(repId) || 0) - debit));
+    if (isOrderFullyCredited(order)) continue;
+    totals.set(repId, roundPKR((totals.get(repId) || 0) - sumReturnTp(ret, order)));
+  }
+
+  for (const amd of amendments) {
+    const order = amd.orderId;
+    if (!order?.medicalRepId) continue;
+    const repId = String(order.medicalRepId);
+    if (!repSet.has(repId)) continue;
+    if (isOrderFullyCredited(order)) continue;
+    totals.set(repId, roundPKR((totals.get(repId) || 0) - sumAmendmentTp(amd, order)));
   }
 
   return totals;

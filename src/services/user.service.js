@@ -184,7 +184,8 @@ const list = async (companyId, query, timeZone = "UTC") => {
     const rx = escapeRegex(searchTerm);
     filter.$or = [
       { name: { $regex: rx, $options: 'i' } },
-      { email: { $regex: rx, $options: 'i' } }
+      { email: { $regex: rx, $options: 'i' } },
+      { employeeCode: { $regex: rx, $options: 'i' } }
     ];
   }
   applyCreatedAtRangeFromQuery(filter, query, timeZone);

@@ -2,6 +2,7 @@ const asyncHandler = require('../middleware/asyncHandler');
 const ApiResponse = require('../utils/ApiResponse');
 const businessTime = require('../utils/businessTime');
 const mrepReportService = require('../services/mrepReport.service');
+const territoryCoverageDashboard = require('../services/territoryCoverageDashboard.service');
 
 const monthlyOverview = asyncHandler(async (req, res) => {
   const tz = req.context.timeZone;
@@ -94,6 +95,37 @@ const territoryCompare = asyncHandler(async (req, res) => {
   ApiResponse.success(res, data);
 });
 
+const coverageDashboard = asyncHandler(async (req, res) => {
+  const data = await territoryCoverageDashboard.coverageDashboard(
+    req.companyId,
+    req.user,
+    req.query,
+    req.context.timeZone
+  );
+  ApiResponse.success(res, data);
+});
+
+const coverageDashboardNodes = asyncHandler(async (req, res) => {
+  const data = await territoryCoverageDashboard.coverageNodes(
+    req.companyId,
+    req.user,
+    req.query,
+    req.context.timeZone
+  );
+  ApiResponse.success(res, data);
+});
+
+const coverageDashboardBrickDoctors = asyncHandler(async (req, res) => {
+  const data = await territoryCoverageDashboard.brickDoctors(
+    req.companyId,
+    req.user,
+    req.params.brickId,
+    req.query,
+    req.context.timeZone
+  );
+  ApiResponse.success(res, data);
+});
+
 module.exports = {
   monthlyOverview,
   doctorCoverage,
@@ -101,5 +133,8 @@ module.exports = {
   deviationSummary,
   rankings,
   trends,
-  territoryCompare
+  territoryCompare,
+  coverageDashboard,
+  coverageDashboardNodes,
+  coverageDashboardBrickDoctors
 };

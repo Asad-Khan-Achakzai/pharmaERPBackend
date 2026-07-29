@@ -73,6 +73,11 @@ web_modules/
 # Uploaded company logos (served from /company-logos)
 uploads/company-logos/
 
+# Generated PDFs
+invoices/
+order-receipts/
+credit-notes/
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache

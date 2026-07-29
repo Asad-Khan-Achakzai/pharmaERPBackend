@@ -633,8 +633,19 @@ const returnedPacksByProductAgg = (companyId, dateRange) => [
   }
 ];
 
+const amendedPacksByProductAgg = (companyId, dateRange) => [
+  { $match: { companyId, isDeleted: nd, amendedAt: dateRange } },
+  { $unwind: '$items' },
+  {
+    $group: {
+      _id: '$items.productId',
+      amendedQty: { $sum: '$items.deltaQty' }
+    }
+  }
+];
+
 /**
- * Net pack sales by product for a calendar month (deliveries minus returns, by delivery/return month).
+ * Net pack sales by product for a calendar month (deliveries − returns − amendments).
  */
 const productPackSalesForMonth = async (companyId, query = {}, timeZone) => {
   const monthYm = qScalar(query.month);
@@ -654,15 +665,19 @@ const productPackSalesForMonth = async (companyId, query = {}, timeZone) => {
   const dateRange = monthDateRange(monthYm, tz);
   const cid = objectId(companyId);
 
-  const [delivered, returned] = await Promise.all([
+  const OrderAmendment = require('../models/OrderAmendment');
+  const [delivered, returned, amended] = await Promise.all([
     DeliveryRecord.aggregate(deliveredPacksByProductAgg(cid, dateRange)),
-    ReturnRecord.aggregate(returnedPacksByProductAgg(cid, dateRange))
+    ReturnRecord.aggregate(returnedPacksByProductAgg(cid, dateRange)),
+    OrderAmendment.aggregate(amendedPacksByProductAgg(cid, dateRange))
   ]);
 
   const retMap = new Map(returned.map((r) => [String(r._id), Math.max(0, Number(r.returnedQty) || 0)]));
+  const amdMap = new Map(amended.map((r) => [String(r._id), Math.max(0, Number(r.amendedQty) || 0)]));
   const productIds = new Set([
     ...delivered.map((d) => String(d._id)),
-    ...returned.map((r) => String(r._id))
+    ...returned.map((r) => String(r._id)),
+    ...amended.map((r) => String(r._id))
   ]);
 
   if (!productIds.size) {
@@ -670,7 +685,7 @@ const productPackSalesForMonth = async (companyId, query = {}, timeZone) => {
       month: monthYm,
       monthLabel: monthLabel(monthYm, tz),
       rows: [],
-      totals: { netPacks: 0, paidPacks: 0, bonusPacks: 0, returnedPacks: 0 }
+      totals: { netPacks: 0, paidPacks: 0, bonusPacks: 0, returnedPacks: 0, amendedPacks: 0 }
     };
   }
 
@@ -699,17 +714,20 @@ const productPackSalesForMonth = async (companyId, query = {}, timeZone) => {
   let totalPaid = 0;
   let totalBonus = 0;
   let totalReturned = 0;
+  let totalAmended = 0;
 
   for (const pid of productIds) {
     const del = delMap.get(pid) || { physicalQty: 0, paidQty: 0, bonusQty: 0 };
     const returnedPacks = retMap.get(pid) || 0;
-    const netPacks = Math.max(0, del.physicalQty - returnedPacks);
-    if (del.physicalQty === 0 && returnedPacks === 0) continue;
+    const amendedPacks = amdMap.get(pid) || 0;
+    const netPacks = Math.max(0, del.physicalQty - returnedPacks - amendedPacks);
+    if (del.physicalQty === 0 && returnedPacks === 0 && amendedPacks === 0) continue;
 
     totalNet += netPacks;
     totalPaid += del.paidQty;
     totalBonus += del.bonusQty;
     totalReturned += returnedPacks;
+    totalAmended += amendedPacks;
 
     const p = productById.get(pid);
     rows.push({
@@ -720,6 +738,7 @@ const productPackSalesForMonth = async (companyId, query = {}, timeZone) => {
       paidPacks: del.paidQty,
       bonusPacks: del.bonusQty,
       returnedPacks,
+      amendedPacks,
       netPacks
     });
   }
@@ -734,7 +753,8 @@ const productPackSalesForMonth = async (companyId, query = {}, timeZone) => {
       netPacks: totalNet,
       paidPacks: totalPaid,
       bonusPacks: totalBonus,
-      returnedPacks: totalReturned
+      returnedPacks: totalReturned,
+      amendedPacks: totalAmended
     }
   };
 };

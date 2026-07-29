@@ -6,6 +6,7 @@ const Settlement = require('../models/Settlement');
 const SettlementAllocation = require('../models/SettlementAllocation');
 const DeliveryRecord = require('../models/DeliveryRecord');
 const Order = require('../models/Order');
+const ReturnRecord = require('../models/ReturnRecord');
 const Distributor = require('../models/Distributor');
 const ApiError = require('../utils/ApiError');
 const { roundPKR } = require('../utils/currency');
@@ -17,15 +18,42 @@ const {
   SETTLEMENT_DIRECTION,
   LEDGER_COLLECTION_PORTION,
   GL_SOURCE_MODULE,
-  VOUCHER_STATUS
+  VOUCHER_STATUS,
+  ORDER_STATUS
 } = require('../constants/enums');
 const glBridge = require('./glBridge.service');
 const glPosting = require('./glPosting.service');
 const moneyAccountService = require('./moneyAccount.service');
+const arDocumentOpen = require('./arDocumentOpen.service');
+const {
+  resolveArOpenEngine,
+  useDocumentOpenEngine,
+  AR_OPEN_ENGINE
+} = require('../constants/arArchitecture');
 
 const nd = { isDeleted: { $ne: true } };
+const OPEN_EPS = 0.001;
 
 const oid = (id) => new mongoose.Types.ObjectId(id);
+
+/** Returns ObjectId or null — never throws CastError on bad / empty values. */
+const safeOid = (id) => {
+  if (id == null || id === '') return null;
+  const s = String(id);
+  if (s === 'null' || s === 'undefined') return null;
+  if (!mongoose.Types.ObjectId.isValid(s)) return null;
+  // Reject 12-char non-hex strings that isValid incorrectly accepts in some mongoose versions
+  try {
+    return new mongoose.Types.ObjectId(s);
+  } catch {
+    return null;
+  }
+};
+
+const safeOids = (ids) =>
+  [...new Set((ids || []).map((id) => safeOid(id)).filter(Boolean).map((id) => String(id)))].map(
+    (s) => new mongoose.Types.ObjectId(s)
+  );
 
 const getCommissionPercent = (distributor) => {
   const p =
@@ -158,11 +186,161 @@ const postDeliveryLedgers = async (session, ctx) => {
 };
 
 /**
- * Load pharmacy DR lines (per delivery) and apply CR chronologically (FIFO for unallocated).
+ * Apply amount against open balances for a preferred delivery id list (FIFO within that list).
+ * @returns remaining amount not applied
  */
-const computePharmacyReceivableState = async (companyId, pharmacyId, session) => {
+const applyCreditToDeliveryIds = (openByDelivery, amount, deliveryIds) => {
+  let remaining = roundPKR(amount);
+  for (const id of deliveryIds) {
+    if (remaining <= OPEN_EPS) break;
+    if (openByDelivery[id] === undefined) continue;
+    const cur = openByDelivery[id];
+    if (cur <= OPEN_EPS) continue;
+    const take = roundPKR(Math.min(cur, remaining));
+    openByDelivery[id] = roundPKR(cur - take);
+    remaining = roundPKR(remaining - take);
+  }
+  return remaining;
+};
+
+/**
+ * Global FIFO across all open deliveries (ObjectId sort — legacy collection/payment path).
+ */
+const applyCreditFifoGlobal = (openByDelivery, amount) => {
+  return applyCreditToDeliveryIds(openByDelivery, amount, Object.keys(openByDelivery).sort());
+};
+
+/**
+ * For RETURN credits missing meta.deliveryId, map ReturnRecord → that order's deliveries
+ * (oldest delivery first). Used only by AR_OPEN_ENGINE=legacy rollback path.
+ * @deprecated Prefer ReturnRecord.allocations (document application SoT).
+ */
+const resolveReturnCreditDeliveryTargets = async (companyId, crLines, session) => {
+  const map = new Map();
+  const returnRefIds = [];
+  for (const cr of crLines) {
+    const refType = cr.referenceType;
+    if (refType !== LEDGER_REFERENCE_TYPE.RETURN) continue;
+    if (cr.meta?.deliveryId) continue;
+    if (Array.isArray(cr.meta?.allocations) && cr.meta.allocations.length) continue;
+    const rid = safeOid(cr.referenceId);
+    if (!rid) continue;
+    returnRefIds.push(rid);
+  }
+  if (!returnRefIds.length) return map;
+
+  const cid = safeOid(companyId);
+  if (!cid) return map;
+
+  const returns = await ReturnRecord.find({
+    companyId: cid,
+    _id: { $in: returnRefIds },
+    isDeleted: { $ne: true }
+  })
+    .select('_id orderId')
+    .session(session || null)
+    .lean();
+
+  if (!returns.length) return map;
+
+  const orderIds = safeOids(returns.map((r) => r.orderId));
+  if (!orderIds.length) return map;
+
+  const deliveries = await DeliveryRecord.find({
+    companyId: cid,
+    orderId: { $in: orderIds },
+    isDeleted: { $ne: true }
+  })
+    .select('_id orderId deliveredAt')
+    .sort({ deliveredAt: 1, createdAt: 1 })
+    .session(session || null)
+    .lean();
+
+  const delsByOrder = new Map();
+  for (const d of deliveries) {
+    const key = String(d.orderId);
+    if (!delsByOrder.has(key)) delsByOrder.set(key, []);
+    delsByOrder.get(key).push(String(d._id));
+  }
+
+  for (const ret of returns) {
+    if (!ret.orderId) continue;
+    map.set(String(ret._id), delsByOrder.get(String(ret.orderId)) || []);
+  }
+  return map;
+};
+
+/**
+ * Apply pharmacy ledger DRs then CRs to produce open balance per delivery id.
+ * Shared by single-pharmacy receivable state and outstanding-collections bulk rollups.
+ *
+ * - Allocated credits (meta.deliveryId) reduce that delivery.
+ * - RETURN credits without deliveryId prefer that return's order deliveries (fixes historical posts).
+ * - Other unallocated credits (collections/payments) use global FIFO by delivery id.
+ *
+ * @param {object} [opts]
+ * @param {Map<string, string[]>} [opts.returnTargetsByReferenceId]
+ */
+const buildOpenByDeliveryFromLedgerLines = (drLines, crLines, opts = {}) => {
+  const returnTargetsByReferenceId = opts.returnTargetsByReferenceId || null;
+  const openByDelivery = {};
+  for (const dr of drLines) {
+    if (!dr?.referenceId) continue;
+    const id = String(dr.referenceId);
+    if (!mongoose.Types.ObjectId.isValid(id)) continue;
+    openByDelivery[id] = roundPKR((openByDelivery[id] || 0) + dr.amount);
+  }
+
+  for (const cr of crLines) {
+    const amt = roundPKR(cr.amount);
+    if (Array.isArray(cr.meta?.allocations) && cr.meta.allocations.length) {
+      let applied = 0;
+      for (const alloc of cr.meta.allocations) {
+        if (!alloc?.deliveryId) continue;
+        const id = String(alloc.deliveryId);
+        if (!mongoose.Types.ObjectId.isValid(id)) continue;
+        const slice = roundPKR(alloc.amount != null ? alloc.amount : 0);
+        if (slice <= OPEN_EPS) continue;
+        if (openByDelivery[id] !== undefined) {
+          openByDelivery[id] = roundPKR(openByDelivery[id] - slice);
+        }
+        applied = roundPKR(applied + slice);
+      }
+      const leftover = roundPKR(amt - applied);
+      if (leftover > OPEN_EPS) {
+        applyCreditFifoGlobal(openByDelivery, leftover);
+      }
+    } else if (cr.meta?.deliveryId) {
+      const id = String(cr.meta.deliveryId);
+      if (mongoose.Types.ObjectId.isValid(id) && openByDelivery[id] !== undefined) {
+        openByDelivery[id] = roundPKR(openByDelivery[id] - amt);
+      } else {
+        // Delivery key missing (edge) — do not drop credit; fall through to FIFO.
+        applyCreditFifoGlobal(openByDelivery, amt);
+      }
+    } else if (
+      cr.referenceType === LEDGER_REFERENCE_TYPE.RETURN &&
+      returnTargetsByReferenceId &&
+      returnTargetsByReferenceId.has(String(cr.referenceId))
+    ) {
+      const targets = returnTargetsByReferenceId.get(String(cr.referenceId)) || [];
+      let remaining = applyCreditToDeliveryIds(openByDelivery, amt, targets);
+      if (remaining > OPEN_EPS) {
+        remaining = applyCreditFifoGlobal(openByDelivery, remaining);
+      }
+    } else {
+      applyCreditFifoGlobal(openByDelivery, amt);
+    }
+  }
+  return openByDelivery;
+};
+
+/**
+ * Legacy open: pharmacy ledger DRs then CRs (meta.deliveryId / return-target map).
+ * Retained for AR_OPEN_ENGINE=legacy rollback only.
+ */
+const computePharmacyReceivableStateLegacy = async (companyId, pharmacyId, session) => {
   const q = { companyId: oid(companyId), entityId: oid(pharmacyId), entityType: LEDGER_ENTITY_TYPE.PHARMACY, isDeleted: { $ne: true } };
-  // Sequential reads: MongoDB transactions do not allow concurrent operations on the same session.
   const drLines = await Ledger.find({
     ...q,
     type: LEDGER_TYPE.DEBIT,
@@ -173,37 +351,15 @@ const computePharmacyReceivableState = async (companyId, pharmacyId, session) =>
   const crLines = await Ledger.find({
     ...q,
     type: LEDGER_TYPE.CREDIT,
-    referenceType: { $in: [LEDGER_REFERENCE_TYPE.COLLECTION, LEDGER_REFERENCE_TYPE.PAYMENT, LEDGER_REFERENCE_TYPE.RETURN] }
+    referenceType: { $in: [LEDGER_REFERENCE_TYPE.COLLECTION, LEDGER_REFERENCE_TYPE.PAYMENT, LEDGER_REFERENCE_TYPE.RETURN, LEDGER_REFERENCE_TYPE.AMENDMENT] }
   })
     .session(session || null)
     .sort({ date: 1, createdAt: 1 });
 
-  const openByDelivery = {};
-  for (const dr of drLines) {
-    const id = dr.referenceId.toString();
-    openByDelivery[id] = roundPKR((openByDelivery[id] || 0) + dr.amount);
-  }
-
-  for (const cr of crLines) {
-    const amt = roundPKR(cr.amount);
-    if (cr.meta?.deliveryId) {
-      const id = cr.meta.deliveryId.toString();
-      if (openByDelivery[id] !== undefined) {
-        openByDelivery[id] = roundPKR(openByDelivery[id] - amt);
-      }
-    } else {
-      let remaining = amt;
-      const deliveryIds = Object.keys(openByDelivery).sort();
-      for (const id of deliveryIds) {
-        if (remaining <= 0) break;
-        const cur = openByDelivery[id];
-        if (cur <= 0) continue;
-        const take = roundPKR(Math.min(cur, remaining));
-        openByDelivery[id] = roundPKR(cur - take);
-        remaining = roundPKR(remaining - take);
-      }
-    }
-  }
+  const returnTargetsByReferenceId = await resolveReturnCreditDeliveryTargets(companyId, crLines, session);
+  const openByDelivery = buildOpenByDeliveryFromLedgerLines(drLines, crLines, {
+    returnTargetsByReferenceId
+  });
 
   const idList = deliveryIdsFromOpen(openByDelivery);
   const deliveries =
@@ -223,7 +379,7 @@ const computePharmacyReceivableState = async (companyId, pharmacyId, session) =>
 
   const orderIds = [...new Set(deliveries.map((d) => d.orderId.toString()))];
   const orders = await Order.find({ _id: { $in: orderIds } })
-    .select('distributorId pharmacyId')
+    .select('distributorId pharmacyId status')
     .session(session || null);
   const orderMap = {};
   orders.forEach((o) => {
@@ -235,6 +391,10 @@ const computePharmacyReceivableState = async (companyId, pharmacyId, session) =>
     .map((d) => {
       const id = d._id.toString();
       const o = orderMap[d.orderId.toString()];
+      let open = roundPKR(openByDelivery[id] ?? 0);
+      if (o?.status === ORDER_STATUS.RETURNED) {
+        open = 0;
+      }
       return {
         deliveryId: d._id,
         orderId: d.orderId,
@@ -243,7 +403,7 @@ const computePharmacyReceivableState = async (companyId, pharmacyId, session) =>
         companyShareTotal: roundPKR(d.companyShareTotal ?? 0),
         distributorShareTotal: roundPKR(d.distributorShareTotal ?? 0),
         deliveredAt: d.deliveredAt,
-        open: roundPKR(openByDelivery[id] ?? 0)
+        open: roundPKR(Math.max(0, open))
       };
     });
 
@@ -251,8 +411,174 @@ const computePharmacyReceivableState = async (companyId, pharmacyId, session) =>
   return { rows, totalOpen, openByDelivery };
 };
 
+/**
+ * Load pharmacy receivable open rows.
+ * Default: document allocations (Collection + ReturnRecord) — enterprise SoT.
+ */
+const computePharmacyReceivableState = async (companyId, pharmacyId, session) => {
+  if (!useDocumentOpenEngine()) {
+    return computePharmacyReceivableStateLegacy(companyId, pharmacyId, session);
+  }
+
+  const docState = await arDocumentOpen.computeOpenFromDocumentAllocations(
+    companyId,
+    pharmacyId,
+    session
+  );
+
+  if (resolveArOpenEngine() === AR_OPEN_ENGINE.SHADOW) {
+    const legacy = await computePharmacyReceivableStateLegacy(companyId, pharmacyId, session);
+    arDocumentOpen.maybeLogShadowDivergence(companyId, pharmacyId, docState, legacy.totalOpen);
+  }
+
+  return {
+    rows: docState.rows.map((r) => ({
+      deliveryId: r.deliveryId,
+      orderId: r.orderId,
+      distributorId: r.distributorId,
+      pharmacyNetPayable: r.pharmacyNetPayable,
+      companyShareTotal: r.companyShareTotal,
+      distributorShareTotal: r.distributorShareTotal,
+      deliveredAt: r.deliveredAt,
+      open: r.open
+    })),
+    totalOpen: docState.totalOpen,
+    openByDelivery: docState.openByDelivery,
+    pharmacyOpen: docState.pharmacyOpen,
+    ledgerNet: docState.ledgerNet
+  };
+};
+
+/**
+ * Bulk open totals per pharmacy (same rules as computePharmacyReceivableState).
+ * @returns {Promise<Map<string, number>>} pharmacyId → totalOpen
+ */
+const computeOpenTotalsByPharmacyLegacy = async (companyId, pharmacyIds) => {
+  const result = new Map();
+  const ids = safeOids(pharmacyIds);
+  if (!ids.length) return result;
+
+  const cid = safeOid(companyId);
+  if (!cid) return result;
+
+  const [drLines, crLines] = await Promise.all([
+    Ledger.find({
+      companyId: cid,
+      entityType: LEDGER_ENTITY_TYPE.PHARMACY,
+      entityId: { $in: ids },
+      isDeleted: { $ne: true },
+      type: LEDGER_TYPE.DEBIT,
+      referenceType: { $in: [LEDGER_REFERENCE_TYPE.DELIVERY, LEDGER_REFERENCE_TYPE.ORDER] }
+    })
+      .select('entityId referenceId amount date createdAt meta referenceType')
+      .sort({ date: 1, createdAt: 1 })
+      .lean(),
+    Ledger.find({
+      companyId: cid,
+      entityType: LEDGER_ENTITY_TYPE.PHARMACY,
+      entityId: { $in: ids },
+      isDeleted: { $ne: true },
+      type: LEDGER_TYPE.CREDIT,
+      referenceType: {
+        $in: [
+          LEDGER_REFERENCE_TYPE.COLLECTION,
+          LEDGER_REFERENCE_TYPE.PAYMENT,
+          LEDGER_REFERENCE_TYPE.RETURN
+        ]
+      }
+    })
+      .select('entityId referenceId amount date createdAt meta referenceType')
+      .sort({ date: 1, createdAt: 1 })
+      .lean()
+  ]);
+
+  const drByPharmacy = new Map();
+  const crByPharmacy = new Map();
+  for (const line of drLines) {
+    const key = String(line.entityId);
+    if (!drByPharmacy.has(key)) drByPharmacy.set(key, []);
+    drByPharmacy.get(key).push(line);
+  }
+  for (const line of crLines) {
+    const key = String(line.entityId);
+    if (!crByPharmacy.has(key)) crByPharmacy.set(key, []);
+    crByPharmacy.get(key).push(line);
+  }
+
+  const returnTargetsByReferenceId = await resolveReturnCreditDeliveryTargets(companyId, crLines, null);
+
+  const openByDelivery = {};
+  const deliveryPharmacy = new Map();
+  for (const pid of ids) {
+    const key = String(pid);
+    const openMap = buildOpenByDeliveryFromLedgerLines(
+      drByPharmacy.get(key) || [],
+      crByPharmacy.get(key) || [],
+      { returnTargetsByReferenceId }
+    );
+    for (const [did, open] of Object.entries(openMap)) {
+      openByDelivery[did] = open;
+      deliveryPharmacy.set(did, key);
+    }
+  }
+
+  const openDeliveryIds = safeOids(
+    Object.keys(openByDelivery).filter((id) => roundPKR(openByDelivery[id] || 0) > OPEN_EPS)
+  );
+  if (!openDeliveryIds.length) {
+    for (const pid of ids) result.set(String(pid), 0);
+    return result;
+  }
+
+  const deliveries = await DeliveryRecord.find({
+    companyId: cid,
+    _id: { $in: openDeliveryIds },
+    isDeleted: { $ne: true }
+  })
+    .select('_id orderId')
+    .lean();
+
+  const orderIds = safeOids(deliveries.map((d) => d.orderId));
+  const orderStatus = new Map();
+  if (orderIds.length) {
+    const orders = await Order.find({
+      _id: { $in: orderIds },
+      companyId: cid,
+      isDeleted: { $ne: true }
+    })
+      .select('_id status')
+      .lean();
+    for (const o of orders) orderStatus.set(String(o._id), o.status);
+  }
+
+  for (const pid of ids) result.set(String(pid), 0);
+
+  for (const d of deliveries) {
+    if (!d.orderId) continue;
+    if (orderStatus.get(String(d.orderId)) === ORDER_STATUS.RETURNED) continue;
+    const open = roundPKR(Math.max(0, openByDelivery[String(d._id)] || 0));
+    if (open <= OPEN_EPS) continue;
+    const pharmacyKey = deliveryPharmacy.get(String(d._id));
+    if (!pharmacyKey) continue;
+    result.set(pharmacyKey, roundPKR((result.get(pharmacyKey) || 0) + open));
+  }
+
+  return result;
+};
+
+/**
+ * Bulk open totals per pharmacy (same rules as computePharmacyReceivableState).
+ * @returns {Promise<Map<string, number>>} pharmacyId → totalOpen
+ */
+const computeOpenTotalsByPharmacy = async (companyId, pharmacyIds) => {
+  if (!useDocumentOpenEngine()) {
+    return computeOpenTotalsByPharmacyLegacy(companyId, pharmacyIds);
+  }
+  return arDocumentOpen.computeOpenTotalsByPharmacyFromDocuments(companyId, pharmacyIds);
+};
+
 function deliveryIdsFromOpen(openByDelivery) {
-  return Object.keys(openByDelivery).map((id) => oid(id));
+  return safeOids(Object.keys(openByDelivery));
 }
 
 /**
@@ -955,13 +1281,27 @@ const reverseSettlement = async (companyId, id, body, reqUser, session) => {
 };
 
 /**
- * Reverse proportional clearing for a return (RETURN_CLEARING_ADJ).
+ * Reverse proportional clearing for a qty credit (return or amendment).
+ * Default referenceType: RETURN_CLEARING_ADJ. Amendments pass AMENDMENT_CLEARING_ADJ.
  */
 const postReturnClearingAdjustment = async (session, ctx) => {
-  const { companyId, distributorId, deliveryId, orderId, fraction, companyShareTotal, distributorShareTotal, returnRecordId, date } = ctx;
+  const {
+    companyId,
+    distributorId,
+    deliveryId,
+    orderId,
+    fraction,
+    companyShareTotal,
+    distributorShareTotal,
+    returnRecordId,
+    date,
+    referenceType = LEDGER_REFERENCE_TYPE.RETURN_CLEARING_ADJ
+  } = ctx;
   const f = Math.min(1, Math.max(0, fraction));
   if (f <= 0) return;
 
+  const isAmendment = referenceType === LEDGER_REFERENCE_TYPE.AMENDMENT_CLEARING_ADJ;
+  const label = isAmendment ? 'Amendment' : 'Return';
   const revC = roundPKR(companyShareTotal * f);
   const revD = roundPKR(distributorShareTotal * f);
   const d = date || new Date();
@@ -976,9 +1316,9 @@ const postReturnClearingAdjustment = async (session, ctx) => {
         distributorId,
         LEDGER_TYPE.CREDIT,
         revC,
-        LEDGER_REFERENCE_TYPE.RETURN_CLEARING_ADJ,
+        referenceType,
         returnRecordId,
-        'Return — reverse company share clearing',
+        `${label} — reverse company share clearing`,
         d,
         meta
       )
@@ -992,9 +1332,9 @@ const postReturnClearingAdjustment = async (session, ctx) => {
         distributorId,
         LEDGER_TYPE.DEBIT,
         revD,
-        LEDGER_REFERENCE_TYPE.RETURN_CLEARING_ADJ,
+        referenceType,
         returnRecordId,
-        'Return — reverse distributor commission clearing',
+        `${label} — reverse distributor commission clearing`,
         d,
         meta
       )
@@ -1095,7 +1435,18 @@ module.exports = {
   computeOrderLinePreview,
   enrichOrderItemsWithFinancialSnapshot,
   postDeliveryLedgers,
+  buildOpenByDeliveryFromLedgerLines,
+  resolveReturnCreditDeliveryTargets,
   computePharmacyReceivableState,
+  /** Permanent public alias for AR open (aging, collection planning, MR ownership). */
+  computePharmacyReceivable: computePharmacyReceivableState,
+  computePharmacyReceivableStateLegacy,
+  computeOpenTotalsByPharmacy,
+  computeOpenTotalsByPharmacyLegacy,
+  /** Document-allocation open for a single pharmacy (roadmap: aging buckets). */
+  computeOpenFromDocumentAllocations: (...args) =>
+    arDocumentOpen.computeOpenFromDocumentAllocations(...args),
+  replayPharmacyAllocations: (...args) => arDocumentOpen.replayPharmacyAllocations(...args),
   fifoAllocateCollection,
   createCollection,
   updateCollection,

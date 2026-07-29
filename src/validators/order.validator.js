@@ -40,6 +40,7 @@ const updateOrderSchema = Joi.object({
 }).min(1);
 
 const deliverOrderSchema = Joi.object({
+  deliveredById: Joi.string().hex().length(24).optional(),
   items: Joi.array().items(
     Joi.object({
       productId: Joi.string().required(),
@@ -58,4 +59,25 @@ const returnOrderSchema = Joi.object({
   ).min(1).required()
 });
 
-module.exports = { createOrderSchema, updateOrderSchema, deliverOrderSchema, returnOrderSchema };
+const amendOrderSchema = Joi.object({
+  reason: Joi.string().trim().min(3).required(),
+  amendmentType: Joi.string().valid('QUANTITY_REDUCTION').optional(),
+  source: Joi.string().valid('DELIVERED_ORDER_CORRECTION').optional(),
+  items: Joi.array()
+    .items(
+      Joi.object({
+        productId: Joi.string().required(),
+        newQuantity: Joi.number().integer().min(0).required()
+      })
+    )
+    .min(1)
+    .required()
+});
+
+module.exports = {
+  createOrderSchema,
+  updateOrderSchema,
+  deliverOrderSchema,
+  returnOrderSchema,
+  amendOrderSchema
+};

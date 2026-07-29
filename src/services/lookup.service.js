@@ -117,7 +117,7 @@ const pharmacies = async (companyId, query = {}) => {
     ];
   }
   const rows = await Pharmacy.find(filter)
-    .select('name discountOnTP bonusScheme')
+    .select('name address city discountOnTP bonusScheme')
     .sort({ name: 1 })
     .limit(limit)
     .lean();
@@ -127,6 +127,8 @@ const pharmacies = async (companyId, query = {}) => {
     rows.map((p) => ({
       _id: p._id,
       name: p.name,
+      address: p.address,
+      city: p.city,
       discountOnTP: p.discountOnTP,
       bonusScheme: p.bonusScheme
     }))
@@ -222,11 +224,12 @@ const assignableUsers = async (companyId, query = {}, reqUser = null) => {
     const rx = escapeRegex(searchTerm);
     filter.$or = [
       { name: { $regex: rx, $options: 'i' } },
-      { email: { $regex: rx, $options: 'i' } }
+      { email: { $regex: rx, $options: 'i' } },
+      { employeeCode: { $regex: rx, $options: 'i' } }
     ];
   }
   const rows = await User.find(filter)
-    .select('name email role roleId')
+    .select('name email role roleId employeeCode')
     .populate('roleId', 'code name permissions')
     .sort({ name: 1 })
     .limit(limit)
@@ -238,6 +241,7 @@ const assignableUsers = async (companyId, query = {}, reqUser = null) => {
     role: u.role,
     roleCode: u.roleId?.code ?? null,
     roleName: u.roleId?.name ?? null,
+    employeeCode: u.employeeCode ?? null,
     isAdminCapable:
       Array.isArray(u.roleId?.permissions) && u.roleId.permissions.includes(ADMIN_ACCESS)
   }));

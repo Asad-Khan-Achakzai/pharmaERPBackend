@@ -89,7 +89,14 @@ const schema = Joi.object({
   OLLAMA_BASE_URL: Joi.string().default('http://localhost:11434'),
   OLLAMA_MODEL: Joi.string().default('qwen3:30b-a3b'),
   OPENAI_API_KEY: Joi.string().allow('').default(''),
-  OPENAI_MODEL: Joi.string().allow('').default('gpt-4o-mini')
+  OPENAI_MODEL: Joi.string().allow('').default('gpt-4o-mini'),
+  /**
+   * AR open engine: document (Collection/ReturnRecord allocations SoT),
+   * legacy (ledger meta FIFO — rollback), shadow (document reads + log vs legacy).
+   */
+  AR_OPEN_ENGINE: Joi.string().valid('document', 'legacy', 'shadow').default('document'),
+  /** When '0', require ReturnRecord.allocations (post-migration). Default '0' after AR migration. */
+  AR_LEGACY_RETURN_ALLOC_FALLBACK: Joi.string().valid('0', '1').default('0')
 }).unknown(true);
 
 const { value: env, error } = schema.validate(process.env, { convert: true });

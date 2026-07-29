@@ -9,6 +9,8 @@ const orderItemSchema = new mongoose.Schema(
     quantity: { type: Number, required: true },
     deliveredQty: { type: Number, default: 0 },
     returnedQty: { type: Number, default: 0 },
+    /** Packs reduced via OrderAmendment (distinct from returns). */
+    amendedQty: { type: Number, default: 0 },
     tpAtTime: { type: Number, required: true },
     castingAtTime: { type: Number, required: true },
     distributorDiscount: { type: Number, default: 0 },

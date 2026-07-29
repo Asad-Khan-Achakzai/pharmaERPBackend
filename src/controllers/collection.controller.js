@@ -1,4 +1,5 @@
 const collectionService = require('../services/collection.service');
+const outstandingCollectionsService = require('../services/outstandingCollections.service');
 const auditService = require('../services/audit.service');
 const ApiResponse = require('../utils/ApiResponse');
 const ApiError = require('../utils/ApiError');
@@ -7,6 +8,21 @@ const asyncHandler = require('../middleware/asyncHandler');
 const list = asyncHandler(async (req, res) => {
   const result = await collectionService.list(req.companyId, req.query, req.context.timeZone);
   ApiResponse.paginated(res, result);
+});
+
+const listOutstanding = asyncHandler(async (req, res) => {
+  const data = await outstandingCollectionsService.list(req.companyId, req.user, req.query);
+  ApiResponse.success(res, data);
+});
+
+const outstandingPharmacyDetail = asyncHandler(async (req, res) => {
+  const data = await outstandingCollectionsService.pharmacyDetail(
+    req.companyId,
+    req.user,
+    req.params.pharmacyId,
+    req.query
+  );
+  ApiResponse.success(res, data);
 });
 
 const create = asyncHandler(async (req, res) => {
@@ -66,4 +82,13 @@ const reverse = asyncHandler(async (req, res) => {
   ApiResponse.success(res, result, 'Collection reversed');
 });
 
-module.exports = { list, create, getById, getByPharmacy, update, reverse };
+module.exports = {
+  list,
+  listOutstanding,
+  outstandingPharmacyDetail,
+  create,
+  getById,
+  getByPharmacy,
+  update,
+  reverse
+};

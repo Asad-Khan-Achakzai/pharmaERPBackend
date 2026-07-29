@@ -314,18 +314,48 @@ const getById = async (companyId, id, opts = {}) => {
     .populate('pharmacyId', 'name city address phone bonusScheme discountOnTP')
     .populate('doctorId', 'name specialization')
     .populate('distributorId', 'name city discountOnTP commissionPercentOnTP')
-    .populate('medicalRepId', 'name')
+    .populate('medicalRepId', 'name employeeCode')
     .populate('visitLogId', 'visitTime doctorId employeeId')
     .populate('items.productId', 'name composition mrp tp casting');
   if (!order) throw new ApiError(404, 'Order not found');
   assertOrderVisibleToUser(order, opts.visibleRepIds ?? null);
 
-  const [deliveries, returns] = await Promise.all([
-    DeliveryRecord.find({ companyId, orderId: id }).populate('deliveredBy', 'name').sort({ deliveredAt: -1 }),
-    ReturnRecord.find({ companyId, orderId: id }).populate('returnedBy', 'name').sort({ returnedAt: -1 })
+  const OrderAmendment = require('../models/OrderAmendment');
+  const creditNoteService = require('./creditNote.service');
+  const { remainingAmendableQty } = require('../utils/orderQty.util');
+
+  const [deliveries, returns, amendments, creditNoteByAmd] = await Promise.all([
+    DeliveryRecord.find({ companyId, orderId: id }).populate('deliveredBy', 'name employeeCode').sort({ deliveredAt: -1 }),
+    ReturnRecord.find({ companyId, orderId: id }).populate('returnedBy', 'name').sort({ returnedAt: -1 }),
+    OrderAmendment.find({ companyId, orderId: id, isDeleted: { $ne: true } })
+      .populate('amendedBy', 'name email')
+      .sort({ version: 1 })
+      .lean(),
+    creditNoteService.mapCreditNotesByAmendmentId(companyId, id)
   ]);
 
-  return { ...order.toObject(), deliveries, returns };
+  const obj = order.toObject();
+  obj.items = (obj.items || []).map((item) => ({
+    ...item,
+    remainingAmendableQty: remainingAmendableQty(item),
+    remainingReturnableQty: remainingAmendableQty(item)
+  }));
+
+  const amendmentsWithCn = (amendments || []).map((a) => ({
+    ...a,
+    creditNote: creditNoteByAmd[String(a._id)] || null
+  }));
+
+  const base = {
+    ...obj,
+    deliveries,
+    returns,
+    amendments: amendmentsWithCn,
+    creditNotes: Object.values(creditNoteByAmd)
+  };
+
+  const [enriched] = await enrichOrdersWithPaymentSummary(companyId, [base]);
+  return enriched;
 };
 
 const update = async (companyId, id, data, reqUser, opts = {}) => {
@@ -501,6 +531,13 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts
     const invoiceNumber = await getNextSequenceNumber(companyId, 'INV', { session });
 
     const pharmacyNetPayable = totalAmount;
+
+    const deliveredById = body.deliveredById || order.medicalRepId;
+    const deliveryUser = await User.findOne({ _id: deliveredById, companyId, isActive: true }).session(session);
+    if (!deliveryUser) {
+      throw new ApiError(400, 'Delivery man not found or inactive');
+    }
+
     const [delivery] = await DeliveryRecord.create(
       [
         {
@@ -516,7 +553,7 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts
           pharmacyNetPayable,
           companyShareTotal,
           distributorCommissionPercent: commissionPctSnapshot,
-          deliveredBy: reqUser.userId,
+          deliveredBy: deliveryUser._id,
           deliveredAt: businessDate
         }
       ],
@@ -616,86 +653,71 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
       throw new ApiError(400, 'Order cannot be returned in its current status');
     }
 
+    const qtyCredit = require('./deliveryQtyCredit.service');
+    const { remainingReturnableQty } = require('../utils/orderQty.util');
+
     const returnRecordItems = [];
     let totalAmount = 0;
     let totalCost = 0;
     let totalPacks = 0;
     let tpReturnTotal = 0;
+    const creditByDelivery = new Map();
 
     for (const rItem of returnItems) {
       const orderItem = order.items.find((i) => i.productId.toString() === rItem.productId);
       if (!orderItem) throw new ApiError(400, `Product ${rItem.productId} not in this order`);
 
-      const returnable = orderItem.deliveredQty - orderItem.returnedQty;
+      const returnable = remainingReturnableQty(orderItem);
       if (rItem.quantity > returnable) {
         throw new ApiError(400, `Cannot return ${rItem.quantity} of ${orderItem.productName}. Returnable: ${returnable}`);
       }
 
-      const lastDelivery = await DeliveryRecord.findOne(
-        { companyId, orderId, 'items.productId': rItem.productId }
-      )
-        .sort({ deliveredAt: -1 })
-        .session(session);
-
-      const dLine = lastDelivery?.items?.find((i) => i.productId.toString() === rItem.productId);
-      const avgCostAtTime = dLine?.avgCostAtTime || 0;
-      const finalSellingPrice = dLine?.finalSellingPrice || 0;
-      const lineQty = dLine?.quantity > 0 ? dLine.quantity : rItem.quantity;
-      const linePharmacyNet =
-        dLine?.linePharmacyNet != null
-          ? roundPKR(dLine.linePharmacyNet)
-          : roundPKR(finalSellingPrice * lineQty);
-      /** Use delivery line pharmacy net proportionally — per-unit finalSellingPrice can drift by ₨0.01–0.05 on full returns. */
-      const returnLineAmount =
-        dLine?.linePharmacyNet != null
-          ? roundPKR((linePharmacyNet / lineQty) * rItem.quantity)
-          : roundPKR(finalSellingPrice * rItem.quantity);
-      const lineCost = roundPKR(avgCostAtTime * rItem.quantity);
-      const totalProfit = roundPKR(returnLineAmount - lineCost);
-      const profitPerUnit = rItem.quantity > 0 ? roundPKR(totalProfit / rItem.quantity) : 0;
-
-      await DistributorInventory.updateOne(
-        { companyId, distributorId: order.distributorId, productId: rItem.productId },
-        { $inc: { quantity: rItem.quantity }, $set: { lastUpdated: utcNow() } },
-        { session }
+      const { lastDelivery, dLine } = await qtyCredit.findLatestDeliveryLine(
+        session,
+        companyId,
+        orderId,
+        rItem.productId
       );
+      const snap = qtyCredit.computeQtyCreditAgainstDeliveryLine(dLine, rItem.quantity);
+
+      await qtyCredit.restockDistributorQty(session, {
+        companyId,
+        distributorId: order.distributorId,
+        productId: rItem.productId,
+        quantity: rItem.quantity
+      });
 
       orderItem.returnedQty += rItem.quantity;
-
-      const returnCompanyShare =
-        dLine && dLine.companyShare != null
-          ? roundPKR((dLine.companyShare / lineQty) * rItem.quantity)
-          : roundPKR(
-              returnLineAmount -
-                (dLine && dLine.distributorShare != null
-                  ? roundPKR((dLine.distributorShare / lineQty) * rItem.quantity)
-                  : 0)
-            );
 
       returnRecordItems.push({
         productId: rItem.productId,
         quantity: rItem.quantity,
-        avgCostAtTime,
-        finalSellingPrice,
-        companyShare: returnCompanyShare,
-        profitPerUnit,
-        totalProfit,
-        reason: rItem.reason || ''
+        avgCostAtTime: snap.avgCostAtTime,
+        finalSellingPrice: snap.finalSellingPrice,
+        companyShare: snap.companyShare,
+        profitPerUnit: snap.profitPerUnit,
+        totalProfit: snap.totalProfit,
+        reason: rItem.reason || '',
+        creditAmount: snap.creditAmount
       });
-      totalAmount += returnLineAmount;
-      totalCost += roundPKR(avgCostAtTime * rItem.quantity);
+      totalAmount += snap.creditAmount;
+      totalCost += snap.lineCost;
       totalPacks += rItem.quantity;
       tpReturnTotal += roundPKR(orderItem.tpAtTime * rItem.quantity);
+
+      if (lastDelivery?._id && snap.creditAmount > 0) {
+        const did = String(lastDelivery._id);
+        creditByDelivery.set(did, roundPKR((creditByDelivery.get(did) || 0) + snap.creditAmount));
+      }
     }
 
     tpReturnTotal = roundPKR(tpReturnTotal);
     totalAmount = roundPKR(totalAmount);
     totalCost = roundPKR(totalCost);
-
     const totalProfit = roundPKR(totalAmount - totalCost);
 
-    const allReturned = order.items.every((i) => i.returnedQty >= i.deliveredQty);
-    if (allReturned) {
+    const fullyReturnedByReturnQty = order.items.every((i) => (i.returnedQty || 0) >= (i.deliveredQty || 0));
+    if (fullyReturnedByReturnQty) {
       order.status = ORDER_STATUS.RETURNED;
     } else {
       const anyReturned = order.items.some((i) => i.returnedQty > 0);
@@ -705,15 +727,17 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
     await order.save({ session });
 
     const retDate = utcNow();
+    const returnAllocations = qtyCredit.buildCreditAllocationsFromMap(creditByDelivery);
     const [returnRecord] = await ReturnRecord.create(
       [
         {
           companyId,
           orderId,
-          items: returnRecordItems,
+          items: returnRecordItems.map(({ creditAmount, ...rest }) => rest),
           totalAmount,
           totalCost,
           totalProfit,
+          allocations: returnAllocations,
           returnedBy: reqUser.userId,
           returnedAt: retDate
         }
@@ -721,32 +745,37 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
       { session, ordered: true }
     );
 
-    if (order.doctorId && tpReturnTotal > 0) {
-      await doctorActivityService.applyReturnTp(session, companyId, {
-        doctorId: order.doctorId,
-        tpAmount: tpReturnTotal,
-        returnedAt: returnRecord.returnedAt
-      });
-    }
+    await qtyCredit.applyDoctorTpCredit(session, companyId, {
+      doctorId: order.doctorId,
+      tpAmount: tpReturnTotal,
+      at: returnRecord.returnedAt
+    });
 
     const month = getBusinessMonthKey(returnRecord.returnedAt, tz);
-    await MedRepTarget.updateOne(
-      { companyId, medicalRepId: order.medicalRepId, month, isDeleted: { $ne: true } },
-      { $inc: { achievedPacks: -totalPacks } },
-      { session }
-    );
+    await qtyCredit.adjustMedRepPacks(session, {
+      companyId,
+      medicalRepId: order.medicalRepId,
+      month,
+      packDelta: -totalPacks
+    });
 
-    const [returnLedger] = await Ledger.create(
-      [{ companyId, entityType: LEDGER_ENTITY_TYPE.PHARMACY, entityId: order.pharmacyId, type: LEDGER_TYPE.CREDIT, amount: totalAmount, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: returnRecord._id, description: `Return for order ${order.orderNumber}`, date: retDate }],
-      { session, ordered: true }
-    );
+    const returnLedger = await qtyCredit.postPharmacyDocumentCredit(session, {
+      companyId,
+      pharmacyId: order.pharmacyId,
+      amount: totalAmount,
+      referenceType: LEDGER_REFERENCE_TYPE.RETURN,
+      referenceId: returnRecord._id,
+      description: `Return for order ${order.orderNumber}`,
+      date: retDate,
+      meta: qtyCredit.buildPharmacyCreditMeta(order._id, creditByDelivery)
+    });
 
-    await glBridge.postReturnGl(
+    await qtyCredit.postSalesCreditGl(
       session,
       companyId,
       {
         pharmacyId: order.pharmacyId,
-        returnId: returnRecord._id,
+        sourceRefId: returnRecord._id,
         amount: totalAmount,
         date: retDate,
         narration: `Return for order ${order.orderNumber}`,
@@ -755,42 +784,41 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
       reqUser
     );
 
-    for (const row of returnRecordItems) {
-      const returnLineAmount = roundPKR(row.finalSellingPrice * row.quantity);
-      const lastDelivery = await DeliveryRecord.findOne({
-        companyId,
-        orderId,
-        'items.productId': row.productId
-      })
-        .sort({ deliveredAt: -1 })
-        .session(session);
-      if (!lastDelivery) continue;
-      const line = lastDelivery.items.find((i) => i.productId.toString() === row.productId.toString());
-      if (!line) continue;
-      const linePharmacyNet = roundPKR(line.linePharmacyNet ?? line.finalSellingPrice * line.quantity);
-      if (linePharmacyNet <= 0) continue;
-      const f = Math.min(1, returnLineAmount / linePharmacyNet);
-      const lineCompany = line.companyShare != null ? roundPKR(line.companyShare) : roundPKR(linePharmacyNet - (line.distributorShare || 0));
-      const lineDist = line.distributorShare != null ? roundPKR(line.distributorShare) : 0;
-      await financialService.postReturnClearingAdjustment(session, {
-        companyId,
-        distributorId: order.distributorId,
-        deliveryId: lastDelivery._id,
-        orderId: order._id,
-        fraction: f,
-        companyShareTotal: lineCompany,
-        distributorShareTotal: lineDist,
-        returnRecordId: returnRecord._id,
-        date: retDate
-      });
-    }
+    await qtyCredit.postQtyCreditClearingForLines(session, {
+      companyId,
+      distributorId: order.distributorId,
+      orderId: order._id,
+      lines: returnRecordItems.map((row) => ({
+        productId: row.productId,
+        quantity: row.quantity,
+        finalSellingPrice: row.finalSellingPrice,
+        creditAmount: row.creditAmount
+      })),
+      documentId: returnRecord._id,
+      date: retDate,
+      clearingReferenceType: LEDGER_REFERENCE_TYPE.RETURN_CLEARING_ADJ
+    });
 
-    await Transaction.create(
-      [{ companyId, type: TRANSACTION_TYPE.RETURN, referenceType: 'RETURN', referenceId: returnRecord._id, revenue: -totalAmount, cost: -totalCost, profit: -totalProfit, date: retDate, description: `Return - ${order.orderNumber}` }],
-      { session, ordered: true }
-    );
+    await qtyCredit.postQtyCreditTransaction(session, {
+      companyId,
+      type: TRANSACTION_TYPE.RETURN,
+      referenceType: 'RETURN',
+      referenceId: returnRecord._id,
+      totalAmount,
+      totalCost,
+      totalProfit,
+      date: retDate,
+      description: `Return - ${order.orderNumber}`
+    });
 
-    await auditService.logInSession(session, { companyId, userId: reqUser.userId, action: 'order.return', entityType: 'Order', entityId: orderId, changes: { returnId: returnRecord._id, items: returnRecordItems } });
+    await auditService.logInSession(session, {
+      companyId,
+      userId: reqUser.userId,
+      action: 'order.return',
+      entityType: 'Order',
+      entityId: orderId,
+      changes: { returnId: returnRecord._id, items: returnRecordItems }
+    });
 
     await session.commitTransaction();
 
@@ -892,4 +920,36 @@ const ensureDeliveryInvoicePdfPath = async (companyId, orderId, deliveryId, opts
   return absPath;
 };
 
-module.exports = { list, create, getById, update, deliver, returnOrder, cancel, ensureDeliveryInvoicePdfPath };
+/** Order Receipt (Sales Order) PDF — available as soon as the order exists. */
+const ensureOrderReceiptPdfPath = async (companyId, orderId, opts = {}) => {
+  const order = await Order.findOne({ _id: orderId, companyId }).select('medicalRepId orderNumber');
+  if (!order) throw new ApiError(404, 'Order not found');
+  assertOrderVisibleToUser(order, opts.visibleRepIds ?? null);
+
+  try {
+    await pdfService.generateOrderReceipt(orderId);
+  } catch (err) {
+    logger.error('Order receipt PDF generation failed on demand', {
+      orderId: String(orderId),
+      message: err?.message,
+      stack: err?.stack
+    });
+    throw new ApiError(500, err?.message || 'Order receipt PDF could not be generated');
+  }
+  const token = order.orderNumber || String(order._id);
+  const absPath = path.resolve(pdfService.orderReceiptPdfPath(token));
+  if (!fs.existsSync(absPath)) throw new ApiError(500, 'Order receipt PDF file missing after generation');
+  return absPath;
+};
+
+module.exports = {
+  list,
+  create,
+  getById,
+  update,
+  deliver,
+  returnOrder,
+  cancel,
+  ensureDeliveryInvoicePdfPath,
+  ensureOrderReceiptPdfPath
+};

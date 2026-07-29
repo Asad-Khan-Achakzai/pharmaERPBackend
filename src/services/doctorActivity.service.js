@@ -4,10 +4,12 @@ const Doctor = require('../models/Doctor');
 const User = require('../models/User');
 const DeliveryRecord = require('../models/DeliveryRecord');
 const ReturnRecord = require('../models/ReturnRecord');
+const OrderAmendment = require('../models/OrderAmendment');
 const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const { roundPKR } = require('../utils/currency');
 const { DOCTOR_ACTIVITY_STATUS, ORDER_STATUS } = require('../constants/enums');
+const { isOrderFullyQtyCredited } = require('../utils/orderQty.util');
 const auditService = require('./audit.service');
 const moneyAccountService = require('./moneyAccount.service');
 const glBridge = require('./glBridge.service');
@@ -61,14 +63,13 @@ const finalizeExpiredActivities = async (companyId) => {
 };
 
 /**
- * Matches order return processing: all lines have returned all delivered units (see order.service).
- * Fully returned orders are excluded from doctor-activity net (treated as if they had no effect).
+ * Fully credited orders (all delivered packs returned and/or amended) are excluded from doctor-activity net.
  */
 const isOrderFullyReturned = (order) => {
   if (!order) return false;
   if (order.status === ORDER_STATUS.RETURNED) return true;
   if (!order.items?.length) return false;
-  return order.items.every((i) => (i.returnedQty || 0) >= (i.deliveredQty || 0));
+  return isOrderFullyQtyCredited(order);
 };
 
 const logFullyReturnedSkip = (order, seenOrderIds) => {
@@ -138,7 +139,31 @@ const computeNetTpAchieved = async (companyId, doctorId, startDate, endDate) => 
     }
   }
   returnedTp = roundPKR(returnedTp);
-  return roundPKR(deliveredTp - returnedTp);
+
+  const amendments = await OrderAmendment.find({
+    companyId: cid,
+    amendedAt: { $gte: start, $lte: end },
+    isDeleted: { $ne: true }
+  })
+    .populate({ path: 'orderId', select: 'doctorId items status' })
+    .lean();
+
+  let amendedTp = 0;
+  for (const amd of amendments) {
+    const order = amd.orderId;
+    if (!order || order.doctorId?.toString() !== did.toString()) continue;
+    if (isOrderFullyReturned(order)) continue;
+    if (amd.tpDeltaTotal != null) {
+      amendedTp += roundPKR(amd.tpDeltaTotal);
+    } else {
+      for (const ai of amd.items || []) {
+        const oi = order.items.find((i) => i.productId.toString() === ai.productId.toString());
+        if (oi) amendedTp += roundPKR(oi.tpAtTime * (ai.deltaQty || 0));
+      }
+    }
+  }
+  amendedTp = roundPKR(amendedTp);
+  return roundPKR(deliveredTp - returnedTp - amendedTp);
 };
 
 /**
@@ -202,7 +227,29 @@ const computeNetCastingAchieved = async (companyId, doctorId, startDate, endDate
     }
   }
   returnedCasting = roundPKR(returnedCasting);
-  return roundPKR(deliveredCasting - returnedCasting);
+
+  const amendments = await OrderAmendment.find({
+    companyId: cid,
+    amendedAt: { $gte: start, $lte: end },
+    isDeleted: { $ne: true }
+  })
+    .populate({ path: 'orderId', select: 'doctorId items status' })
+    .lean();
+
+  let amendedCasting = 0;
+  for (const amd of amendments) {
+    const order = amd.orderId;
+    if (!order || order.doctorId?.toString() !== did.toString()) continue;
+    if (isOrderFullyReturned(order)) continue;
+    for (const ai of amd.items || []) {
+      const oi = order.items.find((i) => i.productId.toString() === ai.productId.toString());
+      if (oi && oi.castingAtTime != null) {
+        amendedCasting += roundPKR(oi.castingAtTime * (ai.deltaQty || 0));
+      }
+    }
+  }
+  amendedCasting = roundPKR(amendedCasting);
+  return roundPKR(deliveredCasting - returnedCasting - amendedCasting);
 };
 
 /**

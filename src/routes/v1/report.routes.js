@@ -9,14 +9,17 @@ const { validate, validateQuery } = require('../../middleware/validate');
 const { visitSummaryQuerySchema, visitByEmployeeQuerySchema } = require('../../validators/planItem.validator');
 const { dashboardQuerySchema } = require('../../validators/reportDashboard.validator');
 const mrepC = require('../../controllers/mrepReport.controller');
-const {
+  const {
   mrepMonthlyOverviewQuerySchema,
   mrepDoctorCoverageQuerySchema,
   mrepTerritoryCoverageQuerySchema,
   mrepDeviationSummaryQuerySchema,
   mrepRankingsQuerySchema,
   mrepTrendsQuerySchema,
-  mrepTerritoryCompareQuerySchema
+  mrepTerritoryCompareQuerySchema,
+  mrepCoverageDashboardQuerySchema,
+  mrepCoverageDashboardDoctorsQuerySchema,
+  mrepCoverageDashboardNodesQuerySchema
 } = require('../../validators/mrepReport.validator');
 
 const cashOpeningSchema = Joi.object({
@@ -138,6 +141,27 @@ router.get(
   checkPermissionAny('territories.view', 'team.viewAllReports', 'admin.access'),
   validateQuery(mrepTerritoryCompareQuerySchema),
   mrepC.territoryCompare
+);
+
+/** Date-range territory coverage dashboard (brick cards) — distinct from monthly /mrep/territory-coverage. */
+router.get(
+  '/mrep/coverage-dashboard',
+  checkPermissionAny('weeklyPlans.view', 'weeklyPlans.markVisit', 'team.viewAllReports', 'admin.access'),
+  validateQuery(mrepCoverageDashboardQuerySchema),
+  mrepC.coverageDashboard
+);
+/** Hierarchical lazy nodes — must be registered before /:brickId. */
+router.get(
+  '/mrep/coverage-dashboard/nodes',
+  checkPermissionAny('weeklyPlans.view', 'weeklyPlans.markVisit', 'team.viewAllReports', 'admin.access'),
+  validateQuery(mrepCoverageDashboardNodesQuerySchema),
+  mrepC.coverageDashboardNodes
+);
+router.get(
+  '/mrep/coverage-dashboard/:brickId',
+  checkPermissionAny('weeklyPlans.view', 'weeklyPlans.markVisit', 'team.viewAllReports', 'admin.access'),
+  validateQuery(mrepCoverageDashboardDoctorsQuerySchema),
+  mrepC.coverageDashboardBrickDoctors
 );
 
 module.exports = router;

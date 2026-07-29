@@ -1,5 +1,7 @@
 const path = require('path');
 const orderService = require('../services/order.service');
+const orderAmendmentService = require('../services/orderAmendment.service');
+const creditNoteService = require('../services/creditNote.service');
 const ApiResponse = require('../utils/ApiResponse');
 const asyncHandler = require('../middleware/asyncHandler');
 const { resolveOrderVisibleMedicalRepIds } = require('../utils/orderScope.util');
@@ -59,6 +61,98 @@ const returnOrder = asyncHandler(async (req, res) => {
   ApiResponse.success(res, returnRecord, 'Return processed successfully');
 });
 
+const previewAmendment = asyncHandler(async (req, res) => {
+  const visibleRepIds = await visibleRepIdsFor(req);
+  const preview = await orderAmendmentService.preview(
+    req.companyId,
+    req.params.id,
+    req.body,
+    req.user,
+    req.context.timeZone,
+    { visibleRepIds }
+  );
+  ApiResponse.success(res, preview);
+});
+
+const createAmendment = asyncHandler(async (req, res) => {
+  const visibleRepIds = await visibleRepIdsFor(req);
+  const result = await orderAmendmentService.create(
+    req.companyId,
+    req.params.id,
+    req.body,
+    req.user,
+    req.context.timeZone,
+    { visibleRepIds }
+  );
+  ApiResponse.created(res, result, 'Order amended; credit note issued');
+});
+
+const listAmendments = asyncHandler(async (req, res) => {
+  const visibleRepIds = await visibleRepIdsFor(req);
+  const rows = await orderAmendmentService.listByOrder(req.companyId, req.params.id, {
+    visibleRepIds
+  });
+  ApiResponse.success(res, rows);
+});
+
+const getAmendment = asyncHandler(async (req, res) => {
+  const visibleRepIds = await visibleRepIdsFor(req);
+  const row = await orderAmendmentService.getById(
+    req.companyId,
+    req.params.id,
+    req.params.amendmentId,
+    { visibleRepIds }
+  );
+  ApiResponse.success(res, row);
+});
+
+const listCreditNotes = asyncHandler(async (req, res) => {
+  const visibleRepIds = await visibleRepIdsFor(req);
+  const rows = await creditNoteService.listByOrder(req.companyId, req.params.id, { visibleRepIds });
+  ApiResponse.success(res, rows);
+});
+
+const getCreditNote = asyncHandler(async (req, res) => {
+  const visibleRepIds = await visibleRepIdsFor(req);
+  const row = await creditNoteService.getById(
+    req.companyId,
+    req.params.id,
+    req.params.creditNoteId,
+    { visibleRepIds }
+  );
+  ApiResponse.success(res, row);
+});
+
+const downloadCreditNote = asyncHandler(async (req, res) => {
+  const visibleRepIds = await visibleRepIdsFor(req);
+  const absPath = await creditNoteService.ensureCreditNotePdfPath(
+    req.companyId,
+    req.params.id,
+    req.params.creditNoteId,
+    req.user,
+    { visibleRepIds }
+  );
+  const filename = path.basename(absPath);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+  res.sendFile(absPath);
+});
+
+const downloadAmendmentCreditNote = asyncHandler(async (req, res) => {
+  const visibleRepIds = await visibleRepIdsFor(req);
+  const absPath = await creditNoteService.ensurePdfPathForAmendment(
+    req.companyId,
+    req.params.id,
+    req.params.amendmentId,
+    req.user,
+    { visibleRepIds }
+  );
+  const filename = path.basename(absPath);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+  res.sendFile(absPath);
+});
+
 const cancel = asyncHandler(async (req, res) => {
   const visibleRepIds = await visibleRepIdsFor(req);
   await orderService.cancel(req.companyId, req.params.id, req.user, { visibleRepIds });
@@ -79,4 +173,33 @@ const downloadDeliveryInvoice = asyncHandler(async (req, res) => {
   res.sendFile(absPath);
 });
 
-module.exports = { list, create, getById, update, deliver, returnOrder, cancel, downloadDeliveryInvoice };
+const downloadOrderReceipt = asyncHandler(async (req, res) => {
+  const visibleRepIds = await visibleRepIdsFor(req);
+  const absPath = await orderService.ensureOrderReceiptPdfPath(req.companyId, req.params.id, {
+    visibleRepIds
+  });
+  const filename = path.basename(absPath);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+  res.sendFile(absPath);
+});
+
+module.exports = {
+  list,
+  create,
+  getById,
+  update,
+  deliver,
+  returnOrder,
+  previewAmendment,
+  createAmendment,
+  listAmendments,
+  getAmendment,
+  listCreditNotes,
+  getCreditNote,
+  downloadCreditNote,
+  downloadAmendmentCreditNote,
+  cancel,
+  downloadDeliveryInvoice,
+  downloadOrderReceipt
+};

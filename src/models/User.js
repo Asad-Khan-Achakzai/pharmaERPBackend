@@ -17,6 +17,8 @@ const userSchema = new mongoose.Schema(
     /** Company-scoped RBAC; when set, effective permissions come from Role only (see auth middleware). */
     roleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Role', default: null, index: true },
     phone: { type: String, trim: true },
+    /** Optional staff identifier (e.g. EMP-1023) — shown on invoices and reports. */
+    employeeCode: { type: String, trim: true, default: null },
     /** Legacy; ignored for authorization when roleId is set. */
     permissions: [{ type: String }],
     isActive: { type: Boolean, default: true },

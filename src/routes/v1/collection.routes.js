@@ -13,6 +13,12 @@ const {
 
 router.use(authenticate, companyScope);
 router.get('/', checkPermission('payments.view'), c.list);
+router.get('/outstanding', checkPermission('payments.view'), c.listOutstanding);
+router.get(
+  '/outstanding/pharmacies/:pharmacyId',
+  checkPermission('payments.view'),
+  c.outstandingPharmacyDetail
+);
 router.post('/', checkPermission('payments.create'), validate(createCollectionSchema), c.create);
 router.get('/pharmacy/:id', checkPermission('payments.view'), c.getByPharmacy);
 router.patch('/:id', checkPermission('payments.create'), validate(updateCollectionSchema), c.update);

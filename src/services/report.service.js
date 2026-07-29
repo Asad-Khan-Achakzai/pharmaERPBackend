@@ -9,6 +9,7 @@ const Expense = require('../models/Expense');
 const Payroll = require('../models/Payroll');
 const DeliveryRecord = require('../models/DeliveryRecord');
 const ReturnRecord = require('../models/ReturnRecord');
+const OrderAmendment = require('../models/OrderAmendment');
 const Payment = require('../models/Payment');
 const Collection = require('../models/Collection');
 const Settlement = require('../models/Settlement');
@@ -16,6 +17,7 @@ const Pharmacy = require('../models/Pharmacy');
 const Distributor = require('../models/Distributor');
 const Company = require('../models/Company');
 const SupplierLedger = require('../models/SupplierLedger');
+const financialService = require('./financial.service');
 const { roundPKR } = require('../utils/currency');
 const {
   LEDGER_ENTITY_TYPE,
@@ -29,7 +31,6 @@ const {
   canonicalFromProfit,
   withFinancialEnvelope
 } = require('../constants/financialSchema');
-const financialService = require('./financial.service');
 const { computeDashboardNetGrossSalesTp } = require('./tpSalesRollup.service');
 const supplierService = require('./supplier.service');
 const auditService = require('./audit.service');
@@ -84,7 +85,7 @@ const dashboardForMedicalRep = async (cid, repOid, dateRange, tz) => {
     {
       $match: {
         companyId: cid,
-        type: { $in: ['SALE', 'RETURN'] },
+        type: { $in: ['SALE', 'RETURN', 'AMENDMENT'] },
         isDeleted: nd,
         date: dateRange
       }
@@ -124,9 +125,34 @@ const dashboardForMedicalRep = async (cid, repOid, dateRange, tz) => {
       }
     },
     {
+      $lookup: {
+        from: 'orderamendments',
+        let: { rid: '$referenceId', rt: '$referenceType' },
+        pipeline: [
+          {
+            $match: {
+              $expr: {
+                $and: [{ $eq: ['$$rt', 'AMENDMENT'] }, { $eq: ['$_id', '$$rid'] }]
+              }
+            }
+          },
+          { $project: { orderId: 1 } }
+        ],
+        as: 'amd'
+      }
+    },
+    {
       $addFields: {
         orderId: {
-          $ifNull: [{ $arrayElemAt: ['$del.orderId', 0] }, { $arrayElemAt: ['$ret.orderId', 0] }]
+          $ifNull: [
+            { $arrayElemAt: ['$del.orderId', 0] },
+            {
+              $ifNull: [
+                { $arrayElemAt: ['$ret.orderId', 0] },
+                { $arrayElemAt: ['$amd.orderId', 0] }
+              ]
+            }
+          ]
         }
       }
     },
@@ -140,6 +166,7 @@ const dashboardForMedicalRep = async (cid, repOid, dateRange, tz) => {
     orderCounts,
     deliveryKpiAgg,
     returnCompanyShareAgg,
+    amendmentCompanyShareAgg,
     bonusAgg,
     totalGrossSalesTp
   ] = await Promise.all([
@@ -168,6 +195,19 @@ const dashboardForMedicalRep = async (cid, repOid, dateRange, tz) => {
       { $unwind: '$items' },
       { $group: { _id: null, returnCompanyShare: { $sum: { $ifNull: ['$items.companyShare', 0] } } } }
     ]),
+    OrderAmendment.aggregate([
+      { $match: { companyId: cid, isDeleted: nd, amendedAt: dateRange } },
+      { $lookup: { from: 'orders', localField: 'orderId', foreignField: '_id', as: 'ord' } },
+      { $unwind: '$ord' },
+      { $match: { 'ord.medicalRepId': repOid } },
+      { $unwind: '$items' },
+      {
+        $group: {
+          _id: null,
+          amendmentCompanyShare: { $sum: { $ifNull: ['$items.companyShare', 0] } }
+        }
+      }
+    ]),
     Order.aggregate([
       { $match: repMatchOrder },
       { $group: { _id: null, totalBonusUnitsOnOrders: { $sum: { $ifNull: ['$totalBonusQuantity', 0] } } } }
@@ -184,7 +224,10 @@ const dashboardForMedicalRep = async (cid, repOid, dateRange, tz) => {
   const bonusRow = bonusAgg[0] || { totalBonusUnitsOnOrders: 0 };
   const delK = deliveryKpiAgg[0] || { totalCompanyShare: 0 };
   const retK = returnCompanyShareAgg[0] || { returnCompanyShare: 0 };
-  const totalNetSalesCompany = roundPKR((delK.totalCompanyShare || 0) - (retK.returnCompanyShare || 0));
+  const amdK = amendmentCompanyShareAgg[0] || { amendmentCompanyShare: 0 };
+  const totalNetSalesCompany = roundPKR(
+    (delK.totalCompanyShare || 0) - (retK.returnCompanyShare || 0) - (amdK.amendmentCompanyShare || 0)
+  );
 
   const response = {
     totalSales: roundPKR(sales.totalRevenue),
@@ -214,7 +257,7 @@ const withFinancialEnvelopePromise = (response) =>
   });
 
 const dashboardCompanyWide = async (companyId, cid, dateRange, tz) => {
-  const txMatch = { companyId: cid, type: { $in: ['SALE', 'RETURN'] }, isDeleted: nd };
+  const txMatch = { companyId: cid, type: { $in: ['SALE', 'RETURN', 'AMENDMENT'] }, isDeleted: nd };
   if (dateRange) txMatch.date = dateRange;
 
   const collectionMatch = { companyId: cid, isDeleted: nd };
@@ -232,6 +275,9 @@ const dashboardCompanyWide = async (companyId, cid, dateRange, tz) => {
   const returnMatchBase = { companyId: cid, isDeleted: nd };
   if (dateRange) returnMatchBase.returnedAt = dateRange;
 
+  const amendmentMatchBase = { companyId: cid, isDeleted: nd };
+  if (dateRange) amendmentMatchBase.amendedAt = dateRange;
+
   const bonusMatch = { companyId: cid, isDeleted: nd };
   if (dateRange) bonusMatch.createdAt = dateRange;
 
@@ -246,6 +292,7 @@ const dashboardCompanyWide = async (companyId, cid, dateRange, tz) => {
     distributorCommissionTotal,
     deliveryKpiAgg,
     returnCompanyShareAgg,
+    amendmentCompanyShareAgg,
     totalGrossSalesTp
   ] = await Promise.all([
     Transaction.aggregate([
@@ -297,6 +344,16 @@ const dashboardCompanyWide = async (companyId, cid, dateRange, tz) => {
       { $unwind: '$items' },
       { $group: { _id: null, returnCompanyShare: { $sum: { $ifNull: ['$items.companyShare', 0] } } } }
     ]),
+    OrderAmendment.aggregate([
+      { $match: amendmentMatchBase },
+      { $unwind: '$items' },
+      {
+        $group: {
+          _id: null,
+          amendmentCompanyShare: { $sum: { $ifNull: ['$items.companyShare', 0] } }
+        }
+      }
+    ]),
     computeDashboardNetGrossSalesTp(cid, dateRange || null, null)
   ]);
 
@@ -318,7 +375,10 @@ const dashboardCompanyWide = async (companyId, cid, dateRange, tz) => {
 
   const delK = deliveryKpiAgg[0] || { totalCompanyShare: 0 };
   const retK = returnCompanyShareAgg[0] || { returnCompanyShare: 0 };
-  const totalNetSalesCompany = roundPKR((delK.totalCompanyShare || 0) - (retK.returnCompanyShare || 0));
+  const amdK = amendmentCompanyShareAgg[0] || { amendmentCompanyShare: 0 };
+  const totalNetSalesCompany = roundPKR(
+    (delK.totalCompanyShare || 0) - (retK.returnCompanyShare || 0) - (amdK.amendmentCompanyShare || 0)
+  );
 
   const response = {
     totalSales: roundPKR(sales.totalRevenue),
@@ -436,7 +496,7 @@ const profit = async (companyId, from, to, timeZone) => {
   const map = {};
   result.forEach((r) => { map[r._id] = r; });
 
-  const grossProfit = roundPKR((map.SALE?.profit || 0) + (map.RETURN?.profit || 0));
+  const grossProfit = roundPKR((map.SALE?.profit || 0) + (map.RETURN?.profit || 0) + (map.AMENDMENT?.profit || 0));
   const totalPayroll = roundPKR(payrollAgg[0]?.total || 0);
   const totalExpenses = roundPKR(expenseAgg[0]?.total || 0);
   const netProfit = roundPKR(grossProfit - distributorCommissionTotal - totalExpenses - totalPayroll);
@@ -625,9 +685,27 @@ const pharmacyBalances = async (companyId, query = {}) => {
   if (query.pharmacyId) basePharmFilter._id = objectId(query.pharmacyId);
 
   const allPharmacies = await Pharmacy.find(basePharmFilter).select('name city phone isActive').lean();
+
+  // Collectible open from document-allocation engine (Collection + ReturnRecord allocations).
+  // Ledger DR−CR remains as outstanding / advance for audit; after AR migration these match.
+  let fifoOpenByPharmacy = new Map();
+  try {
+    fifoOpenByPharmacy = await financialService.computeOpenTotalsByPharmacy(
+      companyId,
+      allPharmacies.map((p) => p._id)
+    );
+  } catch (err) {
+    // Never block financial reports if open enrichment fails — fall back to ledger net.
+    fifoOpenByPharmacy = new Map();
+  }
+
   const mapRow = (p) => {
     const L = ledgerMap.get(p._id.toString()) || { totalDebit: 0, totalCredit: 0, outstanding: 0 };
-    const o = roundPKR(L.outstanding);
+    const ledgerNet = roundPKR(L.outstanding);
+    const hasFifo = fifoOpenByPharmacy.has(p._id.toString());
+    const fifoOpen = hasFifo
+      ? roundPKR(fifoOpenByPharmacy.get(p._id.toString()) || 0)
+      : roundPKR(Math.max(0, ledgerNet));
     return {
       pharmacyId: p._id,
       name: p.name,
@@ -636,9 +714,9 @@ const pharmacyBalances = async (companyId, query = {}) => {
       isActive: p.isActive,
       totalDebit: roundPKR(L.totalDebit),
       totalCredit: roundPKR(L.totalCredit),
-      outstanding: o,
-      receivableFromPharmacy: roundPKR(Math.max(0, o)),
-      advanceOrCreditFromPharmacy: roundPKR(Math.max(0, -o))
+      outstanding: ledgerNet,
+      receivableFromPharmacy: fifoOpen,
+      advanceOrCreditFromPharmacy: roundPKR(Math.max(0, -ledgerNet))
     };
   };
   const allRows = [...allPharmacies.map(mapRow)];
@@ -650,7 +728,7 @@ const pharmacyBalances = async (companyId, query = {}) => {
   };
 
   const help =
-    'Positive receivableFromPharmacy = pharmacy still owes on invoices. Negative outstanding = pharmacy has prepaid / credit.';
+    'Receivable = invoice open from document allocations (deliveries − return allocations − collection allocations). Must equal ledger net after AR allocation migration.';
 
   const paginate =
     qScalar(query.paginate) === 'true' ||

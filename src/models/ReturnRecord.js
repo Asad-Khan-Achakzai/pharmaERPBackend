@@ -16,6 +16,15 @@ const returnItemSchema = new mongoose.Schema(
   { _id: false }
 );
 
+/** Invoice application SoT for returns (mirrors Collection.allocations). */
+const returnAllocationSchema = new mongoose.Schema(
+  {
+    deliveryId: { type: mongoose.Schema.Types.ObjectId, ref: 'DeliveryRecord', required: true },
+    amount: { type: Number, required: true }
+  },
+  { _id: false }
+);
+
 const returnRecordSchema = new mongoose.Schema(
   {
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', required: true },
@@ -24,6 +33,8 @@ const returnRecordSchema = new mongoose.Schema(
     totalAmount: { type: Number },
     totalCost: { type: Number },
     totalProfit: { type: Number },
+    /** Authoritative application of this return credit to order deliveries */
+    allocations: [returnAllocationSchema],
     returnedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     returnedAt: { type: Date, default: Date.now }
   },
@@ -31,6 +42,7 @@ const returnRecordSchema = new mongoose.Schema(
 );
 
 returnRecordSchema.index({ companyId: 1, orderId: 1 });
+returnRecordSchema.index({ companyId: 1, 'allocations.deliveryId': 1 });
 
 returnRecordSchema.plugin(softDeletePlugin);
 
