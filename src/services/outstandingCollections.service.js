@@ -134,7 +134,7 @@ const loadScopedOpenRows = async (companyId, visibleRepIds, { medicalRepId, phar
     isDeleted: nd
   })
     .select(
-      'orderId invoiceNumber pharmacyNetPayable totalAmount deliveredAt deliveredBy companyShareTotal distributorShareTotal'
+      'orderId invoiceNumber pharmacyNetPayable totalAmount invoiceGrandTotal taxTotal goodsNetPayable deliveredAt deliveredBy companyShareTotal distributorShareTotal'
     )
     .lean();
 
@@ -167,7 +167,8 @@ const loadScopedOpenRows = async (companyId, visibleRepIds, { medicalRepId, phar
     const open = roundPKR(Math.max(0, openByDelivery[String(d._id)] || 0));
     if (open <= OPEN_EPS) continue;
 
-    const invoiceAmount = roundPKR(d.pharmacyNetPayable ?? d.totalAmount ?? 0);
+    const { resolveInvoiceGrandTotal } = require('../utils/invoiceTotals');
+    const invoiceAmount = resolveInvoiceGrandTotal(d);
     rows.push({
       deliveryId: d._id,
       invoiceNumber: d.invoiceNumber || null,

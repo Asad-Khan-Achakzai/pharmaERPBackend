@@ -5,10 +5,18 @@ const returnItemSchema = new mongoose.Schema(
   {
     productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
     quantity: { type: Number, required: true },
+    /** Bonus-First (v1): paid packs reversed for AR money. */
+    paidDelta: { type: Number, default: 0 },
+    /** Bonus-First (v1): bonus packs reversed first. */
+    bonusDelta: { type: Number, default: 0 },
+    allocationPolicy: { type: String, default: 'BONUS_FIRST' },
     avgCostAtTime: { type: Number },
+    /** Historical paid-unit pharmacy net from delivery snapshot. */
     finalSellingPrice: { type: Number },
-    /** Company P&L revenue reversed (proportional to delivery line companyShare) */
+    lineCreditAmount: { type: Number },
+    /** Company P&L revenue reversed from paidDelta × historical company share */
     companyShare: { type: Number },
+    distributorShare: { type: Number },
     profitPerUnit: { type: Number },
     totalProfit: { type: Number },
     reason: { type: String }

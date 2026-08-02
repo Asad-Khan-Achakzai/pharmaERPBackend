@@ -13,7 +13,13 @@ const amendmentItemSchema = new mongoose.Schema(
     previousQty: { type: Number, required: true },
     newQty: { type: Number, required: true },
     deltaQty: { type: Number, required: true },
+    /** Bonus-First (v1): paid packs reversed for AR / CN money. */
+    paidDelta: { type: Number, default: 0 },
+    /** Bonus-First (v1): bonus packs reversed (inventory/TP only when paidDelta=0). */
+    bonusDelta: { type: Number, default: 0 },
+    allocationPolicy: { type: String, default: 'BONUS_FIRST' },
     avgCostAtTime: { type: Number },
+    /** Historical paid-unit pharmacy net from delivery snapshot (CN rate). */
     finalSellingPrice: { type: Number },
     lineCreditAmount: { type: Number },
     companyShare: { type: Number },

@@ -1,5 +1,50 @@
 const mongoose = require('mongoose');
 const { softDeletePlugin } = require('../plugins/softDelete');
+const { TAX_POSTING_STATUS } = require('../constants/taxCatalog');
+
+const deliveryTaxLineSchema = new mongoose.Schema(
+  {
+    sequence: { type: Number, required: true },
+    taxTypeCode: { type: String, required: true },
+    taxTypeName: { type: String, default: '' },
+    taxSection: { type: String, default: '' },
+    taxDescription: { type: String, default: '' },
+    calculationBase: { type: String, default: '' },
+    calculationBaseAmount: { type: Number, default: 0 },
+    ratePercent: { type: Number, default: null },
+    taxAmount: { type: Number, required: true },
+    postingBehavior: { type: String, default: '' },
+    liabilityAccountCode: { type: String, default: '' },
+    taxRuleId: { type: mongoose.Schema.Types.ObjectId, ref: 'TaxRule', default: null },
+    rateVersionId: { type: mongoose.Schema.Types.ObjectId, default: null }
+  },
+  { _id: false }
+);
+
+const deliveryTaxSnapshotSchema = new mongoose.Schema(
+  {
+    engineVersion: { type: String, default: '' },
+    postingVersion: { type: String, default: '' },
+    calculatedAt: { type: Date },
+    businessDate: { type: Date },
+    countryCode: { type: String, default: '' },
+    currency: { type: String, default: '' },
+    pharmacyTaxStatus: { type: String, default: '' },
+    pharmacyLicenseNumber: { type: String, default: '' },
+    pharmacyNtn: { type: String, default: '' },
+    pharmacyStrn: { type: String, default: '' },
+    taxExempt: { type: Boolean, default: false },
+    taxExemptReason: { type: String, default: '' },
+    executionOrderApplied: { type: [String], default: [] },
+    lines: { type: [deliveryTaxLineSchema], default: [] },
+    amounts: {
+      goodsNetPayable: { type: Number, default: 0 },
+      taxTotal: { type: Number, default: 0 },
+      invoiceGrandTotal: { type: Number, default: 0 }
+    }
+  },
+  { _id: false }
+);
 
 const deliveryItemSchema = new mongoose.Schema(
   {
@@ -39,8 +84,21 @@ const deliveryRecordSchema = new mongoose.Schema(
     tpSubtotal: { type: Number, default: 0 },
     /** Sum of distributor shares (PKR) */
     distributorShareTotal: { type: Number, default: 0 },
-    /** Same as totalAmount — pharmacy invoice total */
+    /** Same as totalAmount — pharmacy goods net (excludes tax) */
     pharmacyNetPayable: { type: Number, default: 0 },
+    /** Explicit goods net alias (= pharmacyNetPayable on write when tax enabled). */
+    goodsNetPayable: { type: Number, default: null },
+    /** Sum of additive tax − withholding from taxSnapshot. */
+    taxTotal: { type: Number, default: 0 },
+    /** Amount customer owes (goods + additive tax − withholding). Legacy docs omit → use pharmacyNetPayable. */
+    invoiceGrandTotal: { type: Number, default: null },
+    /** Immutable tax freeze at delivery posting. */
+    taxSnapshot: { type: deliveryTaxSnapshotSchema, default: undefined },
+    taxPostingStatus: {
+      type: String,
+      enum: Object.values(TAX_POSTING_STATUS),
+      default: TAX_POSTING_STATUS.NOT_APPLICABLE
+    },
     /** pharmacyNetPayable - distributorShareTotal */
     companyShareTotal: { type: Number, default: 0 },
     /** Commission % on TP used for this delivery (snapshot) */

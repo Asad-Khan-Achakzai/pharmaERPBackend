@@ -90,10 +90,12 @@ const safePdfFileToken = (value) =>
  * @param {string} [opts.notice]
  * @param {string} [opts.warrantyNoun] - "invoice" | "order"
  * @param {boolean} [opts.includeAdvanceTax=true]
+ * @param {object|null} [opts.taxSnapshot] - frozen invoice tax; preferred over env
+ * @param {number|null} [opts.invoiceGrandTotal]
  * @param {Array} opts.rows
  * @param {number} opts.sumNetVal
  * @param {number} opts.sumPackDisc
- * @param {number} opts.pharmacyNet
+ * @param {number} opts.pharmacyNet - goods net
  * @returns {Promise<string>} filePath
  */
 const writeTradeStyleDocument = (opts) => {
@@ -116,15 +118,32 @@ const writeTradeStyleDocument = (opts) => {
     notice,
     warrantyNoun = 'invoice',
     includeAdvanceTax = true,
+    taxSnapshot = null,
+    invoiceGrandTotal = null,
     rows,
     sumNetVal,
     sumPackDisc,
     pharmacyNet
   } = opts;
 
-  const advancePct = includeAdvanceTax ? Number(env.INVOICE_ADVANCE_TAX_236H_PERCENT) || 0 : 0;
-  const advanceTax = advancePct > 0 ? roundPKR((pharmacyNet * advancePct) / 100) : 0;
-  const netAfterAdvance = roundPKR(pharmacyNet + advanceTax);
+  const snapLines = Array.isArray(taxSnapshot?.lines) ? taxSnapshot.lines : [];
+  const useSnapshotTax = includeAdvanceTax && snapLines.length > 0;
+  const advancePct = !useSnapshotTax && includeAdvanceTax
+    ? Number(env.INVOICE_ADVANCE_TAX_236H_PERCENT) || 0
+    : 0;
+  const advanceTax = !useSnapshotTax && advancePct > 0
+    ? roundPKR((pharmacyNet * advancePct) / 100)
+    : 0;
+  const snapshotTaxTotal = useSnapshotTax
+    ? roundPKR(taxSnapshot?.amounts?.taxTotal ?? snapLines.reduce((s, l) => s + (l.taxAmount || 0), 0))
+    : 0;
+  const netAfterAdvance = useSnapshotTax
+    ? roundPKR(
+        invoiceGrandTotal != null
+          ? invoiceGrandTotal
+          : taxSnapshot?.amounts?.invoiceGrandTotal ?? pharmacyNet + snapshotTaxTotal
+      )
+    : roundPKR(pharmacyNet + advanceTax);
 
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: 36, size: 'A4' });
@@ -210,7 +229,37 @@ const writeTradeStyleDocument = (opts) => {
       y += noticeH + 10;
     }
 
-    const metaH = statusLabel ? 90 : 78;
+    const pharmacyCode = oidCode(pharmacy?._id);
+    const pharmacyAddr = [pharmacy?.address, pharmacy?.city].filter(Boolean).join(', ');
+    const lic = pharmacy?.licenseNumber && String(pharmacy.licenseNumber).trim();
+    const pNtn = pharmacy?.ntn && String(pharmacy.ntn).trim();
+    const leftColLines = [
+      `${docNumberLabel}: ${docNumber}`,
+      `CODE: ${pharmacyCode}`,
+      `NAME: ${up(pharmacy?.name)}`,
+      `ADDRESS: ${up(pharmacyAddr || pharmacy?.name || '')}`,
+      'INCLUED SUMMARY: N'
+    ];
+    if (lic) leftColLines.push(`LICENSE: ${up(lic)}`);
+    if (pNtn) leftColLines.push(`PHARMACY NTN: ${up(pNtn)}`);
+    if (statusLabel) leftColLines.push(`STATUS: ${up(statusLabel)}`);
+
+    const rightColLines = [
+      `DATE: ${docWallTime.toFormat('dd/MM/yyyy')}`,
+      `TIME: ${docWallTime.toFormat('HH:mm:ss')}`,
+      `S/MAN.CODE: ${up(employeeCodeOrName(medicalRep))}`,
+      `D/MAN.CODE: ${up(employeeCodeOrName(deliveryMan))}`,
+      (() => {
+        const ntnDisplay =
+          company.ntnNo && String(company.ntnNo).trim() ? up(String(company.ntnNo).trim()) : '';
+        return ntnDisplay ? `NTN_NO: ${ntnDisplay}` : 'NTN_NO:';
+      })(),
+      'NIC:'
+    ];
+
+    const lineStep = 11;
+    const metaPad = 16;
+    const metaH = Math.max(78, metaPad + Math.max(leftColLines.length, rightColLines.length) * lineStep);
     strokeRect(doc, innerLeft, y, innerW, metaH);
     doc.moveTo(innerLeft + innerW / 2, y).lineTo(innerLeft + innerW / 2, y + metaH).stroke();
 
@@ -218,35 +267,18 @@ const writeTradeStyleDocument = (opts) => {
     const my = y + 8;
     doc.font('Helvetica-Bold').fontSize(8).text('Customer', mx - 2, y - 10);
 
-    const pharmacyCode = oidCode(pharmacy?._id);
-    const pharmacyAddr = [pharmacy?.address, pharmacy?.city].filter(Boolean).join(', ');
-    doc.font('Helvetica').fontSize(8);
-    doc.text(`${docNumberLabel}: ${docNumber}`, mx, my);
-    doc.text(`CODE: ${pharmacyCode}`, mx, my + 11);
-    doc.text(`NAME: ${up(pharmacy?.name)}`, mx, my + 22);
-    doc.text(`ADDRESS: ${up(pharmacyAddr || pharmacy?.name || '')}`, mx, my + 33, {
-      width: innerW / 2 - 16
+    const halfW = innerW / 2 - 16;
+    leftColLines.forEach((text, idx) => {
+      const isStatus = statusLabel && text.startsWith('STATUS:');
+      doc.font(isStatus ? 'Helvetica-Bold' : 'Helvetica').fontSize(8);
+      doc.text(text, mx, my + idx * lineStep, { width: halfW });
     });
-    doc.text('INCLUED SUMMARY: N', mx, my + 49);
-    if (statusLabel) {
-      doc.font('Helvetica-Bold').fontSize(8).text(`STATUS: ${up(statusLabel)}`, mx, my + 63, {
-        width: innerW / 2 - 16
-      });
-      doc.font('Helvetica').fontSize(8);
-    }
 
     const rx = innerLeft + innerW / 2 + 8;
-    doc.text(`DATE: ${docWallTime.toFormat('dd/MM/yyyy')}`, rx, my);
-    doc.text(`TIME: ${docWallTime.toFormat('HH:mm:ss')}`, rx, my + 11);
-    doc.text(`S/MAN.CODE: ${up(employeeCodeOrName(medicalRep))}`, rx, my + 22, {
-      width: innerW / 2 - 16
+    doc.font('Helvetica').fontSize(8);
+    rightColLines.forEach((text, idx) => {
+      doc.text(text, rx, my + idx * lineStep, { width: halfW });
     });
-    doc.text(`D/MAN.CODE: ${up(employeeCodeOrName(deliveryMan))}`, rx, my + 33, {
-      width: innerW / 2 - 16
-    });
-    const ntnDisplay = company.ntnNo && String(company.ntnNo).trim() ? up(String(company.ntnNo).trim()) : '';
-    doc.text(ntnDisplay ? `NTN_NO: ${ntnDisplay}` : 'NTN_NO:', rx, my + 49, { width: innerW / 2 - 16 });
-    doc.text('NIC:', rx, my + 60);
 
     y += metaH + 10;
 
@@ -420,7 +452,7 @@ const writeTradeStyleDocument = (opts) => {
     totalsRow();
 
     doc.font('Helvetica').fontSize(8);
-    doc.text(String(rows.length), innerLeft, y);
+    doc.text(`Items: ${rows.length}`, innerLeft, y);
     y += 12;
 
     const refParts = [];
@@ -431,7 +463,25 @@ const writeTradeStyleDocument = (opts) => {
       y += 14;
     }
 
-    if (includeAdvanceTax) {
+    if (includeAdvanceTax && useSnapshotTax) {
+      doc.font('Helvetica').fontSize(8);
+      for (const tl of snapLines) {
+        const pct =
+          tl.ratePercent != null && Number.isFinite(Number(tl.ratePercent))
+            ? Number(tl.ratePercent).toFixed(2)
+            : '';
+        const section = tl.taxSection ? ` Section ${tl.taxSection}` : '';
+        const name = tl.taxTypeName || tl.taxTypeCode || 'Tax';
+        const taxLabel =
+          pct !== ''
+            ? `${name}${section} @ ${pct}%`
+            : tl.taxDescription || `${name}${section}`;
+        doc.text(taxLabel, innerLeft, y, { width: innerW * 0.72 });
+        doc.text(money(tl.taxAmount || 0), innerLeft, y, { width: innerW, align: 'right' });
+        y += 12;
+      }
+      y += 2;
+    } else if (includeAdvanceTax && advancePct > 0) {
       const pctPrint = advancePct.toFixed(2);
       const taxLabel = `Advance Tax Under Section (236H)=${pctPrint}%`;
       doc.font('Helvetica').fontSize(8);
@@ -601,6 +651,9 @@ const generateInvoice = async (deliveryId) => {
     docNumber: delivery.invoiceNumber,
     warrantyNoun: 'invoice',
     includeAdvanceTax: true,
+    taxSnapshot: delivery.taxSnapshot || null,
+    invoiceGrandTotal:
+      delivery.invoiceGrandTotal != null ? roundPKR(delivery.invoiceGrandTotal) : null,
     rows,
     sumNetVal,
     sumPackDisc,
@@ -761,10 +814,11 @@ const generateCreditNote = async (creditNoteId) => {
   const againstInv = invoiceList.length ? invoiceList.join(', ') : '—';
   const notice = `Does not replace original invoice(s). Against: ${againstInv} · Amendment: ${
     amendment.amendmentNumber || '—'
-  }`;
+  } · Allocation: Bonus-First (bonus packs reduced before paid; financial credit applies to paid packs only)`;
   const notesExtra = [
     order?.notes,
-    amendment.reason ? `Amendment reason: ${amendment.reason}` : null
+    amendment.reason ? `Amendment reason: ${amendment.reason}` : null,
+    'Qty column = paid packs credited · BON = bonus packs reversed (inventory). Credit amount is based on paid packs only.'
   ]
     .filter(Boolean)
     .join('\n');
@@ -776,21 +830,29 @@ const generateCreditNote = async (creditNoteId) => {
     const prod = pid && typeof pid === 'object' ? pid : null;
     const oid = prod?._id ?? pid;
     const deltaQty = Number(line.deltaQty) || 0;
+    const hasSplit = line.paidDelta != null || line.bonusDelta != null;
+    const paidDelta = hasSplit ? Number(line.paidDelta) || 0 : deltaQty;
+    const bonusDelta = hasSplit ? Number(line.bonusDelta) || 0 : 0;
     const credit = roundPKR(line.lineCreditAmount || 0);
     const unit =
-      deltaQty > 0 && credit > 0 ? roundPKR(credit / deltaQty) : roundPKR(line.finalSellingPrice || 0);
+      paidDelta > 0 && credit > 0
+        ? roundPKR(credit / paidDelta)
+        : roundPKR(line.finalSellingPrice || 0);
+    const policy = line.allocationPolicy || 'BONUS_FIRST';
     const descParts = [
       prod?.name || line.productName,
       prod?.composition,
-      `(${line.previousQty} → ${line.newQty}, −${deltaQty})`
+      `(${line.previousQty} → ${line.newQty}, −${deltaQty} physical)`,
+      `paid −${paidDelta} · bonus −${bonusDelta}`,
+      policy === 'BONUS_FIRST' ? 'Bonus-First' : policy
     ].filter(Boolean);
 
     rows.push({
       code: oidCode(oid),
       description: descParts.join(' ').trim() || '—',
       batch: '',
-      qty: deltaQty,
-      bon: 0,
+      qty: paidDelta,
+      bon: bonusDelta,
       tpRate: unit,
       netVal: credit,
       packDisc: 0,

@@ -67,5 +67,9 @@ module.exports = {
   FiscalPeriod: require('./FiscalPeriod'),
   VoucherSequence: require('./VoucherSequence'),
   Voucher: require('./Voucher'),
-  SubLedgerLink: require('./SubLedgerLink')
+  SubLedgerLink: require('./SubLedgerLink'),
+  CompanyTaxConfig: require('./CompanyTaxConfig'),
+  TaxRule: require('./TaxRule'),
+  TaxRegisterEntry: require('./TaxRegisterEntry'),
+  TaxDeposit: require('./TaxDeposit')
 };

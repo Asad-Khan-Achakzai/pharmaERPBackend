@@ -65,7 +65,8 @@ const line = (accountId, debit, credit, extra = {}) => ({
 });
 
 /**
- * Sales delivery: Dr AR / Cr Sales (+ optional COGS/Inventory).
+ * Sales delivery: Dr AR / Cr Sales (+ tax liability credits) (+ optional COGS/Inventory).
+ * When tax is present: AR = invoiceGrandTotal, Sales = goodsNet, Tax Payable = taxTotal.
  */
 const postDeliveryGl = async (session, companyId, ctx, reqUser) => {
   try {
@@ -76,12 +77,30 @@ const postDeliveryGl = async (session, companyId, ctx, reqUser) => {
     const inv = await glPosting.getAccountByCode(companyId, ACCOUNT_CODES.INVENTORY, session);
     if (!ar || !sales) return null;
 
-    const amount = roundPKR(ctx.pharmacyNetPayable);
+    const goods = roundPKR(ctx.goodsNetPayable ?? ctx.pharmacyNetPayable ?? 0);
+    const grand = roundPKR(ctx.invoiceGrandTotal ?? ctx.pharmacyNetPayable ?? goods);
     const cogsAmount = roundPKR(ctx.cogsAmount || 0);
     const lines = [
-      line(ar._id, amount, 0, { partyEntityType: 'PHARMACY', partyEntityId: ctx.pharmacyId }),
-      line(sales._id, 0, amount)
+      line(ar._id, grand, 0, { partyEntityType: 'PHARMACY', partyEntityId: ctx.pharmacyId }),
+      line(sales._id, 0, goods)
     ];
+
+    if (ctx.taxSnapshot?.lines?.length) {
+      const taxPosting = require('./tax/taxPosting.service');
+      const taxLines = await taxPosting.buildTaxCreditGlLines(session, companyId, ctx.taxSnapshot);
+      for (const tl of taxLines) {
+        lines.push(line(tl.accountId, tl.debit, tl.credit));
+      }
+    }
+
+    // Balance guard: if tax lines missing accounts, pad sales to keep voucher balanced
+    const dr = roundPKR(lines.reduce((s, l) => s + (l.debit || 0), 0));
+    const cr = roundPKR(lines.reduce((s, l) => s + (l.credit || 0), 0));
+    if (Math.abs(dr - cr) > 0.001) {
+      const diff = roundPKR(dr - cr);
+      if (diff > 0) lines[1].credit = roundPKR(lines[1].credit + diff);
+    }
+
     if (cogsAmount > 0 && cogs && inv) {
       lines.push(line(cogs._id, cogsAmount, 0));
       lines.push(line(inv._id, 0, cogsAmount));
@@ -341,7 +360,8 @@ const postExpenseGl = async (session, companyId, ctx, reqUser) => {
 };
 
 /**
- * Return: Dr Sales Returns / Cr AR (+ optional inventory).
+ * Return / amendment credit: Dr Sales Returns (goods) + Dr Tax Payable (tax) / Cr AR (goods+tax).
+ * ctx.amount = total AR credit (grand). Optional ctx.goodsAmount + ctx.taxLineCredits for split.
  */
 const postReturnGl = async (session, companyId, ctx, reqUser) => {
   try {
@@ -350,17 +370,38 @@ const postReturnGl = async (session, companyId, ctx, reqUser) => {
     const ret = await glPosting.getAccountByCode(companyId, ACCOUNT_CODES.SALES_RETURNS, session);
     if (!ar || !ret) return null;
 
-    const amount = roundPKR(ctx.amount);
+    const total = roundPKR(ctx.amount);
+    const goodsAmount =
+      ctx.goodsAmount != null ? roundPKR(ctx.goodsAmount) : total;
+    const taxPosting = require('./tax/taxPosting.service');
+    const taxLines = await taxPosting.buildTaxReversalGlLines(
+      session,
+      companyId,
+      ctx.taxLineCredits || []
+    );
+    const taxDr = roundPKR(taxLines.reduce((s, l) => s + (l.debit || 0), 0));
+    const salesReturnsDr = roundPKR(Math.max(0, total - taxDr));
+
+    const lines = [
+      line(ret._id, salesReturnsDr > 0 ? salesReturnsDr : goodsAmount, 0),
+      ...taxLines.map((tl) => line(tl.accountId, tl.debit, tl.credit)),
+      line(ar._id, 0, total, { partyEntityType: 'PHARMACY', partyEntityId: ctx.pharmacyId })
+    ];
+
+    // Rebalance if needed
+    const dr = roundPKR(lines.reduce((s, l) => s + (l.debit || 0), 0));
+    const cr = roundPKR(lines.reduce((s, l) => s + (l.credit || 0), 0));
+    if (Math.abs(dr - cr) > 0.001) {
+      lines[0].debit = roundPKR(lines[0].debit + (cr - dr));
+    }
+
     const voucher = await glPosting.postVoucher(
       companyId,
       {
         voucherType: VOUCHER_TYPE.SV,
         date: ctx.date,
         narration: ctx.narration || 'Sales return',
-        lines: [
-          line(ret._id, amount, 0),
-          line(ar._id, 0, amount, { partyEntityType: 'PHARMACY', partyEntityId: ctx.pharmacyId })
-        ],
+        lines,
         sourceModule: GL_SOURCE_MODULE.ORDER,
         sourceRefId: ctx.returnId
       },
@@ -368,7 +409,10 @@ const postReturnGl = async (session, companyId, ctx, reqUser) => {
       session
     );
 
-    if (ctx.ledgerEntryId) await linkSubLedger(companyId, SUB_LEDGER_SOURCE.LEDGER, ctx.ledgerEntryId, voucher, 1, session);
+    const arLineIdx = lines.length - 1;
+    if (ctx.ledgerEntryId) {
+      await linkSubLedger(companyId, SUB_LEDGER_SOURCE.LEDGER, ctx.ledgerEntryId, voucher, arLineIdx, session);
+    }
     return voucher;
   } catch (err) {
     logger.warn({ msg: 'glBridge.postReturnGl.failed', companyId, err: err.message });

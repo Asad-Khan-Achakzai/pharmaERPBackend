@@ -57,7 +57,15 @@ const PERMISSIONS = {
     'matrix.manage',
     'governance.view'
   ],
-  reports:      ['view', 'accounting'],
+  reports:      ['view', 'accounting', 'tax'],
+  /**
+   * Company tax configuration, register, deposits, reports.
+   * `config.manage` — company tax config / seed packs
+   * `deposits.manage` — draft deposits, receipt, close
+   * `deposits.submit` — post government remittance (GL)
+   * `reports.export` — Excel/PDF/CSV tax exports
+   */
+  tax:          ['view', 'manage', 'config.manage', 'deposits.manage', 'deposits.submit', 'reports.export'],
   suppliers:    ['view', 'manage'],
   /** SAP-style PO / GRN; liability on SupplierLedger only when GRN is posted — see procurement.routes */
   procurement:  ['view', 'create', 'approve', 'receive', 'invoicePost', 'return', 'grnReverse', 'cancelPo'],

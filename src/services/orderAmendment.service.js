@@ -93,7 +93,26 @@ const buildLinePlan = async (session, companyId, order, itemsPayload) => {
       order._id,
       orderItem.productId
     );
-    const snap = qtyCredit.computeQtyCreditAgainstDeliveryLine(dLine, deltaQty);
+    const priorCredits = await qtyCredit.loadPriorQtyCreditsForProduct(
+      session,
+      companyId,
+      order._id,
+      orderItem.productId
+    );
+    for (const planned of linePlans) {
+      if (String(planned.productId) !== String(orderItem.productId)) continue;
+      priorCredits.push({
+        physicalQty: planned.deltaQty,
+        paidDelta: planned.paidDelta,
+        bonusDelta: planned.bonusDelta
+      });
+    }
+    let snap;
+    try {
+      snap = qtyCredit.computeQtyCreditAgainstDeliveryLine(dLine, deltaQty, { priorCredits });
+    } catch (err) {
+      throw new ApiError(400, `${orderItem.productName || raw.productId}: ${err.message}`);
+    }
     const tpDelta = roundPKR((orderItem.tpAtTime || 0) * deltaQty);
 
     linePlans.push({
@@ -102,6 +121,9 @@ const buildLinePlan = async (session, companyId, order, itemsPayload) => {
       previousQty,
       newQty,
       deltaQty,
+      paidDelta: snap.paidDelta,
+      bonusDelta: snap.bonusDelta,
+      allocationPolicy: snap.allocationPolicy,
       avgCostAtTime: snap.avgCostAtTime,
       finalSellingPrice: snap.finalSellingPrice,
       lineCreditAmount: snap.creditAmount,
@@ -175,12 +197,16 @@ const preview = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts
     amendmentType: AMENDMENT_TYPE.QUANTITY_REDUCTION,
     source: AMENDMENT_SOURCE.DELIVERED_ORDER_CORRECTION,
     reason: String(body.reason).trim(),
+    allocationPolicy: qtyCredit.DEFAULT_QTY_CREDIT_ALLOCATION_POLICY,
     items: plan.linePlans.map((l) => ({
       productId: l.productId,
       productName: l.productName,
       previousQty: l.previousQty,
       newQty: l.newQty,
       deltaQty: l.deltaQty,
+      paidDelta: l.paidDelta,
+      bonusDelta: l.bonusDelta,
+      allocationPolicy: l.allocationPolicy,
       lineCreditAmount: l.lineCreditAmount,
       tpDelta: l.tpDelta
     })),
@@ -189,6 +215,8 @@ const preview = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts
       salesPacksDelta: -plan.totalPacks,
       salesTpDelta: -plan.tpDeltaTotal,
       invoiceCreditAmount: plan.totalAmount,
+      paidPacksReversed: plan.linePlans.reduce((s, l) => s + (l.paidDelta || 0), 0),
+      bonusPacksReversed: plan.linePlans.reduce((s, l) => s + (l.bonusDelta || 0), 0),
       openArBefore: openBefore,
       openArAfter: openAfter,
       overpaymentCredit,
@@ -241,6 +269,12 @@ const create = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts 
         session
       )) + 1;
     const amendmentNumber = await getNextSequenceNumber(companyId, 'AMD', { session });
+    const goodsCreditByDelivery = new Map(plan.creditByDelivery);
+    const taxExpand = await qtyCredit.applyTaxToCreditByDelivery(
+      session,
+      companyId,
+      plan.creditByDelivery
+    );
     const allocations = qtyCredit.buildCreditAllocationsFromMap(plan.creditByDelivery);
 
     const deliveryIds = [...new Set(plan.linePlans.map((l) => l.deliveryId).filter(Boolean))];
@@ -272,6 +306,9 @@ const create = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts 
             previousQty: l.previousQty,
             newQty: l.newQty,
             deltaQty: l.deltaQty,
+            paidDelta: l.paidDelta,
+            bonusDelta: l.bonusDelta,
+            allocationPolicy: l.allocationPolicy,
             avgCostAtTime: l.avgCostAtTime,
             finalSellingPrice: l.finalSellingPrice,
             lineCreditAmount: l.lineCreditAmount,
@@ -312,45 +349,66 @@ const create = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts 
       packDelta: -plan.totalPacks
     });
 
-    const ledgerEntry = await qtyCredit.postPharmacyDocumentCredit(session, {
-      companyId,
-      pharmacyId: order.pharmacyId,
-      amount: plan.totalAmount,
-      referenceType: LEDGER_REFERENCE_TYPE.AMENDMENT,
-      referenceId: amendment._id,
-      description: `Amendment ${amendmentNumber} for order ${order.orderNumber}`,
-      date: amendedAt,
-      meta: qtyCredit.buildPharmacyCreditMeta(order._id, plan.creditByDelivery)
-    });
-
-    await qtyCredit.postSalesCreditGl(
-      session,
-      companyId,
-      {
+    const arCredit = taxExpand.grandTotal;
+    let ledgerEntry = null;
+    if (arCredit > 0) {
+      ledgerEntry = await qtyCredit.postPharmacyDocumentCredit(session, {
+        companyId,
         pharmacyId: order.pharmacyId,
-        sourceRefId: amendment._id,
-        amount: plan.totalAmount,
+        amount: arCredit,
+        referenceType: LEDGER_REFERENCE_TYPE.AMENDMENT,
+        referenceId: amendment._id,
+        description: `Amendment ${amendmentNumber} for order ${order.orderNumber}`,
         date: amendedAt,
-        narration: `Amendment ${amendmentNumber} for order ${order.orderNumber}`,
-        ledgerEntryId: ledgerEntry?._id
-      },
-      reqUser
-    );
+        meta: qtyCredit.buildPharmacyCreditMeta(order._id, plan.creditByDelivery)
+      });
 
-    await qtyCredit.postQtyCreditClearingForLines(session, {
-      companyId,
-      distributorId: order.distributorId,
-      orderId: order._id,
-      lines: plan.linePlans.map((l) => ({
-        productId: l.productId,
-        quantity: l.deltaQty,
-        finalSellingPrice: l.finalSellingPrice,
-        creditAmount: l.lineCreditAmount
-      })),
-      documentId: amendment._id,
-      date: amendedAt,
-      clearingReferenceType: LEDGER_REFERENCE_TYPE.AMENDMENT_CLEARING_ADJ
-    });
+      await qtyCredit.postSalesCreditGl(
+        session,
+        companyId,
+        {
+          pharmacyId: order.pharmacyId,
+          sourceRefId: amendment._id,
+          amount: arCredit,
+          goodsAmount: taxExpand.goodsTotal,
+          taxLineCredits: taxExpand.taxLineCredits,
+          date: amendedAt,
+          narration: `Amendment ${amendmentNumber} for order ${order.orderNumber}`,
+          ledgerEntryId: ledgerEntry?._id
+        },
+        reqUser
+      );
+    }
+
+    if (taxExpand.taxTotal > 0) {
+      const taxPosting = require('./tax/taxPosting.service');
+      await taxPosting.reverseInvoiceTax({
+        session,
+        companyId,
+        pharmacyId: order.pharmacyId,
+        businessDate: amendedAt,
+        referenceType: 'AMENDMENT',
+        referenceId: amendment._id,
+        goodsCreditByDelivery
+      });
+    }
+
+    if (plan.totalAmount > 0) {
+      await qtyCredit.postQtyCreditClearingForLines(session, {
+        companyId,
+        distributorId: order.distributorId,
+        orderId: order._id,
+        lines: plan.linePlans.map((l) => ({
+          productId: l.productId,
+          quantity: l.deltaQty,
+          finalSellingPrice: l.finalSellingPrice,
+          creditAmount: l.lineCreditAmount
+        })),
+        documentId: amendment._id,
+        date: amendedAt,
+        clearingReferenceType: LEDGER_REFERENCE_TYPE.AMENDMENT_CLEARING_ADJ
+      });
+    }
 
     await qtyCredit.postQtyCreditTransaction(session, {
       companyId,

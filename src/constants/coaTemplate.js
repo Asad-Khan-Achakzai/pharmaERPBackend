@@ -75,6 +75,14 @@ const DEFAULT_COA = [
     isControlAccount: true,
     linkedEntityType: 'DISTRIBUTOR_CLEARING'
   },
+  {
+    code: '2140',
+    name: 'Advance Tax Payable',
+    groupType: ACCOUNT_GROUP_TYPE.LIABILITY,
+    isGroup: false,
+    parentCode: '2100',
+    isControlAccount: false
+  },
 
   { code: '3000', name: 'Equity', groupType: ACCOUNT_GROUP_TYPE.EQUITY, isGroup: true, parentCode: null },
   {
@@ -156,6 +164,7 @@ const ACCOUNT_CODES = {
   INVENTORY: '1140',
   ACCOUNTS_PAYABLE: '2110',
   DISTRIBUTOR_CLEARING: '2120',
+  ADVANCE_TAX_PAYABLE: '2140',
   RETAINED_EARNINGS: '3100',
   SALES_REVENUE: '4100',
   SALES_RETURNS: '4200',

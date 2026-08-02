@@ -27,6 +27,7 @@ const MEDIA_KINDS = [
   'PHARMACY_PHOTO',
   'SUPPLIER_PHOTO',
   'DISTRIBUTOR_PHOTO',
+  'TAX_REMITTANCE_RECEIPT',
   'OTHER'
 ];
 
@@ -45,7 +46,8 @@ const MEDIA_RESOURCES = [
   'doctors',
   'pharmacies',
   'suppliers',
-  'distributors'
+  'distributors',
+  'tax-deposits'
 ];
 
 const RETENTION_CLASSES = ['TEMPORARY', 'PERMANENT'];

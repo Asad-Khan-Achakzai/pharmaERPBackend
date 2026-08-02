@@ -1,10 +1,15 @@
 /**
  * Shared qty-credit adjustment core for Returns and Amendments.
  * Business documents differ; inventory / money / GL / clearing / packs / doctor hooks are shared.
+ *
+ * Money allocation uses qtyCreditAllocation.service (v1: BONUS_FIRST).
+ * Physical inventory / TP / packs always reverse the full physical delta.
  */
 const mongoose = require('mongoose');
 const DistributorInventory = require('../models/DistributorInventory');
 const DeliveryRecord = require('../models/DeliveryRecord');
+const ReturnRecord = require('../models/ReturnRecord');
+const OrderAmendment = require('../models/OrderAmendment');
 const Ledger = require('../models/Ledger');
 const MedRepTarget = require('../models/MedRepTarget');
 const Transaction = require('../models/Transaction');
@@ -19,6 +24,7 @@ const {
 const doctorActivityService = require('./doctorActivity.service');
 const financialService = require('./financial.service');
 const glBridge = require('./glBridge.service');
+const qtyAlloc = require('./qtyCreditAllocation.service');
 
 /**
  * Resolve latest delivery line snapshot for a product on an order.
@@ -37,55 +43,74 @@ const findLatestDeliveryLine = async (session, companyId, orderId, productId) =>
 };
 
 /**
- * Compute proportional pharmacy credit / shares / cost from a delivery line snapshot.
+ * Prior return/amendment credits for a product on an order (for remaining paid/bonus pool).
+ * Historical rows without paidDelta/bonusDelta are returned as physical-only (policy applied at plan time).
+ */
+const loadPriorQtyCreditsForProduct = async (session, companyId, orderId, productId) => {
+  const pid = String(productId);
+  const q = { companyId, orderId, isDeleted: { $ne: true } };
+  let retQuery = ReturnRecord.find(q).select('items').lean();
+  let amdQuery = OrderAmendment.find(q).select('items').lean();
+  if (session) {
+    retQuery = retQuery.session(session);
+    amdQuery = amdQuery.session(session);
+  }
+  const [returns, amendments] = await Promise.all([retQuery, amdQuery]);
+
+  const prior = [];
+  for (const r of returns || []) {
+    for (const it of r.items || []) {
+      if (String(it.productId) !== pid) continue;
+      prior.push({
+        physicalQty: Number(it.quantity) || 0,
+        paidDelta: it.paidDelta,
+        bonusDelta: it.bonusDelta
+      });
+    }
+  }
+  for (const a of amendments || []) {
+    for (const it of a.items || []) {
+      if (String(it.productId) !== pid) continue;
+      prior.push({
+        physicalQty: Number(it.deltaQty) || 0,
+        paidDelta: it.paidDelta,
+        bonusDelta: it.bonusDelta
+      });
+    }
+  }
+  return prior;
+};
+
+/**
+ * Plan a qty credit against a delivery line using the official allocation policy (Bonus-First v1).
  * @param {object|null} dLine
  * @param {number} creditQty physical packs to credit
+ * @param {{ priorCredits?: Array, policy?: string }} [opts]
  */
-const computeQtyCreditAgainstDeliveryLine = (dLine, creditQty) => {
-  const qty = Number(creditQty) || 0;
-  const avgCostAtTime = dLine?.avgCostAtTime || 0;
-  const finalSellingPrice = dLine?.finalSellingPrice || 0;
-  const lineQty = dLine?.quantity > 0 ? dLine.quantity : qty;
-  const linePharmacyNet =
-    dLine?.linePharmacyNet != null
-      ? roundPKR(dLine.linePharmacyNet)
-      : roundPKR(finalSellingPrice * lineQty);
-
-  const creditAmount =
-    dLine?.linePharmacyNet != null
-      ? roundPKR((linePharmacyNet / lineQty) * qty)
-      : roundPKR(finalSellingPrice * qty);
-
-  const lineCost = roundPKR(avgCostAtTime * qty);
-  const totalProfit = roundPKR(creditAmount - lineCost);
-  const profitPerUnit = qty > 0 ? roundPKR(totalProfit / qty) : 0;
-
-  const companyShare =
-    dLine && dLine.companyShare != null
-      ? roundPKR((dLine.companyShare / lineQty) * qty)
-      : roundPKR(
-          creditAmount -
-            (dLine && dLine.distributorShare != null
-              ? roundPKR((dLine.distributorShare / lineQty) * qty)
-              : 0)
-        );
-
-  const distributorShare =
-    dLine && dLine.distributorShare != null
-      ? roundPKR((dLine.distributorShare / lineQty) * qty)
-      : roundPKR(creditAmount - companyShare);
-
+const computeQtyCreditAgainstDeliveryLine = (dLine, creditQty, opts = {}) => {
+  const plan = qtyAlloc.planQtyCredit({
+    dLine,
+    physicalDelta: creditQty,
+    priorCredits: opts.priorCredits || [],
+    policy: opts.policy || qtyAlloc.DEFAULT_QTY_CREDIT_ALLOCATION_POLICY
+  });
   return {
-    avgCostAtTime,
-    finalSellingPrice,
-    lineQty,
-    linePharmacyNet,
-    creditAmount,
-    lineCost,
-    totalProfit,
-    profitPerUnit,
-    companyShare,
-    distributorShare
+    avgCostAtTime: plan.avgCostAtTime,
+    finalSellingPrice: plan.finalSellingPrice,
+    lineQty: plan.lineQty,
+    linePharmacyNet: plan.linePharmacyNet,
+    creditAmount: plan.creditAmount,
+    lineCost: plan.lineCost,
+    totalProfit: plan.totalProfit,
+    profitPerUnit: plan.profitPerUnit,
+    companyShare: plan.companyShare,
+    distributorShare: plan.distributorShare,
+    paidDelta: plan.paidDelta,
+    bonusDelta: plan.bonusDelta,
+    physicalDelta: plan.physicalDelta,
+    paidUnitNet: plan.paidUnitNet,
+    allocationPolicy: plan.policy,
+    composition: plan.composition
   };
 };
 
@@ -163,12 +188,48 @@ const postSalesCreditGl = async (session, companyId, ctx, reqUser) => {
       pharmacyId: ctx.pharmacyId,
       returnId: ctx.sourceRefId,
       amount: ctx.amount,
+      goodsAmount: ctx.goodsAmount,
+      taxLineCredits: ctx.taxLineCredits,
       date: ctx.date,
       narration: ctx.narration,
       ledgerEntryId: ctx.ledgerEntryId
     },
     reqUser
   );
+};
+
+/**
+ * Expand goods credits per delivery with frozen tax; returns totals + flat tax line credits.
+ * Mutates creditByDelivery map values from goods → grand when tax applies.
+ */
+const applyTaxToCreditByDelivery = async (session, companyId, creditByDelivery) => {
+  const taxPosting = require('./tax/taxPosting.service');
+  const allTaxLines = [];
+  let goodsTotal = 0;
+  let taxTotal = 0;
+  for (const [deliveryId, goodsAmt] of [...creditByDelivery.entries()]) {
+    const delivery = await DeliveryRecord.findOne({
+      _id: deliveryId,
+      companyId,
+      isDeleted: { $ne: true }
+    })
+      .session(session)
+      .lean();
+    const goods = roundPKR(goodsAmt);
+    goodsTotal = roundPKR(goodsTotal + goods);
+    const expanded = taxPosting.expandGoodsCreditWithTax(delivery, goods);
+    creditByDelivery.set(deliveryId, expanded.totalCredit);
+    taxTotal = roundPKR(taxTotal + expanded.taxCredit);
+    for (const lt of expanded.lineTaxCredits) {
+      if (lt.taxAmount > 0) allTaxLines.push(lt);
+    }
+  }
+  return {
+    goodsTotal,
+    taxTotal,
+    grandTotal: roundPKR(goodsTotal + taxTotal),
+    taxLineCredits: allTaxLines
+  };
 };
 
 /**
@@ -269,17 +330,21 @@ const postQtyCreditTransaction = async (
 
 module.exports = {
   findLatestDeliveryLine,
+  loadPriorQtyCreditsForProduct,
   computeQtyCreditAgainstDeliveryLine,
   restockDistributorQty,
   buildCreditAllocationsFromMap,
   buildPharmacyCreditMeta,
   postPharmacyDocumentCredit,
   postSalesCreditGl,
+  applyTaxToCreditByDelivery,
   postQtyCreditClearingForLines,
   adjustMedRepPacks,
   applyDoctorTpCredit,
   postQtyCreditTransaction,
   getBusinessMonthKey,
   TRANSACTION_TYPE,
-  LEDGER_REFERENCE_TYPE
+  LEDGER_REFERENCE_TYPE,
+  DEFAULT_QTY_CREDIT_ALLOCATION_POLICY: qtyAlloc.DEFAULT_QTY_CREDIT_ALLOCATION_POLICY,
+  QTY_CREDIT_ALLOCATION_POLICY: qtyAlloc.QTY_CREDIT_ALLOCATION_POLICY
 };

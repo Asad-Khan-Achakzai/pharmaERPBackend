@@ -139,6 +139,16 @@ const update = async (companyId, id, data, reqUser) => {
     });
   }
   await auditService.log({ companyId, userId: reqUser.userId, action: 'pharmacy.update', entityType: 'Pharmacy', entityId: pharmacy._id, changes: { before, after: pharmacy.toObject() } });
+  if (before.taxStatus !== pharmacy.taxStatus) {
+    await auditService.log({
+      companyId,
+      userId: reqUser.userId,
+      action: 'PHARMACY_TAX_STATUS_CHANGED',
+      entityType: 'Pharmacy',
+      entityId: pharmacy._id,
+      changes: { before: before.taxStatus, after: pharmacy.taxStatus }
+    });
+  }
   return withPharmacyImages(companyId, pharmacy);
 };
 

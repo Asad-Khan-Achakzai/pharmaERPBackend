@@ -1,6 +1,6 @@
 /**
  * Document-allocation AR open engine.
- * Invoice open = DeliveryRecord.pharmacyNetPayable − Σ return allocations − Σ collection allocations − Σ amendment allocations.
+ * Invoice open = resolveInvoiceGrandTotal(delivery) − Σ return allocations − Σ collection allocations − Σ amendment allocations.
  * Does not read Ledger.meta.deliveryId for open balances.
  */
 const mongoose = require('mongoose');
@@ -18,6 +18,7 @@ const {
   COLLECTOR_TYPE
 } = require('../constants/enums');
 const { INVARIANT_EPS, resolveArOpenEngine, AR_OPEN_ENGINE } = require('../constants/arArchitecture');
+const { resolveInvoiceGrandTotal } = require('../utils/invoiceTotals');
 
 const OPEN_EPS = 0.001;
 const oid = (id) => new mongoose.Types.ObjectId(id);
@@ -48,8 +49,7 @@ const buildOpenByDeliveryFromDocumentAllocations = ({
   for (const d of deliveries) {
     if (!d?._id && !d?.deliveryId) continue;
     const id = String(d._id || d.deliveryId);
-    const invoice = roundPKR(d.pharmacyNetPayable ?? d.invoiceAmount ?? d.totalAmount ?? 0);
-    openByDelivery[id] = invoice;
+    openByDelivery[id] = resolveInvoiceGrandTotal(d);
   }
 
   const applyList = (list) => {
@@ -156,7 +156,7 @@ const loadPharmacyDeliveryContext = async (companyId, pharmacyId, session) => {
           isDeleted: { $ne: true }
         })
           .select(
-            '_id orderId pharmacyNetPayable totalAmount deliveredAt companyShareTotal distributorShareTotal invoiceNumber'
+            '_id orderId pharmacyNetPayable totalAmount invoiceGrandTotal taxTotal goodsNetPayable deliveredAt companyShareTotal distributorShareTotal invoiceNumber'
           )
           .sort({ deliveredAt: 1, createdAt: 1 })
           .session(session || null)
@@ -188,7 +188,7 @@ const loadPharmacyDeliveryContext = async (companyId, pharmacyId, session) => {
     const invoiceAmount =
       fromLedger != null
         ? fromLedger
-        : roundPKR(d.pharmacyNetPayable ?? d.totalAmount ?? 0);
+        : resolveInvoiceGrandTotal(d);
     return { ...d, invoiceAmount, pharmacyNetPayable: invoiceAmount };
   });
 
@@ -368,7 +368,7 @@ const computeOpenFromDocumentAllocations = async (companyId, pharmacyId, session
 
   const openByDelivery = {};
   for (const d of deliveries) {
-    openByDelivery[String(d._id)] = roundPKR(d.pharmacyNetPayable ?? d.totalAmount ?? 0);
+    openByDelivery[String(d._id)] = resolveInvoiceGrandTotal(d);
   }
   applyReturnsToOpen(openByDelivery, returns, delsByOrder);
   applyAmendmentsToOpen(openByDelivery, amendments);
@@ -391,6 +391,8 @@ const computeOpenFromDocumentAllocations = async (companyId, pharmacyId, session
       orderId: d.orderId,
       distributorId: o?.distributorId,
       pharmacyNetPayable: roundPKR(d.pharmacyNetPayable ?? d.totalAmount),
+      invoiceGrandTotal: resolveInvoiceGrandTotal(d),
+      taxTotal: roundPKR(d.taxTotal || 0),
       companyShareTotal: roundPKR(d.companyShareTotal ?? 0),
       distributorShareTotal: roundPKR(d.distributorShareTotal ?? 0),
       deliveredAt: d.deliveredAt,
@@ -457,7 +459,7 @@ const replayPharmacyAllocations = async (companyId, pharmacyId, session) => {
 
   const open = {};
   for (const d of deliveries) {
-    open[String(d._id)] = roundPKR(d.pharmacyNetPayable ?? d.totalAmount ?? 0);
+    open[String(d._id)] = resolveInvoiceGrandTotal(d);
   }
 
   const events = [];

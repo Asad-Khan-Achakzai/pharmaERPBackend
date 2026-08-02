@@ -79,6 +79,16 @@ const AMENDMENT_SOURCE = {
   DELIVERED_ORDER_CORRECTION: 'DELIVERED_ORDER_CORRECTION'
 };
 
+/**
+ * How physical qty credits (returns / amendments) split into paid vs bonus packs.
+ * v1 supports BONUS_FIRST only; other values reserved for future policies.
+ */
+const QTY_CREDIT_ALLOCATION_POLICY = {
+  BONUS_FIRST: 'BONUS_FIRST',
+  PAID_FIRST: 'PAID_FIRST',
+  PROPORTIONAL: 'PROPORTIONAL'
+};
+
 const AMENDMENT_STATUS = {
   APPLIED: 'APPLIED'
 };
@@ -477,7 +487,8 @@ const GL_SOURCE_MODULE = {
   SUPPLIER: 'SUPPLIER',
   PROCUREMENT: 'PROCUREMENT',
   OPENING: 'OPENING',
-  FUND_TRANSFER: 'FUND_TRANSFER'
+  FUND_TRANSFER: 'FUND_TRANSFER',
+  TAX_DEPOSIT: 'TAX_DEPOSIT'
 };
 
 /** Liquid accounts used for real cash/bank movements. */
@@ -521,6 +532,7 @@ module.exports = {
   AMENDMENT_TYPE,
   AMENDMENT_SOURCE,
   AMENDMENT_STATUS,
+  QTY_CREDIT_ALLOCATION_POLICY,
   CREDIT_NOTE_STATUS,
   PAYMENT_METHOD,
   EXPENSE_CATEGORY,

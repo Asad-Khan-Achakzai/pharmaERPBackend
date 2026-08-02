@@ -134,13 +134,14 @@ const enrichOrdersWithPaymentSummary = async (companyId, docs) => {
     orderId: { $in: orderOids },
     isDeleted: { $ne: true }
   })
-    .select('orderId pharmacyNetPayable totalAmount')
+    .select('orderId pharmacyNetPayable totalAmount invoiceGrandTotal taxTotal')
     .lean();
 
+  const { resolveInvoiceGrandTotal } = require('../utils/invoiceTotals');
   const invoiceByOrder = {};
   for (const d of deliveries) {
     const oid = String(d.orderId);
-    const amt = roundPKR(d.pharmacyNetPayable ?? d.totalAmount ?? 0);
+    const amt = resolveInvoiceGrandTotal(d);
     invoiceByOrder[oid] = roundPKR((invoiceByOrder[oid] || 0) + amt);
   }
 
@@ -532,6 +533,38 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts
 
     const pharmacyNetPayable = totalAmount;
 
+    const Pharmacy = require('../models/Pharmacy');
+    const taxEngine = require('./tax/taxEngine.service');
+    const taxPosting = require('./tax/taxPosting.service');
+    const { TAX_POSTING_STATUS } = require('../constants/taxCatalog');
+
+    const pharmacyDoc = await Pharmacy.findOne({
+      _id: order.pharmacyId,
+      companyId,
+      isDeleted: { $ne: true }
+    })
+      .session(session)
+      .lean();
+
+    const taxResult = await taxEngine.calculate({
+      companyId,
+      businessDate,
+      pharmacy: pharmacyDoc,
+      amounts: {
+        grossAmount: tpSubtotal,
+        subtotal: tpSubtotal,
+        afterDiscount: pharmacyNetPayable,
+        netPayable: pharmacyNetPayable
+      },
+      session
+    });
+
+    const taxSnapshot = taxEngine.toDeliverySnapshot(taxResult);
+    const taxTotal = taxResult.enabled ? roundPKR(taxResult.taxTotal) : 0;
+    const invoiceGrandTotal = taxResult.enabled
+      ? roundPKR(taxResult.invoiceGrandTotal)
+      : pharmacyNetPayable;
+
     const deliveredById = body.deliveredById || order.medicalRepId;
     const deliveryUser = await User.findOne({ _id: deliveredById, companyId, isActive: true }).session(session);
     if (!deliveryUser) {
@@ -551,6 +584,13 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts
           tpSubtotal,
           distributorShareTotal,
           pharmacyNetPayable,
+          goodsNetPayable: pharmacyNetPayable,
+          taxTotal,
+          invoiceGrandTotal,
+          taxSnapshot: taxSnapshot || undefined,
+          taxPostingStatus: taxSnapshot
+            ? TAX_POSTING_STATUS.POSTED
+            : TAX_POSTING_STATUS.NOT_APPLICABLE,
           companyShareTotal,
           distributorCommissionPercent: commissionPctSnapshot,
           deliveredBy: deliveryUser._id,
@@ -582,10 +622,11 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts
       orderId: order._id,
       invoiceNumber,
       pharmacyNetPayable,
+      invoiceGrandTotal,
       date: businessDate
     });
 
-    await glBridge.postDeliveryGl(
+    const voucher = await glBridge.postDeliveryGl(
       session,
       companyId,
       {
@@ -593,12 +634,26 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts
         deliveryId: delivery._id,
         invoiceNumber,
         pharmacyNetPayable,
+        goodsNetPayable: pharmacyNetPayable,
+        invoiceGrandTotal,
+        taxSnapshot,
         cogsAmount: totalCost,
         date: businessDate,
         ledgerEntryId: entries?.[0]?._id
       },
       reqUser
     );
+
+    if (taxSnapshot) {
+      await taxPosting.postInvoiceTax({
+        session,
+        companyId,
+        delivery,
+        pharmacyId: order.pharmacyId,
+        orderId: order._id,
+        voucherId: voucher?._id || null
+      });
+    }
 
     await Transaction.create(
       [{ companyId, type: TRANSACTION_TYPE.SALE, referenceType: 'DELIVERY', referenceId: delivery._id, revenue: totalAmount, cost: totalCost, profit: totalProfit, date: businessDate, description: `Sale - ${invoiceNumber}` }],
@@ -678,7 +733,29 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
         orderId,
         rItem.productId
       );
-      const snap = qtyCredit.computeQtyCreditAgainstDeliveryLine(dLine, rItem.quantity);
+      const priorCredits = await qtyCredit.loadPriorQtyCreditsForProduct(
+        session,
+        companyId,
+        orderId,
+        rItem.productId
+      );
+      // Same-request returns on one product: include lines already planned in this loop.
+      for (const planned of returnRecordItems) {
+        if (String(planned.productId) !== String(rItem.productId)) continue;
+        priorCredits.push({
+          physicalQty: planned.quantity,
+          paidDelta: planned.paidDelta,
+          bonusDelta: planned.bonusDelta
+        });
+      }
+      let snap;
+      try {
+        snap = qtyCredit.computeQtyCreditAgainstDeliveryLine(dLine, rItem.quantity, {
+          priorCredits
+        });
+      } catch (err) {
+        throw new ApiError(400, `${orderItem.productName || rItem.productId}: ${err.message}`);
+      }
 
       await qtyCredit.restockDistributorQty(session, {
         companyId,
@@ -692,9 +769,14 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
       returnRecordItems.push({
         productId: rItem.productId,
         quantity: rItem.quantity,
+        paidDelta: snap.paidDelta,
+        bonusDelta: snap.bonusDelta,
+        allocationPolicy: snap.allocationPolicy,
         avgCostAtTime: snap.avgCostAtTime,
         finalSellingPrice: snap.finalSellingPrice,
+        lineCreditAmount: snap.creditAmount,
         companyShare: snap.companyShare,
+        distributorShare: snap.distributorShare,
         profitPerUnit: snap.profitPerUnit,
         totalProfit: snap.totalProfit,
         reason: rItem.reason || '',
@@ -727,13 +809,17 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
     await order.save({ session });
 
     const retDate = utcNow();
+    const goodsCreditByDelivery = new Map(creditByDelivery);
+    const taxExpand = await qtyCredit.applyTaxToCreditByDelivery(session, companyId, creditByDelivery);
     const returnAllocations = qtyCredit.buildCreditAllocationsFromMap(creditByDelivery);
     const [returnRecord] = await ReturnRecord.create(
       [
         {
           companyId,
           orderId,
-          items: returnRecordItems.map(({ creditAmount, ...rest }) => rest),
+          items: returnRecordItems.map(
+            ({ creditAmount: _creditAmount, ...rest }) => rest
+          ),
           totalAmount,
           totalCost,
           totalProfit,
@@ -759,45 +845,66 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
       packDelta: -totalPacks
     });
 
-    const returnLedger = await qtyCredit.postPharmacyDocumentCredit(session, {
-      companyId,
-      pharmacyId: order.pharmacyId,
-      amount: totalAmount,
-      referenceType: LEDGER_REFERENCE_TYPE.RETURN,
-      referenceId: returnRecord._id,
-      description: `Return for order ${order.orderNumber}`,
-      date: retDate,
-      meta: qtyCredit.buildPharmacyCreditMeta(order._id, creditByDelivery)
-    });
-
-    await qtyCredit.postSalesCreditGl(
-      session,
-      companyId,
-      {
+    const arCredit = taxExpand.grandTotal;
+    let returnLedger = null;
+    if (arCredit > 0) {
+      returnLedger = await qtyCredit.postPharmacyDocumentCredit(session, {
+        companyId,
         pharmacyId: order.pharmacyId,
-        sourceRefId: returnRecord._id,
-        amount: totalAmount,
+        amount: arCredit,
+        referenceType: LEDGER_REFERENCE_TYPE.RETURN,
+        referenceId: returnRecord._id,
+        description: `Return for order ${order.orderNumber}`,
         date: retDate,
-        narration: `Return for order ${order.orderNumber}`,
-        ledgerEntryId: returnLedger?._id
-      },
-      reqUser
-    );
+        meta: qtyCredit.buildPharmacyCreditMeta(order._id, creditByDelivery)
+      });
 
-    await qtyCredit.postQtyCreditClearingForLines(session, {
-      companyId,
-      distributorId: order.distributorId,
-      orderId: order._id,
-      lines: returnRecordItems.map((row) => ({
-        productId: row.productId,
-        quantity: row.quantity,
-        finalSellingPrice: row.finalSellingPrice,
-        creditAmount: row.creditAmount
-      })),
-      documentId: returnRecord._id,
-      date: retDate,
-      clearingReferenceType: LEDGER_REFERENCE_TYPE.RETURN_CLEARING_ADJ
-    });
+      await qtyCredit.postSalesCreditGl(
+        session,
+        companyId,
+        {
+          pharmacyId: order.pharmacyId,
+          sourceRefId: returnRecord._id,
+          amount: arCredit,
+          goodsAmount: taxExpand.goodsTotal,
+          taxLineCredits: taxExpand.taxLineCredits,
+          date: retDate,
+          narration: `Return for order ${order.orderNumber}`,
+          ledgerEntryId: returnLedger?._id
+        },
+        reqUser
+      );
+    }
+
+    if (taxExpand.taxTotal > 0) {
+      const taxPosting = require('./tax/taxPosting.service');
+      await taxPosting.reverseInvoiceTax({
+        session,
+        companyId,
+        pharmacyId: order.pharmacyId,
+        businessDate: retDate,
+        referenceType: 'RETURN',
+        referenceId: returnRecord._id,
+        goodsCreditByDelivery
+      });
+    }
+
+    if (totalAmount > 0) {
+      await qtyCredit.postQtyCreditClearingForLines(session, {
+        companyId,
+        distributorId: order.distributorId,
+        orderId: order._id,
+        lines: returnRecordItems.map((row) => ({
+          productId: row.productId,
+          quantity: row.quantity,
+          finalSellingPrice: row.finalSellingPrice,
+          creditAmount: row.creditAmount
+        })),
+        documentId: returnRecord._id,
+        date: retDate,
+        clearingReferenceType: LEDGER_REFERENCE_TYPE.RETURN_CLEARING_ADJ
+      });
+    }
 
     await qtyCredit.postQtyCreditTransaction(session, {
       companyId,

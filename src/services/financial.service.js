@@ -161,10 +161,22 @@ const buildLedgerBase = (companyId, entityType, entityId, type, amount, referenc
  * distributor remittance and commission post only when cash is collected (see postCollectionClearing).
  */
 const postDeliveryLedgers = async (session, ctx) => {
-  const { companyId, pharmacyId, deliveryId, orderId, invoiceNumber, pharmacyNetPayable, date } = ctx;
+  const {
+    companyId,
+    pharmacyId,
+    deliveryId,
+    orderId,
+    invoiceNumber,
+    pharmacyNetPayable,
+    invoiceGrandTotal,
+    date
+  } = ctx;
 
   const d = date || new Date();
   const meta = { deliveryId, orderId };
+  const arAmount = roundPKR(
+    invoiceGrandTotal != null ? invoiceGrandTotal : pharmacyNetPayable
+  );
 
   const entries = [
     buildLedgerBase(
@@ -172,7 +184,7 @@ const postDeliveryLedgers = async (session, ctx) => {
       LEDGER_ENTITY_TYPE.PHARMACY,
       pharmacyId,
       LEDGER_TYPE.DEBIT,
-      pharmacyNetPayable,
+      arAmount,
       LEDGER_REFERENCE_TYPE.DELIVERY,
       deliveryId,
       `Delivery ${invoiceNumber} — pharmacy receivable`,
@@ -400,6 +412,8 @@ const computePharmacyReceivableStateLegacy = async (companyId, pharmacyId, sessi
         orderId: d.orderId,
         distributorId: o?.distributorId,
         pharmacyNetPayable: roundPKR(d.pharmacyNetPayable ?? d.totalAmount),
+        invoiceGrandTotal: require('../utils/invoiceTotals').resolveInvoiceGrandTotal(d),
+        taxTotal: roundPKR(d.taxTotal || 0),
         companyShareTotal: roundPKR(d.companyShareTotal ?? 0),
         distributorShareTotal: roundPKR(d.distributorShareTotal ?? 0),
         deliveredAt: d.deliveredAt,
