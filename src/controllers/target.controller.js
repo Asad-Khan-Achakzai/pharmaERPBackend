@@ -8,7 +8,13 @@ const list = asyncHandler(async (req, res) => { ApiResponse.paginated(res, await
 const create = asyncHandler(async (req, res) => {
   ApiResponse.created(res, await targetService.create(req.companyId, req.body, req.user, req.context.timeZone));
 });
-const update = asyncHandler(async (req, res) => { ApiResponse.success(res, await targetService.update(req.companyId, req.params.id, req.body, req.user), 'Target updated'); });
+const update = asyncHandler(async (req, res) => {
+  ApiResponse.success(
+    res,
+    await targetService.update(req.companyId, req.params.id, req.body, req.user, req.context.timeZone),
+    'Target updated'
+  );
+});
 const remove = asyncHandler(async (req, res) => {
   await targetService.remove(req.companyId, req.params.id, req.user);
   ApiResponse.success(res, null, 'Target deleted');

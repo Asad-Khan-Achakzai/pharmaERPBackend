@@ -342,12 +342,6 @@ const create = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts 
     });
 
     const month = getBusinessMonthKey(amendedAt, tz);
-    await qtyCredit.adjustMedRepPacks(session, {
-      companyId,
-      medicalRepId: order.medicalRepId,
-      month,
-      packDelta: -plan.totalPacks
-    });
 
     const arCredit = taxExpand.grandTotal;
     let ledgerEntry = null;
@@ -460,14 +454,14 @@ const create = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts 
     await session.commitTransaction();
 
     try {
-      await medRepTargetAchievedService.syncAchievedSalesTpForRepMonth(
+      await medRepTargetAchievedService.syncAchievedForRepMonth(
         companyId,
         order.medicalRepId,
         month,
         tz
       );
     } catch (err) {
-      logger.error('MedRepTarget TP sync failed after amendment', {
+      logger.error('MedRepTarget achieved sync failed after amendment', {
         orderId: String(orderId),
         month,
         message: err?.message,

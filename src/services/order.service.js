@@ -6,7 +6,6 @@ const DeliveryRecord = require('../models/DeliveryRecord');
 const ReturnRecord = require('../models/ReturnRecord');
 const DistributorInventory = require('../models/DistributorInventory');
 const doctorActivityService = require('./doctorActivity.service');
-const MedRepTarget = require('../models/MedRepTarget');
 const Ledger = require('../models/Ledger');
 const Transaction = require('../models/Transaction');
 const Product = require('../models/Product');
@@ -609,11 +608,6 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts
     }
 
     const month = getBusinessMonthKey(businessDate, tz);
-    await MedRepTarget.updateOne(
-      { companyId, medicalRepId: order.medicalRepId, month, isDeleted: { $ne: true } },
-      { $inc: { achievedPacks: totalPacks } },
-      { session }
-    );
 
     const { entries } = await financialService.postDeliveryLedgers(session, {
       companyId,
@@ -665,9 +659,14 @@ const deliver = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts
     await session.commitTransaction();
 
     try {
-      await medRepTargetAchievedService.syncAchievedSalesTpForRepMonth(companyId, order.medicalRepId, month, tz);
+      await medRepTargetAchievedService.syncAchievedForRepMonth(
+        companyId,
+        order.medicalRepId,
+        month,
+        tz
+      );
     } catch (err) {
-      logger.error('MedRepTarget TP sync failed after delivery', {
+      logger.error('MedRepTarget achieved sync failed after delivery', {
         orderId: String(orderId),
         month,
         message: err?.message,
@@ -837,14 +836,6 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
       at: returnRecord.returnedAt
     });
 
-    const month = getBusinessMonthKey(returnRecord.returnedAt, tz);
-    await qtyCredit.adjustMedRepPacks(session, {
-      companyId,
-      medicalRepId: order.medicalRepId,
-      month,
-      packDelta: -totalPacks
-    });
-
     const arCredit = taxExpand.grandTotal;
     let returnLedger = null;
     if (arCredit > 0) {
@@ -944,9 +935,14 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
     }
     for (const m of monthKeys) {
       try {
-        await medRepTargetAchievedService.syncAchievedSalesTpForRepMonth(companyId, order.medicalRepId, m, tz);
+        await medRepTargetAchievedService.syncAchievedForRepMonth(
+          companyId,
+          order.medicalRepId,
+          m,
+          tz
+        );
       } catch (err) {
-        logger.error('MedRepTarget TP sync failed after return', {
+        logger.error('MedRepTarget achieved sync failed after return', {
           orderId: String(orderId),
           month: m,
           message: err?.message,

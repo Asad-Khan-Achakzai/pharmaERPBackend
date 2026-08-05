@@ -279,6 +279,10 @@ const postQtyCreditClearingForLines = async (
   }
 };
 
+/**
+ * @deprecated Packs progress is recomputed via medRepTargetAchieved.syncAchievedPacksForRepMonth
+ * after delivery / return / amendment commit. Kept only for any legacy callers.
+ */
 const adjustMedRepPacks = async (session, { companyId, medicalRepId, month, packDelta }) => {
   await MedRepTarget.updateOne(
     { companyId, medicalRepId, month, isDeleted: { $ne: true } },

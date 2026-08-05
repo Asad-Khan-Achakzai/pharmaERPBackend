@@ -1,7 +1,5 @@
 const mongoose = require('mongoose');
 const MedRepTarget = require('../models/MedRepTarget');
-const DeliveryRecord = require('../models/DeliveryRecord');
-const ReturnRecord = require('../models/ReturnRecord');
 const Product = require('../models/Product');
 const logger = require('../utils/logger');
 const medRepTargetAchievedService = require('./medRepTargetAchieved.service');
@@ -47,40 +45,28 @@ const assertHasTarget = (salesTarget, packsTarget, productPacksTargets) => {
 };
 
 /**
- * Net packs per product for the target month: sums delivery line quantities in the month
- * minus return line quantities in the month (same window as MedRepTarget.achievedPacks).
+ * Net packs per product for the target month: deliveries − returns − amendments
+ * (same formula / window as MedRepTarget.achievedPacks via syncAchievedPacksForRepMonth).
  * Merges saved per-product pack targets when a MedRepTarget row exists.
  */
 const packsBreakdownByProduct = async (companyId, medicalRepId, yyyyMm, timeZone) => {
   businessTime.requireCompanyIanaZone(timeZone);
-  const range = medRepTargetAchievedService.monthCalendarUtcRange(yyyyMm, timeZone);
   const cid = new mongoose.Types.ObjectId(String(companyId));
   const rid = new mongoose.Types.ObjectId(String(medicalRepId));
 
-  const [delAgg, retAgg, targetDoc] = await Promise.all([
-    DeliveryRecord.aggregate([
-      { $match: { companyId: cid, isDeleted: nd, deliveredAt: range } },
-      { $lookup: { from: 'orders', localField: 'orderId', foreignField: '_id', as: 'ord' } },
-      { $unwind: '$ord' },
-      { $match: { 'ord.medicalRepId': rid, 'ord.isDeleted': nd } },
-      { $unwind: '$items' },
-      { $group: { _id: '$items.productId', qty: { $sum: '$items.quantity' } } }
-    ]),
-    ReturnRecord.aggregate([
-      { $match: { companyId: cid, isDeleted: nd, returnedAt: range } },
-      { $lookup: { from: 'orders', localField: 'orderId', foreignField: '_id', as: 'ord' } },
-      { $unwind: '$ord' },
-      { $match: { 'ord.medicalRepId': rid, 'ord.isDeleted': nd } },
-      { $unwind: '$items' },
-      { $group: { _id: '$items.productId', qty: { $sum: '$items.quantity' } } }
-    ]),
-    MedRepTarget.findOne({ companyId: cid, medicalRepId: rid, month: yyyyMm, isDeleted: nd })
-      .populate('productPacksTargets.productId', 'name composition')
-      .lean()
-  ]);
+  const [{ deliveredByProduct, returnedByProduct, amendedByProduct, totals }, targetDoc] =
+    await Promise.all([
+      medRepTargetAchievedService.aggregatePackEventsByProduct(
+        companyId,
+        medicalRepId,
+        yyyyMm,
+        timeZone
+      ),
+      MedRepTarget.findOne({ companyId: cid, medicalRepId: rid, month: yyyyMm, isDeleted: nd })
+        .populate('productPacksTargets.productId', 'name composition')
+        .lean()
+    ]);
 
-  const deliveredByProduct = new Map(delAgg.map((x) => [String(x._id), Number(x.qty) || 0]));
-  const returnedByProduct = new Map(retAgg.map((x) => [String(x._id), Number(x.qty) || 0]));
   const targetByProduct = new Map();
   for (const pt of targetDoc?.productPacksTargets || []) {
     const pid = String(pt.productId?._id || pt.productId || '');
@@ -95,22 +81,27 @@ const packsBreakdownByProduct = async (companyId, medicalRepId, yyyyMm, timeZone
   const allIds = new Set([
     ...deliveredByProduct.keys(),
     ...returnedByProduct.keys(),
+    ...amendedByProduct.keys(),
     ...targetByProduct.keys()
   ]);
 
   const rows = [];
-  let totalNet = 0;
   for (const sid of allIds) {
     const delivered = deliveredByProduct.get(sid) || 0;
     const returned = returnedByProduct.get(sid) || 0;
-    const net = delivered - returned;
-    totalNet += net;
+    const amended = amendedByProduct.get(sid) || 0;
+    const net = medRepTargetAchievedService.netAchievedPacksFromTotals({
+      delivered,
+      returned,
+      amended
+    });
     const targetMeta = targetByProduct.get(sid);
     const packsTarget = targetMeta?.packsTarget ?? 0;
     rows.push({
       productId: sid,
       deliveredQuantity: delivered,
       returnedQuantity: returned,
+      amendedQuantity: amended,
       netQuantity: net,
       packsTarget,
       progressPercent: packsTarget > 0 ? Math.min(100, (net / packsTarget) * 100) : null
@@ -146,7 +137,11 @@ const packsBreakdownByProduct = async (companyId, medicalRepId, yyyyMm, timeZone
     month: yyyyMm,
     medicalRepId: String(rid),
     wholePacksTarget: Number(targetDoc?.packsTarget) || 0,
-    totalNetPacks: totalNet,
+    storedAchievedPacks: Number(targetDoc?.achievedPacks) || 0,
+    totalDeliveredPacks: totals.delivered,
+    totalReturnedPacks: totals.returned,
+    totalAmendedPacks: totals.amended,
+    totalNetPacks: totals.net,
     rows
   };
 };
@@ -188,14 +183,14 @@ const create = async (companyId, data, reqUser, timeZone = 'UTC') => {
     changes: { after: target.toObject() }
   });
   try {
-    await medRepTargetAchievedService.syncAchievedSalesTpForRepMonth(
+    await medRepTargetAchievedService.syncAchievedForRepMonth(
       companyId,
       data.medicalRepId,
       data.month,
       timeZone
     );
   } catch (e) {
-    logger.error('MedRepTarget TP sync failed after target create', {
+    logger.error('MedRepTarget achieved sync failed after target create', {
       companyId: String(companyId),
       month: data.month,
       message: e?.message,
@@ -206,7 +201,7 @@ const create = async (companyId, data, reqUser, timeZone = 'UTC') => {
   return refreshed || target;
 };
 
-const update = async (companyId, id, data, reqUser) => {
+const update = async (companyId, id, data, reqUser, timeZone = 'UTC') => {
   const target = await MedRepTarget.findOne({ _id: id, companyId });
   if (!target) throw new ApiError(404, 'Target not found');
   const before = target.toObject();
@@ -226,6 +221,21 @@ const update = async (companyId, id, data, reqUser) => {
     entityId: target._id,
     changes: { before, after: target.toObject() }
   });
+  try {
+    await medRepTargetAchievedService.syncAchievedForRepMonth(
+      companyId,
+      target.medicalRepId,
+      target.month,
+      timeZone
+    );
+  } catch (e) {
+    logger.error('MedRepTarget achieved sync failed after target update', {
+      companyId: String(companyId),
+      month: target.month,
+      message: e?.message,
+      stack: e?.stack
+    });
+  }
   return MedRepTarget.findById(target._id).populate(TARGET_POPULATE);
 };
 

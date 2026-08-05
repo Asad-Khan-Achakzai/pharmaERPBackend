@@ -10,6 +10,7 @@ const medRepTargetSchema = new mongoose.Schema(
     packsTarget: { type: Number, required: true },
     /** Net TP achieved for the month (see `computeDashboardNetGrossSalesTp`; updated by orders + migration, not pharmacy net). */
     achievedSales: { type: Number, default: 0 },
+    /** Net packs for the month: deliveries − returns − amendments (synced via medRepTargetAchieved.syncAchievedPacksForRepMonth). */
     achievedPacks: { type: Number, default: 0 },
     /** Optional per-product pack goals (whole `packsTarget` may also be set independently). */
     productPacksTargets: [
