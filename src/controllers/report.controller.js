@@ -190,6 +190,25 @@ const monthlySummaryDeliveryDetailsExcel = asyncHandler(async (req, res) => {
   return res.status(200).send(buffer);
 });
 
+const monthlySummaryTpEvents = asyncHandler(async (req, res) => {
+  ApiResponse.success(
+    res,
+    await monthlySummaryService.listTpEvents(req.companyId, req.query, req.context.timeZone)
+  );
+});
+
+const monthlySummaryTpEventsExcel = asyncHandler(async (req, res) => {
+  const { buffer, filename } = await monthlySummaryService.buildTpEventsExcelBuffer(
+    req.companyId,
+    req.query,
+    req.context.timeZone
+  );
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.setHeader('Content-Length', String(buffer.length));
+  return res.status(200).send(buffer);
+});
+
 const pharmacyFinancialWorkspace = asyncHandler(async (req, res) => {
   const data = await pharmacyWorkspaceService.pharmacyFinancialWorkspace(
     req.companyId,
@@ -258,5 +277,7 @@ module.exports = {
   profitTrends,
   monthlySummary,
   monthlySummaryProductPacks,
-  monthlySummaryDeliveryDetailsExcel
+  monthlySummaryDeliveryDetailsExcel,
+  monthlySummaryTpEvents,
+  monthlySummaryTpEventsExcel
 };

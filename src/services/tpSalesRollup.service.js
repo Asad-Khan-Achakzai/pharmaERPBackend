@@ -183,5 +183,8 @@ module.exports = {
   computeDashboardNetGrossSalesTp,
   computeDashboardNetGrossSalesTpByReps,
   grossTpForDelivery,
-  grossTpForDeliveryLine
+  grossTpForDeliveryLine,
+  sumReturnTp,
+  sumAmendmentTp,
+  isOrderFullyCredited
 };

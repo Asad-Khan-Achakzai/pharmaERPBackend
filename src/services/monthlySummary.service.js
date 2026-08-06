@@ -26,6 +26,7 @@ const {
   LEDGER_TYPE,
   LEDGER_REFERENCE_TYPE
 } = require('../constants/enums');
+const tpSalesMovementService = require('./tpSalesMovement.service');
 
 const objectId = (id) => new mongoose.Types.ObjectId(id);
 const nd = { $ne: true };
@@ -504,6 +505,21 @@ const monthlySummary = async (companyId, query = {}, timeZone) => {
   const otherExpMap = mapByMonth(otherExpByMonth, 'other');
   const marketingMap = mapByMonth(marketingByMonth, 'marketing');
 
+  const salesMovementByMonth = await tpSalesMovementService.aggregateSalesMovementByMonth(
+    companyId,
+    dateRange,
+    tz,
+    monthKeys
+  );
+
+  const reconByMonth = await tpSalesMovementService.buildDashboardReconciliationsForMonths(
+    companyId,
+    dateRange,
+    tz,
+    monthKeys,
+    salesMovementByMonth
+  );
+
   const rows = monthKeys.map((month) => {
     const netSales = roundPKR((deliveryNetMap.get(month) || 0) - (returnNetMap.get(month) || 0));
     const distribution = roundPKR((distDelMap.get(month) || 0) - (distRevMap.get(month) || 0));
@@ -513,43 +529,121 @@ const monthlySummary = async (companyId, query = {}, timeZone) => {
     );
     const expenses = roundPKR((payrollMap.get(month) || 0) + (otherExpMap.get(month) || 0));
     const marketing = marketingMap.get(month) || 0;
-    return normalizeRow({
-      month,
-      monthLabel: monthLabel(month, tz),
-      netSales,
-      distribution,
-      discount,
-      castingCost,
-      expenses,
-      marketing
-    });
+    const salesMovement =
+      salesMovementByMonth.get(month) || tpSalesMovementService.finalizeMovement({});
+    return {
+      ...normalizeRow({
+        month,
+        monthLabel: monthLabel(month, tz),
+        netSales,
+        distribution,
+        discount,
+        castingCost,
+        expenses,
+        marketing
+      }),
+      salesMovement,
+      dashboardReconciliation: reconByMonth.get(month)
+    };
   });
 
-  const totals = normalizeRow(
+  const movementTotals = tpSalesMovementService.finalizeMovement(
     rows.reduce(
-      (acc, r) => ({
-        month: 'total',
-        monthLabel: 'Total',
-        netSales: roundPKR(acc.netSales + r.netSales),
-        distribution: roundPKR(acc.distribution + r.distribution),
-        discount: roundPKR(acc.discount + r.discount),
-        castingCost: roundPKR(acc.castingCost + r.castingCost),
-        expenses: roundPKR(acc.expenses + r.expenses),
-        marketing: roundPKR(acc.marketing + r.marketing),
-        pl: 0
-      }),
-      {
-        month: 'total',
-        monthLabel: 'Total',
-        netSales: 0,
-        distribution: 0,
-        discount: 0,
-        castingCost: 0,
-        expenses: 0,
-        marketing: 0,
-        pl: 0
-      }
+      (acc, r) => {
+        const m = r.salesMovement || {};
+        return {
+          grossDeliveriesTp: acc.grossDeliveriesTp + (m.grossDeliveriesTp || 0),
+          returnsCurrentPeriodTp: acc.returnsCurrentPeriodTp + (m.returnsCurrentPeriodTp || 0),
+          returnsPriorPeriodTp: acc.returnsPriorPeriodTp + (m.returnsPriorPeriodTp || 0),
+          amendmentsCurrentPeriodTp:
+            acc.amendmentsCurrentPeriodTp + (m.amendmentsCurrentPeriodTp || 0),
+          amendmentsPriorPeriodTp: acc.amendmentsPriorPeriodTp + (m.amendmentsPriorPeriodTp || 0),
+          returnsUnclassifiedTp: acc.returnsUnclassifiedTp + (m.returnsUnclassifiedTp || 0),
+          amendmentsUnclassifiedTp:
+            acc.amendmentsUnclassifiedTp + (m.amendmentsUnclassifiedTp || 0)
+        };
+      },
+      tpSalesMovementService.emptyMovement()
     )
+  );
+
+  const totals = {
+    ...normalizeRow(
+      rows.reduce(
+        (acc, r) => ({
+          month: 'total',
+          monthLabel: 'Total',
+          netSales: roundPKR(acc.netSales + r.netSales),
+          distribution: roundPKR(acc.distribution + r.distribution),
+          discount: roundPKR(acc.discount + r.discount),
+          castingCost: roundPKR(acc.castingCost + r.castingCost),
+          expenses: roundPKR(acc.expenses + r.expenses),
+          marketing: roundPKR(acc.marketing + r.marketing),
+          pl: 0
+        }),
+        {
+          month: 'total',
+          monthLabel: 'Total',
+          netSales: 0,
+          distribution: 0,
+          discount: 0,
+          castingCost: 0,
+          expenses: 0,
+          marketing: 0,
+          pl: 0
+        }
+      )
+    ),
+    salesMovement: movementTotals,
+    dashboardReconciliation: {
+      netTpSales: movementTotals.netTpSales,
+      dashboardTp: roundPKR(rows.reduce((s, r) => s + (r.dashboardReconciliation?.dashboardTp || 0), 0)),
+      difference: roundPKR(
+        rows.reduce((s, r) => s + (r.dashboardReconciliation?.difference || 0), 0)
+      ),
+      status: rows.every((r) => r.dashboardReconciliation?.status === 'MATCHED')
+        ? 'MATCHED'
+        : 'EXPLAINED_DIFFERENCE',
+      reasons: [],
+      fullyCredited: {
+        orderCount: rows.reduce(
+          (s, r) => s + (r.dashboardReconciliation?.fullyCredited?.orderCount || 0),
+          0
+        ),
+        excludedDeliveryTp: roundPKR(
+          rows.reduce(
+            (s, r) => s + (r.dashboardReconciliation?.fullyCredited?.excludedDeliveryTp || 0),
+            0
+          )
+        ),
+        excludedReturnTp: roundPKR(
+          rows.reduce(
+            (s, r) => s + (r.dashboardReconciliation?.fullyCredited?.excludedReturnTp || 0),
+            0
+          )
+        ),
+        excludedAmendmentTp: roundPKR(
+          rows.reduce(
+            (s, r) => s + (r.dashboardReconciliation?.fullyCredited?.excludedAmendmentTp || 0),
+            0
+          )
+        ),
+        netExcludedImpact: roundPKR(
+          rows.reduce(
+            (s, r) => s + (r.dashboardReconciliation?.fullyCredited?.netExcludedImpact || 0),
+            0
+          )
+        )
+      }
+    }
+  };
+
+  const legacyUnclassifiedCount = rows.reduce(
+    (s, r) =>
+      s +
+      ((r.salesMovement?.returnsUnclassifiedTp || 0) > 0 ? 1 : 0) +
+      ((r.salesMovement?.amendmentsUnclassifiedTp || 0) > 0 ? 1 : 0),
+    0
   );
 
   return {
@@ -562,6 +656,8 @@ const monthlySummary = async (companyId, query = {}, timeZone) => {
     meta: {
       plFormula:
         'Net Sales − Distribution − Discount − Casting (products sold) − Expenses (payroll + operating)',
+      salesMovementIdentity:
+        'Net TP Sales = Gross Deliveries (TP) − Returns − Amendments (current/prior period). Same calculation as Company Dashboard Gross TP Sales (event-date D−R−A, excluding fully credited orders).',
       dateBasis: {
         netSales: 'DeliveryRecord.pharmacyNetPayable minus proportional return pharmacy net (return month)',
         castingCost:
@@ -570,13 +666,17 @@ const monthlySummary = async (companyId, query = {}, timeZone) => {
         discount:
           'Per delivery line: (TP × paid qty × clinicDiscount%) + (TP × bonus qty); returns reduce proportionally',
         expenses: 'Payroll.paidOn (PAID) + Expense.date (category ≠ SALARY)',
-        marketing: 'DoctorActivity.createdAt (investedAmount)'
+        marketing: 'DoctorActivity.createdAt (investedAmount)',
+        netTpSales:
+          'Same as Dashboard totalGrossSalesTp / computeDashboardNetGrossSalesTp: event-date TP on deliveredAt / returnedAt / amendedAt; fully qty-credited orders excluded; returns/amendments split by source delivery period'
       },
       notes: [
         'Marketing (doctor investment) is not included in P/L.',
         'Casting reflects company purchase price on products sold in each month, not supplier GRN receipts.',
-        'Supplier purchases and payments are tracked separately in procurement and payables.'
-      ]
+        'Supplier purchases and payments are tracked separately in procurement and payables.',
+        'Net TP Sales (Trade Price) is not the same as Net Sales (pharmacy payable).'
+      ],
+      legacyUnclassifiedCount
     }
   };
 };
@@ -1134,9 +1234,66 @@ const buildDeliveryDetailsExcelBuffer = async (companyId, query = {}, timeZone) 
   };
 };
 
+const listTpEvents = async (companyId, query = {}, timeZone) => {
+  const monthYm = qScalar(query.month);
+  const fiscalYearStart = query.fiscalYearStart ?? query.fiscalYear;
+  if (fiscalYearStart != null && fiscalYearStart !== '' && monthYm) {
+    const bounds = fiscalYearBounds(fiscalYearStart, timeZone);
+    if (!bounds.monthKeys.includes(monthYm)) {
+      throw new ApiError(400, 'month must fall within the selected fiscal year');
+    }
+  }
+  return tpSalesMovementService.listTpEvents(companyId, query, timeZone);
+};
+
+const buildTpEventsExcelBuffer = async (companyId, query = {}, timeZone) => {
+  const payload = await listTpEvents(
+    companyId,
+    { ...query, page: '1', limit: '10000' },
+    timeZone
+  );
+  const sheetRows = (payload.rows || []).map((r, idx) => ({
+    '#': idx + 1,
+    'Event Type': r.eventType,
+    'Event At': r.eventAt ? new Date(r.eventAt).toISOString() : '',
+    'Order Number': r.orderNumber,
+    'Invoice Number': r.invoiceNumber || '',
+    'Delivery Date': r.sourceDeliveredAt ? new Date(r.sourceDeliveredAt).toISOString() : '',
+    'Source Delivery Period': r.sourceDeliveryYm || '',
+    'Event Period': r.eventYm || '',
+    Classification: r.classification || '',
+    Pharmacy: r.pharmacyName || '',
+    'Medical Rep': r.medicalRepName || '',
+    Products: r.productsLabel || '',
+    Packs: r.packs || 0,
+    'TP Impact': r.tpAmount || 0,
+    'Net Sales (Customer)': r.customerNet || 0,
+    'Company Share': r.companyShare || 0,
+    Status: r.orderStatus || '',
+    'Amendment Number': r.amendmentNumber || ''
+  }));
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(
+    sheetRows.length
+      ? sheetRows
+      : [{ '#': '', 'Event Type': 'No rows for filters' }]
+  );
+  XLSX.utils.book_append_sheet(wb, ws, 'TP Events');
+  const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' });
+  return {
+    buffer,
+    filename: `tp-events-${payload.month}-${payload.bucket}.xlsx`,
+    month: payload.month,
+    bucket: payload.bucket,
+    rowCount: payload.totalCount
+  };
+};
+
 module.exports = {
   fiscalYearBounds,
   monthlySummary,
   productPackSalesForMonth,
-  buildDeliveryDetailsExcelBuffer
+  buildDeliveryDetailsExcelBuffer,
+  listTpEvents,
+  buildTpEventsExcelBuffer
 };

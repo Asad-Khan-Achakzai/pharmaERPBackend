@@ -25,7 +25,13 @@ const amendmentItemSchema = new mongoose.Schema(
     companyShare: { type: Number },
     distributorShare: { type: Number },
     tpDelta: { type: Number },
-    deliveryId: { type: mongoose.Schema.Types.ObjectId, ref: 'DeliveryRecord' }
+    deliveryId: { type: mongoose.Schema.Types.ObjectId, ref: 'DeliveryRecord' },
+    /** Alias snapshot of deliveryId for reporting (kept in sync at write). */
+    sourceDeliveryId: { type: mongoose.Schema.Types.ObjectId, ref: 'DeliveryRecord' },
+    sourceDeliveredAt: { type: Date },
+    /** Company-TZ YYYY-MM of sourceDeliveredAt at write time. */
+    sourceDeliveryYm: { type: String },
+    sourceInvoiceNumber: { type: String }
   },
   { _id: false }
 );
@@ -84,6 +90,8 @@ const orderAmendmentSchema = new mongoose.Schema(
 
 orderAmendmentSchema.index({ companyId: 1, orderId: 1 });
 orderAmendmentSchema.index({ companyId: 1, 'allocations.deliveryId': 1 });
+orderAmendmentSchema.index({ companyId: 1, amendedAt: -1 });
+orderAmendmentSchema.index({ companyId: 1, 'items.sourceDeliveryYm': 1, amendedAt: -1 });
 orderAmendmentSchema.index(
   { companyId: 1, amendmentNumber: 1 },
   { unique: true, partialFilterExpression: { amendmentNumber: { $type: 'string' } } }

@@ -36,6 +36,7 @@ const {
   applyOrderMedicalRepScope,
   assertOrderVisibleToUser
 } = require('../utils/orderScope.util');
+const { buildSourceDeliverySnapshot } = require('../utils/sourceDeliverySnapshot.util');
 
 const resolveVisitLogRef = async (companyId, visitLogId, { doctorId, medicalRepId }) => {
   if (visitLogId == null || visitLogId === '') return null;
@@ -765,6 +766,9 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
 
       orderItem.returnedQty += rItem.quantity;
 
+      const lineTp = roundPKR((orderItem.tpAtTime || 0) * rItem.quantity);
+      const sourceSnap = buildSourceDeliverySnapshot(lastDelivery, tz);
+
       returnRecordItems.push({
         productId: rItem.productId,
         quantity: rItem.quantity,
@@ -779,12 +783,14 @@ const returnOrder = async (companyId, orderId, returnItems, reqUser, timeZone = 
         profitPerUnit: snap.profitPerUnit,
         totalProfit: snap.totalProfit,
         reason: rItem.reason || '',
-        creditAmount: snap.creditAmount
+        creditAmount: snap.creditAmount,
+        tpAmount: lineTp,
+        ...sourceSnap
       });
       totalAmount += snap.creditAmount;
       totalCost += snap.lineCost;
       totalPacks += rItem.quantity;
-      tpReturnTotal += roundPKR(orderItem.tpAtTime * rItem.quantity);
+      tpReturnTotal += lineTp;
 
       if (lastDelivery?._id && snap.creditAmount > 0) {
         const did = String(lastDelivery._id);

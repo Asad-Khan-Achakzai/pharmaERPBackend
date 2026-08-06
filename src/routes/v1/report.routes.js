@@ -41,6 +41,34 @@ const monthlySummaryProductPacksQuerySchema = Joi.object({
   fiscalYear: Joi.number().integer().min(2000).max(2100)
 });
 
+const monthlySummaryTpEventsQuerySchema = Joi.object({
+  month: Joi.string().pattern(/^\d{4}-\d{2}$/).required(),
+  fiscalYearStart: Joi.number().integer().min(2000).max(2100),
+  fiscalYear: Joi.number().integer().min(2000).max(2100),
+  bucket: Joi.string()
+    .valid(
+      'grossDeliveries',
+      'returnsCurrentPeriod',
+      'returnsPriorPeriod',
+      'amendmentsCurrentPeriod',
+      'amendmentsPriorPeriod',
+      'netTpSales',
+      'dashboardExclusion'
+    )
+    .default('netTpSales'),
+  medicalRepId: Joi.string().hex().length(24),
+  pharmacyId: Joi.string().hex().length(24),
+  productId: Joi.string().hex().length(24),
+  orderNumber: Joi.string().max(80),
+  invoiceNumber: Joi.string().max(80),
+  eventDateFrom: Joi.string().max(32),
+  eventDateTo: Joi.string().max(32),
+  q: Joi.string().max(120),
+  page: Joi.number().integer().min(1).default(1),
+  limit: Joi.number().integer().min(1).max(200).default(50),
+  sort: Joi.string().valid('eventAt', '-eventAt').default('-eventAt')
+});
+
 router.use(authenticate, companyScope);
 router.get('/visit-summary', checkPermission('reports.view'), validateQuery(visitSummaryQuerySchema), c.visitSummary);
 router.get('/visit-by-employee', checkPermission('reports.view'), validateQuery(visitByEmployeeQuerySchema), c.visitByEmployee);
@@ -97,6 +125,18 @@ router.get(
   checkPermission('reports.view'),
   validateQuery(monthlySummaryProductPacksQuerySchema),
   c.monthlySummaryDeliveryDetailsExcel
+);
+router.get(
+  '/monthly-summary/tp-events',
+  checkPermission('reports.view'),
+  validateQuery(monthlySummaryTpEventsQuerySchema),
+  c.monthlySummaryTpEvents
+);
+router.get(
+  '/monthly-summary/tp-events.xlsx',
+  checkPermission('reports.view'),
+  validateQuery(monthlySummaryTpEventsQuerySchema),
+  c.monthlySummaryTpEventsExcel
 );
 
 /** MRep field KPIs & coverage (Phase 3 — self, team subtree, or explicit rep when allowed). */

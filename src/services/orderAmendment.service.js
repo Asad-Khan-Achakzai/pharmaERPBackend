@@ -30,6 +30,7 @@ const medRepTargetAchievedService = require('./medRepTargetAchieved.service');
 const financialService = require('./financial.service');
 const pdfService = require('./pdf.service');
 const logger = require('../utils/logger');
+const { buildSourceDeliverySnapshot } = require('../utils/sourceDeliverySnapshot.util');
 
 const AMENDABLE_STATUSES = [
   ORDER_STATUS.DELIVERED,
@@ -64,7 +65,7 @@ const resolveSource = (raw) => {
   return s;
 };
 
-const buildLinePlan = async (session, companyId, order, itemsPayload) => {
+const buildLinePlan = async (session, companyId, order, itemsPayload, timeZone = 'UTC') => {
   const linePlans = [];
   let totalAmount = 0;
   let totalCost = 0;
@@ -114,6 +115,7 @@ const buildLinePlan = async (session, companyId, order, itemsPayload) => {
       throw new ApiError(400, `${orderItem.productName || raw.productId}: ${err.message}`);
     }
     const tpDelta = roundPKR((orderItem.tpAtTime || 0) * deltaQty);
+    const sourceSnap = buildSourceDeliverySnapshot(lastDelivery, timeZone);
 
     linePlans.push({
       productId: orderItem.productId,
@@ -133,7 +135,8 @@ const buildLinePlan = async (session, companyId, order, itemsPayload) => {
       deliveryId: lastDelivery?._id || null,
       creditAmount: snap.creditAmount,
       lineCost: snap.lineCost,
-      totalProfit: snap.totalProfit
+      totalProfit: snap.totalProfit,
+      ...sourceSnap
     });
 
     totalAmount += snap.creditAmount;
@@ -175,7 +178,7 @@ const preview = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts
   }
 
   const session = null;
-  const plan = await buildLinePlan(session, companyId, order, body.items);
+  const plan = await buildLinePlan(session, companyId, order, body.items, timeZone);
 
   let openBefore = null;
   let openAfter = null;
@@ -247,7 +250,7 @@ const create = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts 
       throw new ApiError(400, 'Order cannot be amended in its current status');
     }
 
-    const plan = await buildLinePlan(session, companyId, order, body.items);
+    const plan = await buildLinePlan(session, companyId, order, body.items, tz);
 
     for (const line of plan.linePlans) {
       await qtyCredit.restockDistributorQty(session, {
@@ -315,7 +318,11 @@ const create = async (companyId, orderId, body, reqUser, timeZone = 'UTC', opts 
             companyShare: l.companyShare,
             distributorShare: l.distributorShare,
             tpDelta: l.tpDelta,
-            deliveryId: l.deliveryId
+            deliveryId: l.deliveryId,
+            sourceDeliveryId: l.sourceDeliveryId || l.deliveryId || null,
+            sourceDeliveredAt: l.sourceDeliveredAt || null,
+            sourceDeliveryYm: l.sourceDeliveryYm || null,
+            sourceInvoiceNumber: l.sourceInvoiceNumber || ''
           })),
           allocations,
           totalAmount: plan.totalAmount,

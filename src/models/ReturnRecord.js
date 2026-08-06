@@ -19,7 +19,15 @@ const returnItemSchema = new mongoose.Schema(
     distributorShare: { type: Number },
     profitPerUnit: { type: Number },
     totalProfit: { type: Number },
-    reason: { type: String }
+    reason: { type: String },
+    /** TP × physical qty at write time (transparent Sales Movement). */
+    tpAmount: { type: Number },
+    /** Delivery credited by qty-credit (reporting snapshot). */
+    sourceDeliveryId: { type: mongoose.Schema.Types.ObjectId, ref: 'DeliveryRecord' },
+    sourceDeliveredAt: { type: Date },
+    /** Company-TZ YYYY-MM of sourceDeliveredAt at write time. */
+    sourceDeliveryYm: { type: String },
+    sourceInvoiceNumber: { type: String }
   },
   { _id: false }
 );
@@ -51,6 +59,8 @@ const returnRecordSchema = new mongoose.Schema(
 
 returnRecordSchema.index({ companyId: 1, orderId: 1 });
 returnRecordSchema.index({ companyId: 1, 'allocations.deliveryId': 1 });
+returnRecordSchema.index({ companyId: 1, returnedAt: -1 });
+returnRecordSchema.index({ companyId: 1, 'items.sourceDeliveryYm': 1, returnedAt: -1 });
 
 returnRecordSchema.plugin(softDeletePlugin);
 
