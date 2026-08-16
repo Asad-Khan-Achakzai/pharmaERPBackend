@@ -409,6 +409,17 @@ const checkOut = async (companyId, employeeId, timeZone, body = {}) => {
       after: rec.toObject()
     });
   }
+
+  // Materialize the day's route summary now that the shift is complete.
+  // Best-effort — the nightly job and read-path recompute are the backstop.
+  try {
+    const { computeAndStoreDailySummary } = require('../geo/services/dailyRouteSummary.service');
+    const ymd = businessTime.businessDayKeyFromUtcInstant(rec.checkInTime, tz);
+    computeAndStoreDailySummary(companyId, employeeId, ymd, tz).catch(() => {});
+  } catch {
+    /* best-effort */
+  }
+
   return rec;
 };
 

@@ -54,6 +54,43 @@ async function findOpenAttendanceForHeartbeat(companyId, employeeId, timeZone) {
   return Attendance.findOne({ ...openQuery, date: prevDoc }).lean();
 }
 
+const BACKFILL_PRE_CHECKIN_GRACE_MS = 15 * 60 * 1000;
+const BACKFILL_POST_CHECKOUT_GRACE_MS = 15 * 60 * 1000;
+
+/**
+ * Grace path for offline backfill: a point captured during a shift that has
+ * since been checked out is still valid history. Looks up the closed
+ * attendance whose [checkIn − 15min, checkOut + 15min] window contains
+ * capturedAt, on the point's business day (or the previous one for
+ * overnight shifts).
+ */
+async function findClosedAttendanceForBackfill(companyId, employeeId, timeZone, captured) {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const ymd = businessTime.businessDayKeyFromUtcInstant(captured, tz);
+  const prevYmd = businessTime
+    .toBusinessTime(captured, tz)
+    .minus({ days: 1 })
+    .toISODate();
+  const candidateDates = [dateDocFromYmd(ymd, tz), dateDocFromYmd(prevYmd, tz)];
+
+  return Attendance.findOne({
+    companyId,
+    employeeId,
+    date: { $in: candidateDates },
+    checkInTime: {
+      $ne: null,
+      $lte: new Date(captured.getTime() + BACKFILL_PRE_CHECKIN_GRACE_MS)
+    },
+    checkOutTime: {
+      $ne: null,
+      $gte: new Date(captured.getTime() - BACKFILL_POST_CHECKOUT_GRACE_MS)
+    },
+    ...nd
+  })
+    .sort({ checkInTime: -1 })
+    .lean();
+}
+
 async function recordHeartbeat({
   companyId,
   userId,
@@ -79,9 +116,16 @@ async function recordHeartbeat({
     throw new ApiError(400, 'lat and lng are required');
   }
 
+  const markReplayed = (doc) => {
+    // Non-enumerable so it never leaks into JSON responses; batch endpoint
+    // reads it to report `rejected_duplicate` (client should delete the point).
+    Object.defineProperty(doc, '__replayed', { value: true, enumerable: false });
+    return doc;
+  };
+
   if (clientUuid) {
     const existing = await AttendanceHeartbeat.findOne({ companyId, userId, clientUuid }).lean();
-    if (existing) return existing;
+    if (existing) return markReplayed(existing);
   }
 
   const captured = capturedAt ? new Date(capturedAt) : new Date();
@@ -107,9 +151,15 @@ async function recordHeartbeat({
     throw err;
   }
 
-  const attendance = await findOpenAttendanceForHeartbeat(companyId, userId, timeZone);
+  let attendance = await findOpenAttendanceForHeartbeat(companyId, userId, timeZone);
   if (!attendance) {
-    throw new ApiError(400, 'Check in before sending location updates');
+    // Offline backfill: accept points captured inside an already-closed shift.
+    attendance = await findClosedAttendanceForBackfill(companyId, userId, timeZone, captured);
+  }
+  if (!attendance) {
+    const err = new ApiError(400, 'Check in before sending location updates');
+    err.code = 'NO_ACTIVE_ATTENDANCE';
+    throw err;
   }
 
   const payload = {
@@ -133,11 +183,14 @@ async function recordHeartbeat({
 
   try {
     const doc = await AttendanceHeartbeat.create(payload);
+    // Late/backfilled points change already-materialized day summaries.
+    const { markDailySummaryDirty } = require('../geo/services/dailyRouteSummary.service');
+    markDailySummaryDirty(companyId, userId, captured, timeZone);
     return doc.toObject();
   } catch (err) {
     if (err.code === 11000 && clientUuid) {
       const existing = await AttendanceHeartbeat.findOne({ companyId, userId, clientUuid }).lean();
-      if (existing) return existing;
+      if (existing) return markReplayed(existing);
     }
     throw err;
   }

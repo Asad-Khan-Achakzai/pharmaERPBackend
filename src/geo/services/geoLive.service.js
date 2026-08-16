@@ -128,6 +128,8 @@ async function recordHeartbeatsBatch(params) {
   let accepted = 0;
   let acceptedHistoryOnly = 0;
   let rejectedInvalid = 0;
+  let rejectedState = 0;
+  let rejectedDuplicate = 0;
 
   for (const beat of sorted) {
     const captured = beat.capturedAt ? new Date(beat.capturedAt) : new Date();
@@ -140,6 +142,17 @@ async function recordHeartbeatsBatch(params) {
         ...beat,
         skipRateLimit: historical
       });
+      if (doc?.__replayed) {
+        // Idempotent replay — already stored; client should delete the point.
+        rejectedDuplicate += 1;
+        results.push({
+          clientUuid: beat.clientUuid || null,
+          status: 'rejected_duplicate',
+          qualityLevel: doc?.qualityLevel ?? null,
+          usableForLive: doc?.usableForLive !== false
+        });
+        continue;
+      }
       const historyOnly = doc?.usableForLive === false;
       if (historyOnly) acceptedHistoryOnly += 1;
       else accepted += 1;
@@ -164,7 +177,31 @@ async function recordHeartbeatsBatch(params) {
         });
         continue;
       }
-      // Business/auth errors still fail the batch — callers need to know check-in/state issues.
+      if (code === 'NO_ACTIVE_ATTENDANCE') {
+        // Business-state rejection for this point only — never poison the batch.
+        rejectedState += 1;
+        results.push({
+          clientUuid: beat.clientUuid || null,
+          status: 'rejected_state',
+          qualityLevel: null,
+          usableForLive: false,
+          error: err.message
+        });
+        continue;
+      }
+      if (statusCode === 400) {
+        // Malformed point (e.g. missing lat/lng) — permanently rejected.
+        rejectedInvalid += 1;
+        results.push({
+          clientUuid: beat.clientUuid || null,
+          status: 'rejected_invalid',
+          qualityLevel: null,
+          usableForLive: false,
+          error: err.message
+        });
+        continue;
+      }
+      // Feature-disabled / auth / infrastructure errors still fail the whole batch.
       throw err;
     }
   }
@@ -175,6 +212,8 @@ async function recordHeartbeatsBatch(params) {
       accepted,
       acceptedHistoryOnly,
       rejectedInvalid,
+      rejectedState,
+      rejectedDuplicate,
       total: sorted.length
     }
   };

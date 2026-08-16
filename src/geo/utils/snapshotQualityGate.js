@@ -12,6 +12,26 @@ function isDuplicate(incoming, existing) {
 const PERIODIC_REFRESH_MS = 180_000;
 
 /**
+ * Teleport gate: legit driving tops out ~39 m/s in production data, while
+ * dual-device/mock-GPS fixes imply speeds orders of magnitude higher (often
+ * with excellent accuracy, so accuracy cannot catch them). Blocking is capped
+ * at 15 minutes so a genuinely relocated rep cannot be pinned to a stale
+ * location forever.
+ */
+const TELEPORT_SPEED_MPS = 45;
+const TELEPORT_MIN_DISPLACEMENT_M = 200;
+const TELEPORT_MAX_BLOCK_MS = 15 * 60_000;
+
+function isTeleport(incoming, existing) {
+  const dtMs =
+    new Date(incoming.capturedAt).getTime() - new Date(existing.capturedAt).getTime();
+  if (dtMs <= 0 || dtMs >= TELEPORT_MAX_BLOCK_MS) return false;
+  const movedM = haversineMeters(incoming.lat, incoming.lng, existing.lat, existing.lng);
+  if (movedM <= TELEPORT_MIN_DISPLACEMENT_M) return false;
+  return movedM / (dtMs / 1000) > TELEPORT_SPEED_MPS;
+}
+
+/**
  * Quality-gated snapshot update — prevents worse fixes from overwriting good pins.
  */
 function shouldUpdateSnapshot(incoming, existing) {
@@ -20,6 +40,9 @@ function shouldUpdateSnapshot(incoming, existing) {
   const incomingAt = new Date(incoming.capturedAt).getTime();
   const existingAt = new Date(existing.capturedAt).getTime();
   if (incomingAt <= existingAt + 5000) return false;
+  // Physically impossible hops never move the live pin — checked before the
+  // periodic refresh so bogus fixes cannot ride the freshness path.
+  if (isTeleport(incoming, existing)) return false;
   if (incomingAt >= existingAt + PERIODIC_REFRESH_MS) return true;
   if (isDuplicate(incoming, existing)) return false;
 
@@ -36,4 +59,4 @@ function shouldUpdateSnapshot(incoming, existing) {
   );
 }
 
-module.exports = { shouldUpdateSnapshot, isDuplicate };
+module.exports = { shouldUpdateSnapshot, isDuplicate, isTeleport };

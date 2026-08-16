@@ -7,6 +7,7 @@ const { startAttendanceApprovalAutomationJob } = require('./src/jobs/attendanceA
 const { startPlanItemsMissedJob } = require('./src/jobs/planItemsMissed.job');
 const { startMediaRetentionCleanupJob } = require('./src/jobs/mediaRetentionCleanup.job');
 const { startHeartbeatRetentionArchiveJob } = require('./src/jobs/heartbeatRetentionArchive.job');
+const { startDailyRouteSummaryJob } = require('./src/jobs/dailyRouteSummary.job');
 const { startPushOutboxJob } = require('./src/jobs/pushOutbox.job');
 const { startPushReceiptsJob } = require('./src/jobs/pushReceipts.job');
 const { startAnnouncementFanoutJob } = require('./src/jobs/announcementFanout.job');
@@ -28,6 +29,7 @@ const startServer = async () => {
     startPlanItemsMissedJob();
     startMediaRetentionCleanupJob();
     startHeartbeatRetentionArchiveJob();
+    startDailyRouteSummaryJob();
     startPushOutboxJob();
     startPushReceiptsJob();
     startAnnouncementFanoutJob();

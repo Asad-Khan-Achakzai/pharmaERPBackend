@@ -17,6 +17,7 @@ const {
   classifyGpsQuality,
   resolveAccuracyPolicy
 } = require('../utils/gpsQuality');
+const routeProcessing = require('../utils/routeProcessing');
 const dayRouteService = require('./dayRoute.service');
 const { PLAN_ITEM_STATUS } = require('../../constants/enums');
 
@@ -149,6 +150,28 @@ function detectStops(path) {
   }
 
   return stops;
+}
+
+const CLASSIFICATION_KIND = {
+  'Doctor Visit': 'doctor',
+  'Pharmacy Visit': 'pharmacy',
+  'Call Point': 'callpoint',
+  'Idle Stop': 'idle',
+  'Unknown Stop': 'unknown'
+};
+
+/** How many known entities sit near this stop (same-plaza ambiguity indicator). */
+function countNearbyEntities(stop, doctors, pharmacies, callPoints) {
+  let count = 0;
+  for (const list of [doctors, pharmacies, callPoints]) {
+    for (const e of list) {
+      if (typeof e.latitude !== 'number' || typeof e.longitude !== 'number') continue;
+      if (haversineMeters(stop.lat, stop.lng, e.latitude, e.longitude) <= ENTITY_PROXIMITY_M) {
+        count += 1;
+      }
+    }
+  }
+  return count;
 }
 
 function classifyStop(stop, visits, doctors, pharmacies, callPoints) {
@@ -341,7 +364,14 @@ function buildGpsEvents(path) {
   return events;
 }
 
-function buildQuality({ path, gaps, expectedSampleIntervalMs, diagnostics, workingHoursMs }) {
+function buildQuality({
+  path,
+  gaps,
+  expectedSampleIntervalMs,
+  diagnostics,
+  workingHoursMs,
+  cleaning = null
+}) {
   const reasons = [];
   const accuracies = path.map((p) => p.accuracy).filter((a) => typeof a === 'number');
   const medianAccuracy = median(accuracies);
@@ -432,6 +462,26 @@ function buildQuality({ path, gaps, expectedSampleIntervalMs, diagnostics, worki
     reasons.push('Offline periods detected');
   }
 
+  // Score reflects confidence in the tracking data, never rep performance.
+  const rejectedOutliers = cleaning?.rejectedOutliers || 0;
+  const conflictingSources = !!cleaning?.conflictingSources?.detected;
+  if (rejectedOutliers > 0) {
+    const rawTotal = cleaning?.rawPointCount || path.length + rejectedOutliers;
+    const rejectedShare = rejectedOutliers / Math.max(1, rawTotal);
+    if (rejectedShare >= 0.2) {
+      score -= 15;
+      reasons.push(`${rejectedOutliers} impossible GPS jumps removed`);
+    } else if (rejectedShare >= 0.05) {
+      score -= 8;
+      reasons.push(`${rejectedOutliers} impossible GPS jumps removed`);
+    } else {
+      reasons.push(`${rejectedOutliers} impossible GPS jumps removed`);
+    }
+  }
+  if (conflictingSources) {
+    reasons.push('Conflicting locations from multiple devices/mock GPS');
+  }
+
   if (!path.length) {
     score = 0;
     reasons.push('No location path recorded');
@@ -441,11 +491,20 @@ function buildQuality({ path, gaps, expectedSampleIntervalMs, diagnostics, worki
   let band = 'Trusted';
   if (score < 40) band = 'Unreliable';
   else if (score < 70) band = 'Partial';
+  // Dual-device / mock-GPS days can never be presented as fully trusted.
+  if (conflictingSources && band === 'Trusted') {
+    band = 'Partial';
+    score = Math.min(score, 69);
+  }
 
   return {
     score,
     band,
     reasons,
+    rejectedOutliers,
+    excludedPoints: cleaning?.excludedPoints || 0,
+    removedDuplicates: cleaning?.removedDuplicates || 0,
+    conflictingSources,
     completenessRatio: Math.round(completenessRatio * 1000) / 1000,
     gapMinutes: Math.round(gapMinutes * 10) / 10,
     medianAccuracy: medianAccuracy != null ? Math.round(medianAccuracy) : null,
@@ -464,6 +523,9 @@ function emptySummary() {
     drivingTimeMs: 0,
     visitTimeMs: 0,
     idleTimeMs: 0,
+    stationaryTimeMs: 0,
+    gapTimeMs: 0,
+    stopCount: 0,
     visitCount: 0,
     orderCount: 0,
     doctorsVisited: 0,
@@ -610,7 +672,7 @@ async function getRouteHistory(companyId, userId, dateYmd, timeZone, options = {
           .lean()
       : doctorsNear;
 
-  let path = enrichPathQuality(
+  const rawPath = enrichPathQuality(
     heartbeats.map((h) => ({
       lat: h.lat,
       lng: h.lng,
@@ -627,6 +689,28 @@ async function getRouteHistory(companyId, userId, dateYmd, timeZone, options = {
     accuracyPolicy
   );
 
+  // Clean in memory (raw heartbeats untouched): timestamp plausibility,
+  // near-duplicate collapse, teleport rejection with re-anchoring.
+  const cleaning = routeProcessing.cleanRoutePoints(rawPath);
+  const cleanedPath = cleaning.points;
+
+  const gapThresholdMs = Math.max(3 * expectedSampleIntervalMs, MIN_GAP_FLOOR_MS);
+  const visitBoundaryMs = [];
+  for (const v of visitLogs) {
+    for (const t of [v.checkInTime, v.checkOutTime, v.visitTime]) {
+      const ms = t ? new Date(t).getTime() : NaN;
+      if (Number.isFinite(ms)) visitBoundaryMs.push(ms);
+    }
+  }
+
+  // Typed movement | stop | gap segments; distance from full-res movement
+  // points only (never from simplified render paths, stops, or gap chords).
+  const routeGeometry = routeProcessing.buildTimeSegments(cleanedPath, {
+    gapThresholdMs,
+    visitBoundaryMs
+  });
+
+  let path = cleanedPath;
   const maxPoints =
     options.maxPoints != null
       ? Number(options.maxPoints)
@@ -639,6 +723,10 @@ async function getRouteHistory(companyId, userId, dateYmd, timeZone, options = {
 
   const segments = buildQualitySegments(path);
   const gpsEvents = buildGpsEvents(path);
+
+  const doctorNameById = new Map(
+    [...doctorsNear, ...allDoctorsForStops].map((d) => [String(d._id), d.name || null])
+  );
 
   const visits = visitLogs.map((v) => {
     const at = v.visitTime || v.createdAt;
@@ -662,6 +750,7 @@ async function getRouteHistory(companyId, userId, dateYmd, timeZone, options = {
       checkOutTime: v.checkOutTime ?? null,
       durationMs,
       doctorId: v.doctorId,
+      doctorName: v.doctorId ? doctorNameById.get(String(v.doctorId)) || null : null,
       planItemId: v.planItemId,
       geoFenceResult: v.geoFenceResult,
       distanceFromDoctor: v.distanceFromDoctor,
@@ -672,10 +761,38 @@ async function getRouteHistory(companyId, userId, dateYmd, timeZone, options = {
     };
   });
 
-  const gaps = detectGaps(path, expectedSampleIntervalMs, diagnostics);
-  let stops = detectStops(path).map((s) =>
-    classifyStop(s, visits, allDoctorsForStops, pharmaciesNear, callPoints)
-  );
+  const gaps = detectGaps(cleanedPath, expectedSampleIntervalMs, diagnostics);
+  // Teleport re-anchor discontinuities are gaps in coverage too (tiny dt, huge hop).
+  for (const seg of routeGeometry.segments) {
+    if (seg.type === 'gap' && seg.reason === 'DISCONTINUITY') {
+      gaps.push({
+        type: 'DISCONTINUITY',
+        from: seg.fromCapturedAt,
+        to: seg.toCapturedAt,
+        durationMs: seg.durationMs,
+        fromLat: seg.fromLat,
+        fromLng: seg.fromLng,
+        toLat: seg.toLat,
+        toLng: seg.toLng
+      });
+    }
+  }
+  gaps.sort((a, b) => new Date(a.from) - new Date(b.from));
+
+  let stops = routeGeometry.stops
+    .map((s) => ({
+      ...s,
+      classification: 'Unknown Stop',
+      entityId: null,
+      entityName: null,
+      visitLogId: null
+    }))
+    .map((s) => classifyStop(s, visits, allDoctorsForStops, pharmaciesNear, callPoints))
+    .map((s) => ({
+      ...s,
+      kind: CLASSIFICATION_KIND[s.classification] || 'unknown',
+      nearbyEntityCount: countNearbyEntities(s, allDoctorsForStops, pharmaciesNear, callPoints)
+    }));
 
   const events = [];
 
@@ -784,7 +901,9 @@ async function getRouteHistory(companyId, userId, dateYmd, timeZone, options = {
         ? new Date(path[path.length - 1].capturedAt) - new Date(path[0].capturedAt)
         : 0;
 
-  const distanceMeters = Math.round(pathDistanceMeters(path));
+  // Distance from cleaned full-resolution movement segments only:
+  // stops contribute 0, gaps contribute 0, teleports already rejected.
+  const distanceMeters = routeGeometry.distanceMeters;
   const visitTimeMs = stops
     .filter((s) =>
       ['Doctor Visit', 'Pharmacy Visit', 'Call Point'].includes(s.classification)
@@ -797,19 +916,11 @@ async function getRouteHistory(companyId, userId, dateYmd, timeZone, options = {
     .filter((g) => g.type === 'SIGNAL_GAP')
     .reduce((sum, g) => sum + g.durationMs, 0);
 
-  // Driving time from moving path segments (not a residual that collapses to 0).
-  let movingMs = 0;
-  for (let i = 1; i < path.length; i += 1) {
-    const a = path[i - 1];
-    const b = path[i];
-    const dt = new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime();
-    if (!Number.isFinite(dt) || dt <= 0 || dt > 15 * 60 * 1000) continue;
-    const dist = haversineMeters(a.lat, a.lng, b.lat, b.lng);
-    const speed = a.speed != null && Number.isFinite(a.speed) ? a.speed : dist / (dt / 1000);
-    // Treat as driving/moving when covering meaningful distance or > ~1 m/s
-    if (dist >= 25 || speed >= 1) movingMs += dt;
-  }
-  const drivingTimeMs = Math.min(workingHoursMs, Math.round(movingMs));
+  // Driving/moving time from typed movement segments.
+  const drivingTimeMs =
+    workingHoursMs > 0
+      ? Math.min(workingHoursMs, routeGeometry.movingTimeMs)
+      : routeGeometry.movingTimeMs;
 
   const plannedItems = plannedRoute?.items || [];
   const plannedCompleted = plannedItems.filter(
@@ -841,6 +952,9 @@ async function getRouteHistory(companyId, userId, dateYmd, timeZone, options = {
     drivingTimeMs: Math.round(drivingTimeMs),
     visitTimeMs,
     idleTimeMs,
+    stationaryTimeMs: routeGeometry.stationaryTimeMs,
+    gapTimeMs: routeGeometry.gapTimeMs,
+    stopCount: stops.length,
     visitCount: visits.length,
     orderCount: orders.length,
     doctorsVisited,
@@ -854,26 +968,42 @@ async function getRouteHistory(companyId, userId, dateYmd, timeZone, options = {
   };
 
   const quality = buildQuality({
-    path,
+    path: cleanedPath,
     gaps,
     expectedSampleIntervalMs,
     diagnostics,
-    workingHoursMs
+    workingHoursMs,
+    cleaning
   });
+
+  const pointStats = {
+    rawPointCount: cleaning.rawPointCount,
+    cleanedPointCount: cleanedPath.length,
+    excludedPoints: cleaning.excludedPoints,
+    removedDuplicates: cleaning.removedDuplicates,
+    removedOutliers: cleaning.rejectedOutliers
+  };
 
   if (options.summaryOnly) {
     return {
       date: ymd,
+      companyDate: ymd,
+      timeZone: tz,
       userId: String(userId),
       summary,
-      quality
+      quality,
+      pointStats
     };
   }
 
   return {
     date: ymd,
+    companyDate: ymd,
+    timeZone: tz,
     userId: String(userId),
     path,
+    timeSegments: routeGeometry.segments,
+    pointStats,
     segments,
     gpsEvents,
     events,
@@ -915,9 +1045,11 @@ function deltaNumber(a, b) {
 }
 
 async function compareRouteHistory(companyId, userId, dateA, dateB, timeZone, options = {}) {
+  // Lazy require to avoid a circular dependency (summary service computes via this module).
+  const { getDailySummary } = require('./dailyRouteSummary.service');
   const [dayA, dayB] = await Promise.all([
-    getRouteHistory(companyId, userId, dateA, timeZone, { ...options, summaryOnly: true }),
-    getRouteHistory(companyId, userId, dateB, timeZone, { ...options, summaryOnly: true })
+    getDailySummary(companyId, userId, dateA, timeZone, options.company),
+    getDailySummary(companyId, userId, dateB, timeZone, options.company)
   ]);
 
   const keys = Object.keys(emptySummary());
@@ -950,15 +1082,14 @@ async function getRouteHistoryRange(companyId, userId, fromYmd, toYmd, timeZone,
     throw new ApiError(400, 'to must be on or after from');
   }
 
+  const { getDailySummary } = require('./dailyRouteSummary.service');
   const days = [];
   let guard = 0;
   while (cursor <= end && guard < 62) {
     const ymd = cursor.toISODate();
+    // Materialized summaries; recomputes transparently when dirty/stale.
     // eslint-disable-next-line no-await-in-loop
-    const day = await getRouteHistory(companyId, userId, ymd, timeZone, {
-      ...options,
-      summaryOnly: true
-    });
+    const day = await getDailySummary(companyId, userId, ymd, timeZone, options.company);
     days.push(day);
     cursor = cursor.plus({ days: 1 });
     guard += 1;

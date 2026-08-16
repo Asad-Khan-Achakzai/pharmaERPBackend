@@ -73,6 +73,8 @@ const serverConfig = asyncHandler(async (req, res) => {
           id: String(company._id),
           name: company.name,
           status: 'LIVE',
+          // IANA zone so clients compute "today" in company time, not device time.
+          timeZone: company.timeZone || null,
           mobilePushEnabled: !!company.mobilePushEnabled,
           liveTrackingEnabled: !!(
             geoResolved.enabled &&
