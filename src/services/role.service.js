@@ -79,6 +79,8 @@ const DEFAULT_ASM_PERMISSIONS = [
   'doctorLocations.review',
   'team.view',
   'team.viewAllReports',
+  'managerFieldDays.view',
+  'managerFieldDays.edit',
   'targets.view',
   'attendance.request.create',
   'attendance.approve.direct',

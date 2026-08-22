@@ -25,7 +25,11 @@ const resolvedCheckInPolicySchema = new mongoose.Schema(
     locationName: { type: String, trim: true, maxlength: 200 },
     latitude: { type: Number, default: null },
     longitude: { type: Number, default: null },
-    radiusMeters: { type: Number, min: 0, default: null }
+    radiusMeters: { type: Number, min: 0, default: null },
+    /** Audit: which resolver produced the point (e.g. WEEKLY_PLAN_CP, COMPANY_DEFAULT). */
+    source: { type: String, trim: true, maxlength: 64, default: null },
+    /** Audit: id of the referenced entity (CallPoint / Doctor) when applicable. */
+    refId: { type: mongoose.Schema.Types.ObjectId, default: null }
   },
   { _id: false }
 );

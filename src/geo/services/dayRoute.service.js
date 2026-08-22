@@ -17,14 +17,15 @@ async function getDayRoute(companyId, employeeId, dateYmd, timeZone) {
   const ymd = execution.date || businessTime.nowInBusinessTime(tz).toISODate();
 
   let checkInPoint = null;
-  const weeklyPlan = await checkInPolicyServiceV2.findActiveWeeklyPlanForDay(
+  /** Same plan-status preference as check-in validation so pin + verdict agree. */
+  const cpPlan = await checkInPolicyServiceV2.findWeeklyPlanForDayCp(
     companyId,
     employeeId,
     ymd,
     tz
   );
-  if (weeklyPlan) {
-    const cp = await checkInPolicyServiceV2.resolveDayCallPoint(companyId, weeklyPlan, ymd, 150);
+  if (cpPlan) {
+    const cp = await checkInPolicyServiceV2.resolveDayCallPoint(companyId, cpPlan, ymd, 150);
     if (cp) {
       checkInPoint = {
         id: null,
@@ -33,8 +34,16 @@ async function getDayRoute(companyId, employeeId, dateYmd, timeZone) {
         lng: cp.longitude
       };
     }
-    const custom = weeklyPlan.checkInConfiguration?.customLocation;
-    if (!checkInPoint && custom?.latitude != null && custom?.longitude != null) {
+  }
+  if (!checkInPoint) {
+    const weeklyPlan = await checkInPolicyServiceV2.findActiveWeeklyPlanForDay(
+      companyId,
+      employeeId,
+      ymd,
+      tz
+    );
+    const custom = weeklyPlan?.checkInConfiguration?.customLocation;
+    if (custom?.latitude != null && custom?.longitude != null) {
       checkInPoint = {
         id: null,
         name: custom.locationName || 'Custom check-in',
@@ -44,7 +53,9 @@ async function getDayRoute(companyId, employeeId, dateYmd, timeZone) {
     }
   }
 
-  const items = (execution.items || []).map((item, idx) => {
+  const items = (execution.items || [])
+    .filter((item) => item.isFieldDayView !== true)
+    .map((item, idx) => {
     const doctor = item.doctorId && typeof item.doctorId === 'object' ? item.doctorId : null;
     const visitLog = item.visitLogId && typeof item.visitLogId === 'object' ? item.visitLogId : null;
     return {

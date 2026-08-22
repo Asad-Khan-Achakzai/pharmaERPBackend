@@ -12,7 +12,8 @@ const {
   WEEKLY_PLAN_STATUS,
   UNPLANNED_VISIT_REASON,
   DAY_EXECUTION_STATE,
-  CO_VISIT_PARTICIPANT_STATUS
+  CO_VISIT_PARTICIPANT_STATUS,
+  CO_VISIT_PARTICIPANT_SOURCE
 } = require('../constants/enums');
 const businessTime = require('../utils/businessTime');
 const planExecution = require('../utils/planExecution.util');
@@ -25,6 +26,9 @@ const { assertOrderVisibleToUser } = require('../utils/orderScope.util');
 const coVisit = require('./coVisit.service');
 const coVisitNotification = require('./coVisitNotification.service');
 const activeVisitService = require('./activeVisit.service');
+const managerFieldDayService = require('./managerFieldDay.service');
+const { excludeAlreadyVisible, tagFieldDayObserverView } = require('../utils/fieldDayVisitVisibility');
+const { resolveLivePartnershipItems, isPlanLiveForPartnership } = require('../utils/weeklyPlanPartnership');
 
 const normalizePlanItemDate = (input, timeZone) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
@@ -75,8 +79,39 @@ const listPopulate = [
   { path: 'visitLogId' },
   { path: 'participants.employeeId', select: 'name email' },
   { path: 'employeeId', select: 'name email' },
-  { path: 'weeklyPlanId', select: 'weekStartDate weekEndDate status' }
+  { path: 'weeklyPlanId', select: 'weekStartDate weekEndDate status approvalRequired' }
 ];
+
+/**
+ * Prefer the canonical business-day date, then fall back to nearby instants
+ * that still map to the same company calendar day (legacy UTC-midnight rows).
+ */
+const findPlanItemsForBusinessDay = async (companyId, ymd, tz, extraQuery, sort) => {
+  const dateDoc = businessTime.businessDayStartUtc(ymd, tz);
+  const exact = await PlanItem.find({
+    companyId,
+    date: dateDoc,
+    isDeleted: { $ne: true },
+    ...extraQuery
+  })
+    .populate(listPopulate)
+    .sort(sort)
+    .lean();
+  if (exact.length) return exact;
+
+  const start = DateTime.fromISO(ymd, { zone: tz }).minus({ days: 1 }).startOf('day').toUTC().toJSDate();
+  const end = DateTime.fromISO(ymd, { zone: tz }).plus({ days: 2 }).startOf('day').toUTC().toJSDate();
+  const windowed = await PlanItem.find({
+    companyId,
+    date: { $gte: start, $lt: end },
+    isDeleted: { $ne: true },
+    ...extraQuery
+  })
+    .populate(listPopulate)
+    .sort(sort)
+    .lean();
+  return windowed.filter((item) => businessTime.businessDayKeyFromUtcInstant(item.date, tz) === ymd);
+};
 
 const attachPlanItemDateYmd = (items, timeZone) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
@@ -102,28 +137,48 @@ const buildTodayExecution = async (companyId, employeeId, dateYmd, timeZone) => 
   const dateDoc = businessTime.businessDayStartUtc(ymd, tz);
   const eid = new mongoose.Types.ObjectId(String(employeeId));
 
-  const [ownedItems, coVisitItems] = await Promise.all([
+  const coVisitSort = { plannedTime: 1, createdAt: 1 };
+  const [ownedItems, coVisitItems, fieldDayRepIds] = await Promise.all([
     PlanItem.find({ companyId, employeeId: eid, date: dateDoc, isDeleted: { $ne: true } })
       .populate(listPopulate)
       .sort({ sequenceOrder: 1, createdAt: 1 })
       .lean(),
-    PlanItem.find({
+    findPlanItemsForBusinessDay(
       companyId,
-      date: dateDoc,
-      isDeleted: { $ne: true },
-      employeeId: { $ne: eid },
-      ...coVisit.participantVisibilityQuery(employeeId)
-    })
-      .populate(listPopulate)
-      .sort({ plannedTime: 1, createdAt: 1 })
-      .lean()
+      ymd,
+      tz,
+      { employeeId: { $ne: eid }, ...coVisit.participantVisibilityQuery(employeeId) },
+      coVisitSort
+    ),
+    managerFieldDayService.medicalRepIdsForManagerOnDate(companyId, eid, dateDoc)
   ]);
 
   assertSequenceIntegrityForExecutionDay(ownedItems);
 
+  let fieldDayRaw = [];
+  if (fieldDayRepIds.length) {
+    const repOids = fieldDayRepIds.map((id) => new mongoose.Types.ObjectId(id));
+    fieldDayRaw = await findPlanItemsForBusinessDay(
+      companyId,
+      ymd,
+      tz,
+      { employeeId: { $in: repOids, $ne: eid } },
+      coVisitSort
+    );
+    fieldDayRaw = excludeAlreadyVisible(fieldDayRaw, ownedItems, coVisitItems);
+  }
+
+  const visibleCoVisitItems = await resolveLivePartnershipItems(coVisitItems);
+  const visibleFieldDayRaw = fieldDayRaw;
+
   const enrichedOwned = await coVisit.populateParticipantUsers(ownedItems, employeeId);
-  const enrichedCoVisit = await coVisit.populateParticipantUsers(coVisitItems, employeeId);
-  const items = [...enrichedOwned, ...enrichedCoVisit.map((i) => ({ ...i, isCoVisitParticipantView: true }))];
+  const enrichedCoVisit = await coVisit.populateParticipantUsers(visibleCoVisitItems, employeeId);
+  const enrichedFieldDay = await coVisit.populateParticipantUsers(visibleFieldDayRaw, employeeId);
+  const items = [
+    ...enrichedOwned,
+    ...enrichedCoVisit.map((i) => ({ ...i, isCoVisitParticipantView: true })),
+    ...tagFieldDayObserverView(enrichedFieldDay)
+  ];
 
   const summary = planExecution.summarizeExecutionCounts(ownedItems);
   const dayExecutionState = planExecution.deriveDayExecutionState(ownedItems);
@@ -172,7 +227,7 @@ const buildTodayExecution = async (companyId, employeeId, dateYmd, timeZone) => 
     },
     coverageHints,
     coverageAlert,
-    items
+    items: attachPlanItemDateYmd(items, tz)
   };
 };
 
@@ -182,7 +237,7 @@ const buildTodayExecution = async (companyId, employeeId, dateYmd, timeZone) => 
  *   - `null` → company-wide (admin.access)
  *   - `ObjectId[]` → restrict to subtree or self
  */
-const buildTeamVisits = async (companyId, visibleEmployeeIds, dateYmd, timeZone, { employeeId } = {}) => {
+const buildTeamVisits = async (companyId, visibleEmployeeIds, dateYmd, timeZone, { employeeId, viewerUserId } = {}) => {
   const tz = businessTime.requireCompanyIanaZone(timeZone);
   const ymd = dateYmd || businessTime.nowInBusinessTime(tz).toISODate();
   const dateDoc = businessTime.businessDayStartUtc(ymd, tz);
@@ -206,12 +261,26 @@ const buildTeamVisits = async (companyId, visibleEmployeeIds, dateYmd, timeZone,
 
   const enriched = await coVisit.populateParticipantUsers(items, null);
   const withYmd = attachPlanItemDateYmd(enriched, tz);
+
+  let extras = [];
+  if (viewerUserId && !employeeId) {
+    const mine = await buildTodayExecution(companyId, viewerUserId, ymd, tz);
+    const seen = new Set(withYmd.map((i) => String(i._id)));
+    extras = attachPlanItemDateYmd(
+      (mine.items || []).filter(
+        (i) => (i.isCoVisitParticipantView || i.isFieldDayView) && !seen.has(String(i._id))
+      ),
+      tz
+    );
+  }
+
+  const itemsOut = extras.length ? [...withYmd, ...extras] : withYmd;
   const summary = planExecution.summarizeExecutionCounts(items);
 
   return {
     date: ymd,
     summary,
-    items: withYmd
+    items: itemsOut
   };
 };
 
@@ -310,7 +379,7 @@ const bulkCreateForPlan = async (companyId, weeklyPlanId, items, reqUser, timeZo
 
     const t = date.getTime();
     if (!buckets.has(t)) {
-      buckets.set(t, { date, rows: [] });
+      buckets.set(t, { date, ymd, rows: [] });
       dayOrder.push(t);
     }
     buckets.get(t).rows.push({ type, doctorId, title, notes: raw.notes, plannedTime, participantUserIds: raw.participantUserIds });
@@ -318,13 +387,28 @@ const bulkCreateForPlan = async (companyId, weeklyPlanId, items, reqUser, timeZo
 
   const docs = [];
   for (const timeKey of dayOrder) {
-    const { date, rows } = buckets.get(timeKey);
+    const { date, ymd, rows } = buckets.get(timeKey);
+    const dayPartnerId = coVisit.dayPartnerIdForYmd(plan, ymd);
     let seq = 1;
     for (const row of rows) {
       let participants = [];
+      let coVisitOverride = false;
       if (row.participantUserIds?.length) {
+        /** Explicit selection wins over the day partner (visit-level override). */
         await coVisit.assertParticipantsAssignable(companyId, employeeId, row.participantUserIds, reqUser);
         participants = coVisit.buildParticipantRecords(row.participantUserIds, reqUser.userId);
+        coVisitOverride = true;
+      } else if (
+        dayPartnerId &&
+        dayPartnerId !== String(employeeId) &&
+        isPlanLiveForPartnership(plan)
+      ) {
+        /** Inherit the weekly plan's day-level partner (no per-item notification). */
+        participants = coVisit.buildParticipantRecords(
+          [dayPartnerId],
+          reqUser.userId,
+          CO_VISIT_PARTICIPANT_SOURCE.DAY
+        );
       }
       docs.push({
         companyId,
@@ -340,6 +424,7 @@ const bulkCreateForPlan = async (companyId, weeklyPlanId, items, reqUser, timeZo
         status: PLAN_ITEM_STATUS.PENDING,
         isUnplanned: false,
         participants,
+        coVisitOverride,
         createdBy: reqUser.userId
       });
       seq += 1;
@@ -348,16 +433,42 @@ const bulkCreateForPlan = async (companyId, weeklyPlanId, items, reqUser, timeZo
 
   try {
     const created = await PlanItem.insertMany(docs);
+    /** (partnerId, ymd) pairs that inherited the day partner — notified once per day. */
+    const dayLevelNotified = new Set();
+    let ownerName = null;
+    if (created.some((d) => (d.participants || []).some((p) => coVisit.isDaySourced(p)))) {
+      const owner = await User.findById(employeeId).select('name').lean();
+      ownerName = owner?.name || null;
+    }
     for (const doc of created) {
-      if (doc.participants?.length) {
-        const ids = doc.participants.map((p) => String(p.employeeId));
+      if (!doc.participants?.length) continue;
+      const explicitIds = doc.participants
+        .filter((p) => !coVisit.isDaySourced(p))
+        .map((p) => String(p.employeeId));
+      if (explicitIds.length) {
         void coVisitNotification.notifyParticipantsAdded({
           companyId,
           planItem: doc,
-          addedUserIds: ids,
+          addedUserIds: explicitIds,
           inviterUserId: reqUser.userId,
           timeZone: tz
         });
+      }
+      for (const p of doc.participants) {
+        if (!coVisit.isDaySourced(p)) continue;
+        const ymd = businessTime.businessDayKeyFromUtcInstant(doc.date, tz);
+        const key = `${p.employeeId}:${ymd}`;
+        if (dayLevelNotified.has(key)) continue;
+        dayLevelNotified.add(key);
+        void coVisitNotification
+          .notifyDayPartnerAssigned({
+            companyId,
+            weeklyPlanId,
+            partnerUserId: String(p.employeeId),
+            repName: ownerName,
+            dayYmd: ymd
+          })
+          .catch(() => null);
       }
     }
     await auditService.log({
@@ -629,11 +740,34 @@ const updateByAdmin = async (companyId, planItemId, data, reqUser, timeZone) => 
     }
   }
 
-  if (data.participantUserIds !== undefined) {
+  if (data.inheritDayPartner === true) {
+    /** Reset the visit to inherit the weekly plan's day-level partner again. */
+    coVisit.assertOwnerCanManageParticipants(item, reqUser);
+    const plan = await WeeklyPlan.findOne({
+      _id: item.weeklyPlanId,
+      companyId,
+      isDeleted: { $ne: true }
+    })
+      .select('partnerByDay')
+      .lean();
+    const itemYmd = businessTime.businessDayKeyFromUtcInstant(item.date, tz);
+    const dayPartnerId = coVisit.dayPartnerIdForYmd(plan, itemYmd);
+    item.coVisitOverride = false;
+    item.participants =
+      dayPartnerId && dayPartnerId !== String(item.employeeId)
+        ? coVisit.buildParticipantRecords(
+            [dayPartnerId],
+            reqUser.userId,
+            CO_VISIT_PARTICIPANT_SOURCE.DAY
+          )
+        : [];
+  } else if (data.participantUserIds !== undefined) {
     coVisit.assertOwnerCanManageParticipants(item, reqUser);
     const { added, removed } = coVisit.diffParticipantIds(item, data.participantUserIds);
     await coVisit.assertParticipantsAssignable(companyId, item.employeeId, data.participantUserIds, reqUser);
     item.participants = coVisit.buildParticipantRecords(data.participantUserIds, reqUser.userId);
+    /** Explicit edit (including clearing) — stop inheriting the day partner. */
+    item.coVisitOverride = true;
     if (added.length) {
       void coVisitNotification.notifyParticipantsAdded({
         companyId,

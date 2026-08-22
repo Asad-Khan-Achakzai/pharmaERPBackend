@@ -2,9 +2,14 @@
  * Co-visit participant management — lifecycle, validation, response enrichment.
  */
 const mongoose = require('mongoose');
+const { DateTime } = require('luxon');
 const User = require('../models/User');
 const ApiError = require('../utils/ApiError');
-const { CO_VISIT_PARTICIPANT_STATUS } = require('../constants/enums');
+const {
+  CO_VISIT_PARTICIPANT_STATUS,
+  CO_VISIT_PARTICIPANT_SOURCE,
+  CP_DAY_KEYS
+} = require('../constants/enums');
 
 const ACTIVE_PARTICIPANT_STATUSES = [
   CO_VISIT_PARTICIPANT_STATUS.INVITED,
@@ -59,15 +64,57 @@ const assertParticipantsAssignable = async (companyId, ownerId, participantUserI
 };
 
 /** Phase 1: auto-accept invitations immediately after invite. */
-const buildParticipantRecords = (participantUserIds, invitedByUserId) => {
+const buildParticipantRecords = (
+  participantUserIds,
+  invitedByUserId,
+  source = CO_VISIT_PARTICIPANT_SOURCE.VISIT
+) => {
   const now = new Date();
   return normalizeParticipantUserIds(participantUserIds).map((employeeId) => ({
     employeeId: new mongoose.Types.ObjectId(employeeId),
     lifecycleStatus: CO_VISIT_PARTICIPANT_STATUS.ACCEPTED,
+    source,
     invitedAt: now,
     invitedBy: invitedByUserId ? new mongoose.Types.ObjectId(String(invitedByUserId)) : null,
     respondedAt: now
   }));
+};
+
+/** Legacy participant rows have no source — treat missing as VISIT (explicit). */
+const participantSource = (p) => p?.source || CO_VISIT_PARTICIPANT_SOURCE.VISIT;
+
+const isDaySourced = (p) => participantSource(p) === CO_VISIT_PARTICIPANT_SOURCE.DAY;
+
+/** Day-level partner configured on the weekly plan for the given business day, if any. */
+const dayPartnerIdForYmd = (plan, ymd) => {
+  const byDay = plan?.partnerByDay;
+  if (!byDay) return null;
+  const dt = DateTime.fromISO(String(ymd));
+  if (!dt.isValid) return null;
+  const raw = byDay.toObject?.() ?? byDay;
+  const val = raw[CP_DAY_KEYS[dt.weekday - 1]];
+  return val ? idStr(val) : null;
+};
+
+/**
+ * Apply a day-partner change to a visit's participant list.
+ *
+ * DAY-sourced entries for other users are replaced; explicit (VISIT-sourced /
+ * legacy) entries are never touched. The owner can never be their own partner.
+ * `nextId = null` removes the inherited entry.
+ */
+const applyDayPartner = (participants, { nextId, ownerId, invitedByUserId }) => {
+  const next = nextId ? String(nextId) : null;
+  const kept = (participants || []).filter(
+    (p) => !isDaySourced(p) || idStr(p.employeeId) === next
+  );
+  const alreadyPresent = next != null && kept.some((p) => idStr(p.employeeId) === next);
+  if (next && !alreadyPresent && idStr(ownerId) !== next) {
+    kept.push(
+      ...buildParticipantRecords([next], invitedByUserId, CO_VISIT_PARTICIPANT_SOURCE.DAY)
+    );
+  }
+  return kept;
 };
 
 const findParticipantEntry = (item, userId) => {
@@ -170,6 +217,10 @@ module.exports = {
   normalizeParticipantUserIds,
   assertParticipantsAssignable,
   buildParticipantRecords,
+  participantSource,
+  isDaySourced,
+  dayPartnerIdForYmd,
+  applyDayPartner,
   findParticipantEntry,
   isOwner,
   isActiveParticipant,

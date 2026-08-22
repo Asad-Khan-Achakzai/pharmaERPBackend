@@ -279,6 +279,14 @@ const CO_VISIT_PARTICIPANT_STATUS = {
   MISSED: 'MISSED'
 };
 
+/** How a co-visit participant got onto the plan item. */
+const CO_VISIT_PARTICIPANT_SOURCE = {
+  /** Explicitly picked for this visit (also legacy rows without a source). */
+  VISIT: 'VISIT',
+  /** Inherited from the weekly plan's day-level partner (partnerByDay). */
+  DAY: 'DAY'
+};
+
 /** Advisory tier when selecting co-visit participants (non-blocking). */
 const CO_VISIT_AVAILABILITY_TIER = {
   AVAILABLE: 'AVAILABLE',
@@ -556,6 +564,7 @@ module.exports = {
   PLAN_ITEM_TYPE,
   PLAN_ITEM_STATUS,
   CO_VISIT_PARTICIPANT_STATUS,
+  CO_VISIT_PARTICIPANT_SOURCE,
   CO_VISIT_AVAILABILITY_TIER,
   DAY_EXECUTION_STATE,
   UNPLANNED_VISIT_REASON,

@@ -28,9 +28,22 @@ const isV2Mode = (company) =>
 const getCompanyForCheckInPolicy = async (companyId) =>
   Company.findById(companyId).select(companySelectFields).lean();
 
+/**
+ * (0,0) is the unconfigured placeholder some companies were saved with ("null
+ * island", mid-Atlantic). Comparing real GPS against it produced ~7,800km
+ * distances and a permanent OUT_OF_ZONE verdict — treat it as "not configured".
+ */
+const isUsableCoordinatePair = (lat, lng) =>
+  Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0);
+
+const companyConfiguredRadius = (company) => {
+  const r = Number(company?.checkInPolicy?.radiusMeters);
+  return r > 0 ? r : DEFAULT_RADIUS_METERS;
+};
+
 const normalizeCompanyDefaultPoint = (company) => {
   const p = company?.checkInPolicy;
-  if (!p || typeof p.latitude !== 'number' || typeof p.longitude !== 'number') {
+  if (!p || !isUsableCoordinatePair(p.latitude, p.longitude)) {
     return null;
   }
   const radius =
@@ -42,28 +55,62 @@ const normalizeCompanyDefaultPoint = (company) => {
     radiusMeters: radius,
     locationName: name || 'Company default',
     policyType: CHECKIN_POLICY_TYPE.COMPANY_DEFAULT,
-    source: 'COMPANY_DEFAULT'
+    source: 'COMPANY_DEFAULT',
+    refId: null
   };
 };
 
 const dateDocFromYmd = (ymd, tz) => businessTime.businessDayToUtcRange(ymd, tz).$gte;
 
-const findActiveWeeklyPlanForDay = async (companyId, employeeId, businessYmd, tz) => {
+/**
+ * Preference order when several plans cover the same day. The rep's selected
+ * CP is their declared check-in anchor for the day, so DRAFT/SUBMITTED plans
+ * count too: requiring manager approval (ACTIVE) meant the CP was silently
+ * ignored for most real plans and every check-in fell back to the company
+ * default point — always OUT_OF_ZONE. Approval still governs the visit plan.
+ */
+const CP_PLAN_STATUS_RANK = {
+  [WEEKLY_PLAN_STATUS.ACTIVE]: 0,
+  [WEEKLY_PLAN_STATUS.SUBMITTED]: 1,
+  [WEEKLY_PLAN_STATUS.DRAFT]: 2
+};
+
+const findWeeklyPlansForDay = async (companyId, employeeId, businessYmd, tz) => {
   const plans = await WeeklyPlan.find({
     companyId,
     medicalRepId: employeeId,
-    status: WEEKLY_PLAN_STATUS.ACTIVE,
+    status: { $in: Object.keys(CP_PLAN_STATUS_RANK) },
     isDeleted: { $ne: true }
   })
-    .select('weekStartDate weekEndDate checkInConfiguration cpByDay')
+    .select('weekStartDate weekEndDate checkInConfiguration cpByDay status updatedAt')
     .lean();
 
-  for (const plan of plans) {
+  return plans.filter((plan) => {
     const ws = businessTime.businessDayKeyFromUtcInstant(plan.weekStartDate, tz);
     const we = businessTime.businessDayKeyFromUtcInstant(plan.weekEndDate, tz);
-    if (businessYmd >= ws && businessYmd <= we) return plan;
-  }
-  return null;
+    return businessYmd >= ws && businessYmd <= we;
+  });
+};
+
+const findActiveWeeklyPlanForDay = async (companyId, employeeId, businessYmd, tz) => {
+  const plans = await findWeeklyPlansForDay(companyId, employeeId, businessYmd, tz);
+  return plans.find((p) => p.status === WEEKLY_PLAN_STATUS.ACTIVE) || null;
+};
+
+/** Best plan for CP resolution: has a CP for that weekday, highest status rank. */
+const findWeeklyPlanForDayCp = async (companyId, employeeId, businessYmd, tz) => {
+  const dt = DateTime.fromISO(businessYmd);
+  if (!dt.isValid) return null;
+  const dayKey = CP_DAY_KEYS[dt.weekday - 1];
+  const plans = await findWeeklyPlansForDay(companyId, employeeId, businessYmd, tz);
+  const candidates = plans
+    .filter((p) => p.cpByDay && p.cpByDay[dayKey])
+    .sort(
+      (a, b) =>
+        (CP_PLAN_STATUS_RANK[a.status] ?? 9) - (CP_PLAN_STATUS_RANK[b.status] ?? 9) ||
+        new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0)
+    );
+  return candidates[0] || null;
 };
 
 const resolveDoctorPoint = async (companyId, doctorId, fallbackRadius) => {
@@ -75,14 +122,15 @@ const resolveDoctorPoint = async (companyId, doctorId, fallbackRadius) => {
   })
     .select('name latitude longitude')
     .lean();
-  if (!doc || typeof doc.latitude !== 'number' || typeof doc.longitude !== 'number') {
+  if (!doc || !isUsableCoordinatePair(doc.latitude, doc.longitude)) {
     return null;
   }
   return {
     latitude: doc.latitude,
     longitude: doc.longitude,
     radiusMeters: fallbackRadius,
-    locationName: String(doc.name || 'Doctor').trim() || 'Doctor'
+    locationName: String(doc.name || 'Doctor').trim() || 'Doctor',
+    refId: doc._id
   };
 };
 
@@ -132,7 +180,7 @@ const resolveDayCallPoint = async (companyId, weeklyPlan, businessYmd, fallbackR
   })
     .select('name latitude longitude')
     .lean();
-  if (!cp || typeof cp.latitude !== 'number' || typeof cp.longitude !== 'number') {
+  if (!cp || !isUsableCoordinatePair(cp.latitude, cp.longitude)) {
     return null;
   }
   return {
@@ -141,7 +189,8 @@ const resolveDayCallPoint = async (companyId, weeklyPlan, businessYmd, fallbackR
     radiusMeters: fallbackRadius,
     locationName: String(cp.name || 'CP').trim() || 'CP',
     policyType: CHECKIN_POLICY_TYPE.CUSTOM_LOCATION,
-    source: 'WEEKLY_PLAN_CP'
+    source: 'WEEKLY_PLAN_CP',
+    refId: cp._id
   };
 };
 
@@ -155,17 +204,22 @@ const resolveActiveCheckInPoint = async ({
 
   const tz = businessTime.requireCompanyIanaZone(timeZone || company.timeZone);
   const companyDefault = normalizeCompanyDefaultPoint(company);
-  const fallbackRadius = companyDefault?.radiusMeters ?? DEFAULT_RADIUS_METERS;
-
-  const weeklyPlan = await findActiveWeeklyPlanForDay(company._id, employeeId, businessYmd, tz);
+  /** Configured radius applies even when the default point's coords are unusable. */
+  const fallbackRadius = companyConfiguredRadius(company);
 
   /**
-   * Highest priority: the CP selected for today's weekday in the weekly plan.
-   * Only the coordinate source changes; radius + distance evaluation stay the same.
+   * Highest priority: the CP selected for today's weekday in the weekly plan
+   * (any non-terminal plan status — see CP_PLAN_STATUS_RANK). Only the
+   * coordinate source changes; radius + distance evaluation stay the same.
    */
-  const dayCp = await resolveDayCallPoint(company._id, weeklyPlan, businessYmd, fallbackRadius);
-  if (dayCp) return dayCp;
+  const cpPlan = await findWeeklyPlanForDayCp(company._id, employeeId, businessYmd, tz);
+  if (cpPlan) {
+    const dayCp = await resolveDayCallPoint(company._id, cpPlan, businessYmd, fallbackRadius);
+    if (dayCp) return dayCp;
+  }
 
+  /** checkInConfiguration fallback keeps its original ACTIVE-only semantics. */
+  const weeklyPlan = await findActiveWeeklyPlanForDay(company._id, employeeId, businessYmd, tz);
   const config = weeklyPlan?.checkInConfiguration;
 
   if (!config || !config.policyType) {
@@ -180,7 +234,7 @@ const resolveActiveCheckInPoint = async ({
 
   if (policyType === CHECKIN_POLICY_TYPE.CUSTOM_LOCATION) {
     const loc = config.customLocation;
-    if (loc && typeof loc.latitude === 'number' && typeof loc.longitude === 'number') {
+    if (loc && isUsableCoordinatePair(loc.latitude, loc.longitude)) {
       const radius =
         Number(loc.radiusMeters) > 0 ? Number(loc.radiusMeters) : fallbackRadius;
       return {
@@ -282,7 +336,9 @@ const readResolvedCheckInPolicy = (att) => {
     locationName: s.locationName,
     latitude: s.latitude,
     longitude: s.longitude,
-    radiusMeters: s.radiusMeters
+    radiusMeters: s.radiusMeters,
+    source: s.source ?? null,
+    refId: s.refId ?? null
   };
 };
 
@@ -358,7 +414,9 @@ async function computeV2Metadata(context) {
         locationName: point.locationName,
         latitude: point.latitude,
         longitude: point.longitude,
-        radiusMeters: point.radiusMeters
+        radiusMeters: point.radiusMeters,
+        source: point.source || null,
+        refId: point.refId || null
       }
     : undefined;
 
@@ -486,6 +544,7 @@ module.exports = {
   previewForEmployeeToday,
   bumpAttendanceConfigVersion,
   findActiveWeeklyPlanForDay,
+  findWeeklyPlanForDayCp,
   resolveDayCallPoint,
   ATTENDANCE_SYSTEM_MODE
 };

@@ -64,7 +64,7 @@ const listTeamVisits = asyncHandler(async (req, res) => {
     visible,
     req.query.date,
     req.context.timeZone,
-    { employeeId: req.query.employeeId }
+    { employeeId: req.query.employeeId, viewerUserId: req.user.userId }
   );
   ApiResponse.success(res, data);
 });

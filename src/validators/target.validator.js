@@ -9,6 +9,14 @@ const cpByDaySchema = Joi.object(
   }, {})
 );
 
+/** { monday: userId|null, ... } — day-level accompanying partner per weekday. */
+const partnerByDaySchema = Joi.object(
+  CP_DAY_KEYS.reduce((acc, day) => {
+    acc[day] = Joi.string().hex().length(24).allow(null, '');
+    return acc;
+  }, {})
+);
+
 const productPacksTargetItemSchema = Joi.object({
   productId: Joi.string().required(),
   packsTarget: Joi.number().integer().min(1).required()
@@ -101,7 +109,8 @@ const createWeeklyPlanSchema = Joi.object({
   status: Joi.string().valid('DRAFT', 'ACTIVE', 'COMPLETED', 'SUBMITTED', 'REVIEWED'),
   approvalRequired: Joi.boolean(),
   checkInConfiguration: checkInConfigurationSchema.optional(),
-  cpByDay: cpByDaySchema.optional()
+  cpByDay: cpByDaySchema.optional(),
+  partnerByDay: partnerByDaySchema.optional()
 });
 
 const updateWeeklyPlanSchema = Joi.object({
@@ -127,7 +136,8 @@ const updateWeeklyPlanSchema = Joi.object({
   ),
   status: Joi.string().valid('DRAFT', 'ACTIVE', 'COMPLETED', 'SUBMITTED', 'REVIEWED'),
   checkInConfiguration: checkInConfigurationSchema.optional().allow(null),
-  cpByDay: cpByDaySchema.optional().allow(null)
+  cpByDay: cpByDaySchema.optional().allow(null),
+  partnerByDay: partnerByDaySchema.optional().allow(null)
 }).min(1);
 
 module.exports = {

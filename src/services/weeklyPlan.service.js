@@ -13,10 +13,13 @@ const { escapeRegex, qScalar, applyCreatedAtRangeFromQuery, applyCreatedByFromQu
 const businessTime = require('../utils/businessTime');
 const planExecution = require('../utils/planExecution.util');
 const checkInPolicyServiceV2 = require('./checkInPolicyServiceV2');
+const coVisit = require('./coVisit.service');
+const coVisitNotification = require('./coVisitNotification.service');
 const { DateTime } = require('luxon');
 const { PLAN_ITEM_STATUS, WEEKLY_PLAN_STATUS } = require('../constants/enums');
 const { resolveSubtreeUserIds } = require('../utils/teamScope');
 const { applyOrderMedicalRepScope, assertOrderVisibleToUser } = require('../utils/orderScope.util');
+const { isPlanLiveForPartnership } = require('../utils/weeklyPlanPartnership');
 
 /**
  * Validate & normalize a per-day CP selection. Each provided id must reference an
@@ -61,6 +64,148 @@ const normalizeCpByDay = async (companyId, raw) => {
   }
 
   return out;
+};
+
+/**
+ * Validate & normalize a per-day accompanying partner selection. Each provided
+ * id must be an active user in the caller's company and not the plan owner.
+ * Mirrors normalizeCpByDay: nulls/empty strings clear that day.
+ */
+const normalizePartnerByDay = async (companyId, ownerId, raw) => {
+  if (raw === undefined) return undefined;
+  if (raw === null) return null;
+
+  const out = {};
+  const idsToCheck = new Set();
+  for (const day of CP_DAY_KEYS) {
+    const val = raw[day];
+    if (val === undefined) continue;
+    if (val === null || val === '') {
+      out[day] = null;
+      continue;
+    }
+    if (!mongoose.Types.ObjectId.isValid(val)) {
+      throw new ApiError(400, `Invalid partner id for ${day}`);
+    }
+    if (String(val) === String(ownerId)) {
+      throw new ApiError(400, 'Plan owner cannot be their own accompanying partner');
+    }
+    out[day] = val;
+    idsToCheck.add(String(val));
+  }
+
+  if (idsToCheck.size) {
+    const found = await User.find({
+      _id: { $in: [...idsToCheck] },
+      companyId,
+      isActive: true
+    })
+      .select('_id')
+      .lean();
+    const valid = new Set(found.map((u) => String(u._id)));
+    for (const id of idsToCheck) {
+      if (!valid.has(id)) {
+        throw new ApiError(400, 'One or more selected partners are invalid or inactive');
+      }
+    }
+  }
+
+  return out;
+};
+
+/** ymds within the plan week whose weekday matches dayKey (usually one). */
+const ymdsForDayKey = (plan, dayKey, tz) => {
+  const startYmd = businessTime.businessDayKeyFromUtcInstant(plan.weekStartDate, tz);
+  const endYmd = businessTime.businessDayKeyFromUtcInstant(plan.weekEndDate, tz);
+  const out = [];
+  let cur = DateTime.fromISO(startYmd, { zone: tz });
+  const end = DateTime.fromISO(endYmd, { zone: tz });
+  while (cur.toMillis() <= end.toMillis()) {
+    if (CP_DAY_KEYS[cur.weekday - 1] === dayKey) out.push(cur.toISODate());
+    cur = cur.plus({ days: 1 });
+  }
+  return out;
+};
+
+/**
+ * Materialize a day-partner change onto that day's pending visits.
+ *
+ * Only PENDING, non-overridden items are touched: executed visits keep their
+ * history, and visits the owner customized individually (coVisitOverride) keep
+ * their explicit partner list — including "no partner". Existing DAY-sourced
+ * entries for the previous partner are replaced; VISIT-sourced entries are
+ * never removed here.
+ *
+ * Notifications are day-level only (one per partner per day, deduped) — never
+ * one per visit.
+ */
+const partnerUserId = (raw) => {
+  if (raw == null || raw === '') return null;
+  if (typeof raw === 'object' && raw._id != null) return partnerUserId(raw._id);
+  const s = String(raw);
+  if (!s || s === '[object Object]') return null;
+  return mongoose.Types.ObjectId.isValid(s) ? s : null;
+};
+
+const syncPartnerByDay = async (plan, changedDays, previousByDay, reqUser, tz) => {
+  const companyId = plan.companyId;
+  const owner = await User.findById(plan.medicalRepId).select('name').lean();
+  const repName = owner?.name || null;
+
+  for (const [dayKey, rawNext] of Object.entries(changedDays)) {
+    if (!CP_DAY_KEYS.includes(dayKey)) continue;
+    const nextId = partnerUserId(rawNext);
+    const prevId = partnerUserId(previousByDay?.[dayKey]);
+    if (nextId === prevId) continue;
+
+    const ymds = ymdsForDayKey(plan, dayKey, tz);
+
+    const items = await PlanItem.find({
+      companyId,
+      weeklyPlanId: plan._id,
+      status: PLAN_ITEM_STATUS.PENDING,
+      coVisitOverride: { $ne: true },
+      isDeleted: { $ne: true }
+    });
+
+    for (const item of items) {
+      const itemYmd = businessTime.businessDayKeyFromUtcInstant(item.date, tz);
+      const itemDay = CP_DAY_KEYS[DateTime.fromISO(itemYmd, { zone: tz }).weekday - 1];
+      if (itemDay !== dayKey) continue;
+      item.participants = coVisit.applyDayPartner(item.participants, {
+        nextId,
+        ownerId: item.employeeId,
+        invitedByUserId: reqUser.userId
+      });
+      item.updatedBy = reqUser.userId;
+      await item.save();
+    }
+
+    for (const ymd of ymds) {
+      if (nextId) {
+        void coVisitNotification
+          .notifyDayPartnerAssigned({
+            companyId,
+            weeklyPlanId: plan._id,
+            partnerUserId: nextId,
+            repName,
+            dayYmd: ymd
+          })
+          .catch(() => null);
+      }
+      if (prevId && prevId !== nextId) {
+        void coVisitNotification
+          .notifyDayPartnerRemoved({
+            companyId,
+            weeklyPlanId: plan._id,
+            partnerUserId: prevId,
+            repName,
+            dayYmd: ymd
+          })
+          .catch(() => null);
+      }
+    }
+  }
 };
 
 const list = async (companyId, query, timeZone = 'UTC', opts = {}) => {
@@ -118,15 +263,35 @@ const create = async (companyId, data, reqUser, opts = {}) => {
   }
 
   const cpByDay = await normalizeCpByDay(companyId, data.cpByDay);
+  const partnerByDay = await normalizePartnerByDay(companyId, targetRepId, data.partnerByDay);
 
   const plan = await WeeklyPlan.create({
     ...data,
     cpByDay: cpByDay === null ? undefined : cpByDay,
+    partnerByDay: partnerByDay == null ? undefined : partnerByDay,
     approvalRequired,
     companyId,
     medicalRepId: targetRepId,
     createdBy: reqUser.userId
   });
+  if (partnerByDay && Object.values(partnerByDay).some(Boolean)) {
+    const tz = businessTime.requireCompanyIanaZone(opts.timeZone || 'UTC');
+    if (isPlanLiveForPartnership(plan)) {
+      await syncPartnerByDay(plan, partnerByDay, {}, reqUser, tz);
+      if (!opts.skipFieldDaySync) {
+        await syncFieldDayFromPartnerChanges({
+          companyId,
+          plan,
+          partnerChangedDays: partnerByDay,
+          previousPartnerByDay: {},
+          reqUser,
+          tz
+        });
+      }
+    } else if (!opts.skipFieldDaySync) {
+      await retractFieldDayForPendingPlan(plan, reqUser, tz);
+    }
+  }
   await auditService.log({
     companyId,
     userId: reqUser.userId,
@@ -157,12 +322,22 @@ const update = async (companyId, id, data, reqUser, timeZone, opts = {}) => {
   const before = plan.toObject();
   const checkInConfigTouched = Object.prototype.hasOwnProperty.call(data, 'checkInConfiguration');
   const cpByDayTouched = Object.prototype.hasOwnProperty.call(data, 'cpByDay');
+  const partnerByDayTouched = Object.prototype.hasOwnProperty.call(data, 'partnerByDay');
   let normalizedCpByDay;
   if (cpByDayTouched) {
     normalizedCpByDay = await normalizeCpByDay(companyId, data.cpByDay);
   }
+  let normalizedPartnerByDay;
+  if (partnerByDayTouched) {
+    normalizedPartnerByDay = await normalizePartnerByDay(
+      companyId,
+      plan.medicalRepId,
+      data.partnerByDay
+    );
+  }
   const rest = { ...data };
   delete rest.cpByDay;
+  delete rest.partnerByDay;
   Object.assign(plan, rest);
   if (cpByDayTouched) {
     if (normalizedCpByDay === null) {
@@ -176,8 +351,48 @@ const update = async (companyId, id, data, reqUser, timeZone, opts = {}) => {
       plan.cpByDay = merged;
     }
   }
+  const previousPartnerByDay = before.partnerByDay || {};
+  /** Days whose partner actually changes — drives item sync + notifications. */
+  let partnerChangedDays = null;
+  if (partnerByDayTouched) {
+    if (normalizedPartnerByDay === null) {
+      partnerChangedDays = {};
+      for (const day of CP_DAY_KEYS) {
+        if (previousPartnerByDay[day]) partnerChangedDays[day] = null;
+      }
+      plan.partnerByDay = undefined;
+    } else {
+      const merged = {
+        ...(plan.partnerByDay ? plan.partnerByDay.toObject?.() ?? plan.partnerByDay : {})
+      };
+      partnerChangedDays = {};
+      for (const [day, val] of Object.entries(normalizedPartnerByDay)) {
+        merged[day] = val;
+        partnerChangedDays[day] = val;
+      }
+      plan.partnerByDay = merged;
+    }
+  }
   plan.updatedBy = reqUser.userId;
   await plan.save();
+  const becameLive = !isPlanLiveForPartnership(before) && isPlanLiveForPartnership(plan);
+  if (becameLive) {
+    await applyPartnershipWhenPlanBecomesLive(plan, reqUser, tz);
+  } else if (isPlanLiveForPartnership(plan) && partnerChangedDays && Object.keys(partnerChangedDays).length) {
+    await syncPartnerByDay(plan, partnerChangedDays, previousPartnerByDay, reqUser, tz);
+    if (!opts.skipFieldDaySync) {
+      await syncFieldDayFromPartnerChanges({
+        companyId,
+        plan,
+        partnerChangedDays,
+        previousPartnerByDay,
+        reqUser,
+        tz
+      });
+    }
+  } else if (!isPlanLiveForPartnership(plan) && !opts.skipFieldDaySync) {
+    await retractFieldDayForPendingPlan(plan, reqUser, tz);
+  }
   if (checkInConfigTouched) {
     await checkInPolicyServiceV2.bumpAttendanceConfigVersion(companyId);
   }
@@ -204,7 +419,8 @@ const getById = async (companyId, id, timeZone, opts = {}) => {
     .populate('medicalRepId', 'name email')
     .populate(
       CP_DAY_KEYS.map((day) => ({ path: `cpByDay.${day}`, select: 'name latitude longitude isActive' }))
-    );
+    )
+    .populate(CP_DAY_KEYS.map((day) => ({ path: `partnerByDay.${day}`, select: 'name' })));
   if (!plan) throw new ApiError(404, 'Weekly plan not found');
   assertOrderVisibleToUser(plan, opts.visibleRepIds);
   const weekStartDateYmd = businessTime.businessDayKeyFromUtcInstant(plan.weekStartDate, tz);
@@ -363,7 +579,7 @@ const assertCallerCanManagePlan = async (companyId, planId, reqUser, action = 'r
  *     who maintain plans on behalf of their MRs
  *   - admin.access bypass
  */
-const submit = async (companyId, planId, reqUser) => {
+const submit = async (companyId, planId, reqUser, timeZone) => {
   const plan = await WeeklyPlan.findOne({ _id: planId, companyId, isDeleted: { $ne: true } });
   if (!plan) throw new ApiError(404, 'Weekly plan not found');
 
@@ -409,10 +625,11 @@ const submit = async (companyId, planId, reqUser) => {
   });
 
   void notifyWeeklyPlanSubmitted(companyId, plan).catch(() => null);
+  await retractFieldDayForPendingPlan(plan, reqUser, timeZone);
   return plan;
 };
 
-const approve = async (companyId, planId, reqUser) => {
+const approve = async (companyId, planId, reqUser, timeZone) => {
   const plan = await assertCallerCanManagePlan(companyId, planId, reqUser, 'approve');
   if (plan.status !== WEEKLY_PLAN_STATUS.SUBMITTED) {
     throw new ApiError(400, `Plan must be SUBMITTED to approve (current: ${plan.status})`);
@@ -433,6 +650,7 @@ const approve = async (companyId, planId, reqUser) => {
     changes: { before, after: plan.toObject() }
   });
 
+  await applyPartnershipWhenPlanBecomesLive(plan, reqUser, timeZone);
   void notifyWeeklyPlanOutcome(companyId, plan, 'approved').catch(() => null);
   return plan;
 };
@@ -627,6 +845,128 @@ const optimizeRoute = async (companyId, planId, payload, reqUser, timeZone, opts
   );
 };
 
+const dayKeyForYmd = (ymd, tz) => {
+  const dt = DateTime.fromISO(String(ymd), { zone: tz });
+  if (!dt.isValid) return null;
+  return CP_DAY_KEYS[dt.weekday - 1] || null;
+};
+
+const findPlanCoveringYmd = async (companyId, medicalRepId, ymd, tz) => {
+  const dateAnchor = businessTime.businessDayStartUtc(ymd, tz);
+  return WeeklyPlan.findOne({
+    companyId,
+    medicalRepId,
+    weekStartDate: { $lte: dateAnchor },
+    weekEndDate: { $gte: dateAnchor }
+  });
+};
+
+const partnerIdOnDayKey = (plan, dayKey) => {
+  const raw = plan?.partnerByDay?.[dayKey];
+  if (!raw) return null;
+  return String(raw._id || raw);
+};
+
+/**
+ * Internal Partner write used by Field Day sync. Does not re-enter Field Day sync.
+ * ADD with a different existing partner throws 409. REMOVE only clears if current === managerId.
+ */
+const applyDayPartnerForYmdInternal = async ({
+  companyId,
+  medicalRepId,
+  ymd,
+  managerId,
+  action,
+  reqUser,
+  timeZone
+}) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const dayKey = dayKeyForYmd(ymd, tz);
+  if (!dayKey) return { applied: false, reason: 'INVALID_DATE' };
+
+  const plan = await findPlanCoveringYmd(companyId, medicalRepId, ymd, tz);
+  if (!plan) return { applied: false, reason: 'NO_PLAN' };
+
+  const current = partnerIdOnDayKey(plan, dayKey);
+  const manager = String(managerId);
+  const next = action === 'ADD' ? manager : null;
+
+  if (action === 'ADD') {
+    if (current && current !== manager) {
+      throw new ApiError(409, 'This rep already has a different Partner for that day');
+    }
+    if (current === manager) return { applied: false, reason: 'UNCHANGED' };
+  } else {
+    if (current !== manager) return { applied: false, reason: 'NOT_THIS_MANAGER' };
+  }
+
+  const previousByDay = plan.partnerByDay
+    ? { ...(plan.partnerByDay.toObject?.() ?? plan.partnerByDay) }
+    : {};
+  const merged = { ...previousByDay, [dayKey]: next };
+  plan.partnerByDay = merged;
+  plan.updatedBy = reqUser.userId;
+  await plan.save();
+  if (isPlanLiveForPartnership(plan)) {
+    await syncPartnerByDay(plan, { [dayKey]: next }, previousByDay, reqUser, tz);
+  }
+  return { applied: true };
+};
+
+const currentPartnerForYmd = async (companyId, medicalRepId, ymd, timeZone) => {
+  const tz = businessTime.requireCompanyIanaZone(timeZone);
+  const dayKey = dayKeyForYmd(ymd, tz);
+  if (!dayKey) return { plan: null, partnerId: null, dayKey: null };
+  const plan = await findPlanCoveringYmd(companyId, medicalRepId, ymd, tz);
+  if (!plan) return { plan: null, partnerId: null, dayKey };
+  return { plan, partnerId: partnerIdOnDayKey(plan, dayKey), dayKey };
+};
+
+const syncFieldDayFromPartnerChanges = async (payload) => {
+  const partnershipSync = require('./partnershipSync.service');
+  return partnershipSync.syncFieldDayFromPartnerChanges(payload);
+};
+
+const resolvePlanTimeZone = async (companyId, timeZone) => {
+  if (timeZone) return businessTime.requireCompanyIanaZone(timeZone);
+  const company = await Company.findById(companyId).select('timeZone').lean();
+  return businessTime.requireCompanyIanaZone(company?.timeZone || 'UTC');
+};
+
+/** Publish stored day partners to visits + Field Day once the plan is accepted. */
+const applyPartnershipWhenPlanBecomesLive = async (plan, reqUser, timeZone) => {
+  const tz = await resolvePlanTimeZone(plan.companyId, timeZone);
+  const partnerByDay = plan.partnerByDay
+    ? { ...(plan.partnerByDay.toObject?.() ?? plan.partnerByDay) }
+    : {};
+  const changedDays = {};
+  for (const day of CP_DAY_KEYS) {
+    const pid = partnerUserId(partnerByDay[day]);
+    if (pid) changedDays[day] = pid;
+  }
+  if (!Object.keys(changedDays).length) return;
+  await syncPartnerByDay(plan, changedDays, {}, reqUser, tz);
+  await syncFieldDayFromPartnerChanges({
+    companyId: plan.companyId,
+    plan,
+    partnerChangedDays: changedDays,
+    previousPartnerByDay: {},
+    reqUser,
+    tz
+  });
+};
+
+const retractFieldDayForPendingPlan = async (plan, reqUser, timeZone) => {
+  const tz = await resolvePlanTimeZone(plan.companyId, timeZone);
+  const partnershipSync = require('./partnershipSync.service');
+  await partnershipSync.retractFieldDayForPlan({
+    companyId: plan.companyId,
+    plan,
+    reqUser,
+    tz
+  });
+};
+
 module.exports = {
   list,
   create,
@@ -638,5 +978,9 @@ module.exports = {
   approve,
   reject,
   pendingApprovals,
-  optimizeRoute
+  optimizeRoute,
+  ymdsForDayKey,
+  applyDayPartnerForYmdInternal,
+  currentPartnerForYmd,
+  syncPartnerByDay
 };

@@ -88,8 +88,55 @@ const notifyCoVisitUpdated = async ({ companyId, planItem, participantUserIds, t
   );
 };
 
+/**
+ * Day-level accompaniment: ONE notification per (partner, day) — never one per
+ * visit. dedupeKey makes re-application (plan edits, later bulk item creation
+ * for the same day) idempotent.
+ */
+const notifyDayPartnerAssigned = async ({
+  companyId,
+  weeklyPlanId,
+  partnerUserId,
+  repName,
+  dayYmd
+}) => {
+  if (!partnerUserId) return;
+  await notificationService.createForUser({
+    companyId,
+    userId: partnerUserId,
+    title: 'Accompaniment for the day',
+    body: `You have been assigned as ${repName || 'a colleague'}'s accompanying partner for the visits on ${dayYmd}.`,
+    kind: NOTIFICATION_KIND.PLAN,
+    link: '/visits',
+    meta: { weeklyPlanId: String(weeklyPlanId), dayYmd },
+    dedupeKey: `wplan:${weeklyPlanId}:daypartner:${dayYmd}:${partnerUserId}`
+  });
+};
+
+const notifyDayPartnerRemoved = async ({
+  companyId,
+  weeklyPlanId,
+  partnerUserId,
+  repName,
+  dayYmd
+}) => {
+  if (!partnerUserId) return;
+  await notificationService.createForUser({
+    companyId,
+    userId: partnerUserId,
+    title: 'Accompaniment removed',
+    body: `You are no longer ${repName || 'a colleague'}'s accompanying partner for ${dayYmd}.`,
+    kind: NOTIFICATION_KIND.PLAN,
+    link: '/visits',
+    meta: { weeklyPlanId: String(weeklyPlanId), dayYmd },
+    dedupeKey: `wplan:${weeklyPlanId}:daypartner-removed:${dayYmd}:${partnerUserId}`
+  });
+};
+
 module.exports = {
   notifyParticipantsAdded,
   notifyParticipantsRemoved,
-  notifyCoVisitUpdated
+  notifyCoVisitUpdated,
+  notifyDayPartnerAssigned,
+  notifyDayPartnerRemoved
 };

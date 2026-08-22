@@ -20,6 +20,37 @@ const mediaAttach = require('./media.attach');
 
 const round2 = (n) => Math.round(n * 100) / 100;
 
+/** Machine-readable codes for mobile reconcile (HTTP status + message stay unchanged). */
+const ATTENDANCE_ERROR_CODE = {
+  ALREADY_CHECKED_IN: 'ATTENDANCE_ALREADY_CHECKED_IN',
+  SHIFT_CLOSED: 'ATTENDANCE_SHIFT_CLOSED',
+  LATE_APPROVAL_PENDING: 'ATTENDANCE_LATE_APPROVAL_PENDING',
+  PREVIOUS_SHIFT_OPEN: 'ATTENDANCE_PREVIOUS_SHIFT_OPEN'
+};
+
+const attendanceError = (statusCode, message, code) => {
+  const err = new ApiError(statusCode, message);
+  if (code) err.code = code;
+  return err;
+};
+
+const isMongoDupKey = (err) => Boolean(err && (err.code === 11000 || err.code === '11000'));
+
+const createAttendanceRow = async (payload) => {
+  try {
+    return await Attendance.create(payload);
+  } catch (err) {
+    if (isMongoDupKey(err)) {
+      throw attendanceError(
+        400,
+        'Already checked in today',
+        ATTENDANCE_ERROR_CODE.ALREADY_CHECKED_IN
+      );
+    }
+    throw err;
+  }
+};
+
 /** Earliest check-in on the business calendar day (0 = any time that day). */
 const CHECK_IN_FROM_MINUTES = 0;
 
@@ -184,17 +215,26 @@ const checkIn = async (companyId, employeeId, timeZone, body = {}) => {
   });
   if (existing?.checkInTime) {
     if (isLateCheckInPendingApproval(existing)) {
-      throw new ApiError(
+      throw attendanceError(
         400,
-        'Your late check-in is waiting for manager approval. You will be able to check out after it is approved.'
+        'Your late check-in is waiting for manager approval. You will be able to check out after it is approved.',
+        ATTENDANCE_ERROR_CODE.LATE_APPROVAL_PENDING
       );
     }
-    throw new ApiError(400, 'Already checked in today');
+    throw attendanceError(
+      400,
+      'Already checked in today',
+      ATTENDANCE_ERROR_CODE.ALREADY_CHECKED_IN
+    );
   }
 
   const overnightOpen = await findOvernightOpenPreviousBusinessDay(companyId, employeeId, tz);
   if (overnightOpen) {
-    throw new ApiError(400, 'Check out your previous shift before checking in again.');
+    throw attendanceError(
+      400,
+      'Check out your previous shift before checking in again.',
+      ATTENDANCE_ERROR_CODE.PREVIOUS_SHIFT_OPEN
+    );
   }
 
   const now = checkInInstant;
@@ -209,7 +249,11 @@ const checkIn = async (companyId, employeeId, timeZone, body = {}) => {
       if (
         attendancePolicyService.isSelfCheckInPastShiftClose(ymd, ps.shift, tz, checkInLuxon)
       ) {
-        throw new ApiError(400, SHIFT_CHECKIN_CLOSED_USER_MESSAGE);
+        throw attendanceError(
+          400,
+          SHIFT_CHECKIN_CLOSED_USER_MESSAGE,
+          ATTENDANCE_ERROR_CODE.SHIFT_CLOSED
+        );
       }
       lateMinutes = attendancePolicyService.computeLateMinutes(mins, ps.shift);
       workShiftId = ps.shift._id;
@@ -248,7 +292,7 @@ const checkIn = async (companyId, employeeId, timeZone, body = {}) => {
       applyCheckInGeo(att, body);
       await att.save();
     } else {
-      att = await Attendance.create({
+      att = await createAttendanceRow({
         companyId,
         employeeId,
         date: dateDoc,
@@ -326,7 +370,7 @@ const checkIn = async (companyId, employeeId, timeZone, body = {}) => {
     applyCheckInGeo(docToSave, body);
     await docToSave.save();
   } else {
-    docToSave = await Attendance.create({
+    docToSave = await createAttendanceRow({
       companyId,
       employeeId,
       date: dateDoc,
@@ -1136,6 +1180,7 @@ const assertEmployeePresentForVisitDate = async (companyId, employeeId, visitDat
 };
 
 module.exports = {
+  ATTENDANCE_ERROR_CODE,
   assertEmployeePresentForVisitDate,
   monthBounds: (monthStr, timeZone) => {
     const tz = businessTime.requireCompanyIanaZone(timeZone);

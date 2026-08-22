@@ -7,11 +7,12 @@ const EARTH_RADIUS_METERS = 6371000;
  * Haversine distance in meters between two WGS84 points.
  */
 function distanceMeters(lat1, lng1, lat2, lng2) {
+  /** isFinite also rejects NaN — Math.round(NaN) <= radius silently meant "outside". */
   if (
-    typeof lat1 !== 'number' ||
-    typeof lng1 !== 'number' ||
-    typeof lat2 !== 'number' ||
-    typeof lng2 !== 'number'
+    !Number.isFinite(lat1) ||
+    !Number.isFinite(lng1) ||
+    !Number.isFinite(lat2) ||
+    !Number.isFinite(lng2)
   ) {
     return null;
   }

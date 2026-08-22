@@ -115,7 +115,9 @@ const updatePlanItemSchema = Joi.object({
   notes: Joi.string().trim().allow(''),
   /** HH:mm or free-form planned time; schedule change triggers co-visit notify. */
   plannedTime: Joi.string().trim().max(32).allow('', null),
-  participantUserIds: Joi.array().items(Joi.string().hex().length(24)).max(20)
+  participantUserIds: Joi.array().items(Joi.string().hex().length(24)).max(20),
+  /** true → drop the visit-level partner override and inherit the day-level partner again. */
+  inheritDayPartner: Joi.boolean().valid(true)
 }).min(1);
 
 const coVisitAvailabilityQuerySchema = Joi.object({

@@ -3,7 +3,8 @@ const {
   PLAN_ITEM_TYPE,
   PLAN_ITEM_STATUS,
   UNPLANNED_VISIT_REASON,
-  CO_VISIT_PARTICIPANT_STATUS
+  CO_VISIT_PARTICIPANT_STATUS,
+  CO_VISIT_PARTICIPANT_SOURCE
 } = require('../constants/enums');
 const { softDeletePlugin } = require('../plugins/softDelete');
 
@@ -43,6 +44,16 @@ const planItemSchema = new mongoose.Schema(
           enum: Object.values(CO_VISIT_PARTICIPANT_STATUS),
           default: CO_VISIT_PARTICIPANT_STATUS.INVITED
         },
+        /**
+         * VISIT — explicitly picked on this visit; DAY — inherited from the weekly
+         * plan's day-level partner (partnerByDay) and kept in sync when it changes.
+         * Missing (legacy rows) is treated as VISIT.
+         */
+        source: {
+          type: String,
+          enum: Object.values(CO_VISIT_PARTICIPANT_SOURCE),
+          default: CO_VISIT_PARTICIPANT_SOURCE.VISIT
+        },
         invitedAt: { type: Date, default: Date.now },
         invitedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
         respondedAt: { type: Date, default: null },
@@ -52,6 +63,11 @@ const planItemSchema = new mongoose.Schema(
         declinedReason: { type: String, trim: true, maxlength: 500, default: null }
       }
     ],
+    /**
+     * True once the owner edits this visit's partners individually — the visit
+     * then stops inheriting the day-level partner (including "no partner").
+     */
+    coVisitOverride: { type: Boolean, default: false },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   },

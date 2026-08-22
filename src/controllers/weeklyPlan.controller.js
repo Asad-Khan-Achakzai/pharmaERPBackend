@@ -34,7 +34,10 @@ const create = asyncHandler(async (req, res) => {
   const visibleRepIds = await resolveOrderVisibleMedicalRepIds(req.companyId, req.user);
   ApiResponse.created(
     res,
-    await weeklyPlanService.create(req.companyId, req.body, req.user, { visibleRepIds })
+    await weeklyPlanService.create(req.companyId, req.body, req.user, {
+      visibleRepIds,
+      timeZone: req.context.timeZone
+    })
   );
 });
 const update = asyncHandler(async (req, res) => {
@@ -83,12 +86,12 @@ const bulkPlanItems = asyncHandler(async (req, res) => {
 });
 
 const submit = asyncHandler(async (req, res) => {
-  const data = await weeklyPlanService.submit(req.companyId, req.params.id, req.user);
+  const data = await weeklyPlanService.submit(req.companyId, req.params.id, req.user, req.context.timeZone);
   ApiResponse.success(res, data, 'Plan submitted for approval');
 });
 
 const approve = asyncHandler(async (req, res) => {
-  const data = await weeklyPlanService.approve(req.companyId, req.params.id, req.user);
+  const data = await weeklyPlanService.approve(req.companyId, req.params.id, req.user, req.context.timeZone);
   ApiResponse.success(res, data, 'Plan approved');
 });
 

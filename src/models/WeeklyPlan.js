@@ -43,6 +43,24 @@ const cpByDaySchema = new mongoose.Schema(
   { _id: false }
 );
 
+/**
+ * Day-level accompaniment ("today I'm visiting with Manager X"): one partner per
+ * weekday, inherited by that day's visits unless a visit overrides its partners
+ * individually (PlanItem.coVisitOverride). Mirrors the cpByDay pattern.
+ */
+const partnerByDaySchema = new mongoose.Schema(
+  {
+    monday: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    tuesday: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    wednesday: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    thursday: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    friday: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    saturday: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    sunday: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
+  },
+  { _id: false }
+);
+
 const visitSchema = new mongoose.Schema(
   {
     entityId: { type: mongoose.Schema.Types.ObjectId, required: true },
@@ -78,6 +96,8 @@ const weeklyPlanSchema = new mongoose.Schema(
     checkInConfiguration: { type: checkInConfigurationSchema, default: undefined },
     /** Per-day CP selected from the CP master; highest-priority check-in coordinate source. */
     cpByDay: { type: cpByDaySchema, default: undefined },
+    /** Per-day accompanying partner, inherited by that day's visits (see schema doc). */
+    partnerByDay: { type: partnerByDaySchema, default: undefined },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   },

@@ -77,6 +77,11 @@ const PERMISSIONS = {
    *   `viewAllReports`  – see plans / visits / sales of the whole subtree (granted to ASM & RM)
    */
   team:         ['view', 'manage', 'viewAllReports'],
+  /**
+   * Manager Field Day — planning declaration that a manager spends a business
+   * day with one or more subtree reps. Isolated from weeklyPlans.partnerByDay.
+   */
+  managerFieldDays: ['view', 'edit'],
   /** MRep territory tree (Zone/Area/Brick). `manage` covers create/edit/delete; `view` is read-only. */
   territories:  ['view', 'manage'],
   /**
