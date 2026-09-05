@@ -8,6 +8,7 @@ const settlementAllocationSchema = new mongoose.Schema(
     settlementId: { type: mongoose.Schema.Types.ObjectId, ref: 'Settlement', required: true },
     distributorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Distributor', required: true },
     ledgerEntryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Ledger', required: true },
+    collectionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Collection', default: null },
     amount: { type: Number, required: true }
   },
   { timestamps: true }

@@ -15,7 +15,11 @@ const createCollectionSchema = Joi.object({
   paymentMethod: Joi.string()
     .valid(...Object.values(PAYMENT_METHOD))
     .required(),
-  moneyAccountId: Joi.string().hex().length(24).required(),
+  moneyAccountId: Joi.string().hex().length(24).when('collectorType', {
+    is: COLLECTOR_TYPE.COMPANY,
+    then: Joi.required(),
+    otherwise: Joi.optional().allow('', null)
+  }),
   referenceNumber: Joi.string().trim().allow(''),
   date: Joi.date(),
   notes: Joi.string().trim().allow('')

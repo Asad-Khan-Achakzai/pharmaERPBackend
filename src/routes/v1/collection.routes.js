@@ -4,6 +4,7 @@ const c = require('../../controllers/collection.controller');
 const { authenticate } = require('../../middleware/auth');
 const { companyScope } = require('../../middleware/companyScope');
 const { checkPermission } = require('../../middleware/checkPermission');
+const { clientUuid } = require('../../middleware/clientUuid');
 const { validate } = require('../../middleware/validate');
 const {
   createCollectionSchema,
@@ -11,7 +12,7 @@ const {
   reverseCollectionSchema
 } = require('../../validators/collection.validator');
 
-router.use(authenticate, companyScope);
+router.use(authenticate, companyScope, clientUuid());
 router.get('/', checkPermission('payments.view'), c.list);
 router.get('/outstanding', checkPermission('payments.view'), c.listOutstanding);
 router.get(

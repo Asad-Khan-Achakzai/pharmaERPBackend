@@ -3,6 +3,7 @@ const Collection = require('../models/Collection');
 const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const financialService = require('./financial.service');
+const remittanceService = require('./remittance.service');
 const { escapeRegex, qScalar, applyDateFieldRangeFromQuery, applyCreatedByFromQuery } = require('../utils/listQuery');
 
 const list = async (companyId, query, timeZone = "UTC") => {
@@ -11,6 +12,8 @@ const list = async (companyId, query, timeZone = "UTC") => {
   const filter = { companyId };
   if (query.pharmacyId) filter.pharmacyId = query.pharmacyId;
   if (query.collectorType) filter.collectorType = query.collectorType;
+  if (query.distributorId) filter.distributorId = query.distributorId;
+  if (query.remittanceId) filter.remittanceId = query.remittanceId;
   applyDateFieldRangeFromQuery(filter, query, 'date', timeZone);
   if (searchTerm) {
     const rx = escapeRegex(searchTerm);
@@ -54,7 +57,10 @@ const getById = async (companyId, id) => {
     .populate('pharmacyId', 'name city address')
     .populate('distributorId', 'name city')
     .populate('collectedBy', 'name');
-  return doc;
+  if (!doc) return doc;
+  const status = await remittanceService.collectionRemittanceStatus(companyId, doc);
+  const obj = doc.toObject();
+  return { ...obj, remittance: status };
 };
 
 const getByPharmacy = async (companyId, pharmacyId) => {

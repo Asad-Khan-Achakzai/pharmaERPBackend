@@ -46,6 +46,8 @@ module.exports = {
   GoodsReceiptLine: require('./GoodsReceiptLine'),
   SupplierInvoice: require('./SupplierInvoice'),
   Settlement: require('./Settlement'),
+  SettlementAllocation: require('./SettlementAllocation'),
+  Remittance: require('./Remittance'),
   OnboardingSession: require('./OnboardingSession'),
   ImportJob: require('./ImportJob'),
   ImportJobRow: require('./ImportJobRow'),

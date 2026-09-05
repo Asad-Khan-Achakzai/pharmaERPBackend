@@ -1093,24 +1093,32 @@ const financialCashSummary = async (companyId, from, to, filters = {}, timeZone)
   const col = await collectionsPeriod(companyId, from, to, colFilters, tz);
   const set = await settlementsPeriod(companyId, from, to, setFilters, tz);
 
+  const companyCol = await collectionsPeriod(
+    companyId,
+    from,
+    to,
+    { pharmacyId: filters.pharmacyId, collectorType: COLLECTOR_TYPE.COMPANY },
+    tz
+  );
   const collectionsTotal = col.summary.totalAmount;
+  const companyCollectionsTotal = companyCol.summary.totalAmount;
   const inFromDistributors = set.distributorToCompany.total;
   const outToDistributors = set.companyToDistributor.total;
-  const net = roundPKR(collectionsTotal + inFromDistributors - outToDistributors);
+  const net = roundPKR(companyCollectionsTotal + inFromDistributors - outToDistributors);
 
   return {
     period: { from: from || null, to: to || null },
     pharmacyCollectionsTotal: collectionsTotal,
+    companyCollectionsTotal,
     collectionsDetail: col.summary,
     settlementsInFromDistributors: inFromDistributors,
     settlementsOutToDistributors: outToDistributors,
-    /** Collections + D→C settlements − C→D settlements (cash-like view; not full P&L). */
+    /** Company collections + D→C settlements − C→D (distributor collections are not company cash). */
     netCashStyleMovement: net,
     notes: [
-      'Pharmacy collections are amounts recorded against pharmacy receivables (FIFO on server).',
-      'Distributor→company settlements are additional cash in from distributors.',
-      'Company→distributor settlements are cash out to distributors.',
-      'Legacy Payment documents (if any) are included in cash-flow legacyPayments series, not in collections total.'
+      'Company cash-style movement uses collections taken by the company plus distributor remittances (D→C), minus C→D.',
+      'Distributor-held pharmacy collections are not company cash until remitted (company share only).',
+      'Expected remittance is the company share of distributor collections, not the full amount collected from pharmacies.'
     ]
   };
 };
@@ -1163,7 +1171,7 @@ const computeImpliedCashBalance = async (companyId) => {
 
   const [cCol, cSet, cExp, cSup] = await Promise.all([
     Collection.aggregate([
-      { $match: { companyId: cid, isDeleted: nd } },
+      { $match: { companyId: cid, collectorType: COLLECTOR_TYPE.COMPANY, isDeleted: nd } },
       { $group: { _id: null, t: { $sum: '$amount' } } }
     ]),
     Settlement.aggregate([

@@ -28,6 +28,8 @@ const collectionSchema = new mongoose.Schema(
     collectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     date: { type: Date, default: Date.now },
     notes: { type: String },
+    /** Set when this collection was created as part of a remittance handover */
+    remittanceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Remittance', default: null },
     /** FIFO allocation of this collection against pharmacy receivable (per delivery) */
     allocations: [allocationSchema]
   },
@@ -37,6 +39,7 @@ const collectionSchema = new mongoose.Schema(
 collectionSchema.index({ companyId: 1, pharmacyId: 1, date: -1 });
 collectionSchema.index({ companyId: 1, collectorType: 1, date: -1 });
 collectionSchema.index({ companyId: 1, distributorId: 1, date: -1 });
+collectionSchema.index({ companyId: 1, remittanceId: 1 });
 
 collectionSchema.plugin(softDeletePlugin);
 

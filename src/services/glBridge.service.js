@@ -129,51 +129,159 @@ const postDeliveryGl = async (session, companyId, ctx, reqUser) => {
 };
 
 /**
- * Collection: Dr Cash/Bank / Cr AR.
+ * Collection GL (prospective Model A):
+ * - COMPANY collector: Dr Cash / Cr AR; if distributor share > 0 also Dr 6100 / Cr 2120.
+ * - DISTRIBUTOR collector: Cr AR; Dr 2120 for company share; Dr 6100 for retained share. No company cash.
  */
 const postCollectionGl = async (session, companyId, ctx, reqUser) => {
+  const { COLLECTOR_TYPE } = require('../constants/enums');
   try {
     await ensureCoa(companyId, session);
-    const cash = ctx.moneyAccountId
-      ? await moneyAccountService.assertMoneyAccount(companyId, ctx.moneyAccountId, session)
-      : await glPosting.getAccountByCode(
-          companyId,
-          paymentMethodToCashOrBank(ctx.paymentMethod),
-          session
-        );
     const ar = await glPosting.getAccountByCode(companyId, ACCOUNT_CODES.ACCOUNTS_RECEIVABLE, session);
-    if (!cash || !ar) return null;
+    const clearing = await glPosting.getAccountByCode(companyId, ACCOUNT_CODES.DISTRIBUTOR_CLEARING, session);
+    const opex = await glPosting.getAccountByCode(companyId, ACCOUNT_CODES.OPERATING_EXPENSE, session);
+    if (!ar) {
+      throw new Error('Cannot post collection GL: accounts receivable (1130) is missing');
+    }
 
     const amount = roundPKR(ctx.amount);
+    const sliceCompany = roundPKR(ctx.sliceCompany != null ? ctx.sliceCompany : amount);
+    const sliceDist = roundPKR(ctx.sliceDist != null ? ctx.sliceDist : 0);
+    const isDistributor = ctx.collectorType === COLLECTOR_TYPE.DISTRIBUTOR;
+    const lines = [];
+    let moneyAcc = null;
+
+    if (isDistributor) {
+      if (!clearing) {
+        throw new Error('Cannot post collection GL: distributor clearing (2120) is missing');
+      }
+      if (sliceCompany > 0.001 && clearing) {
+        lines.push(
+          line(clearing._id, sliceCompany, 0, {
+            partyEntityType: 'DISTRIBUTOR_CLEARING',
+            partyEntityId: ctx.distributorId
+          })
+        );
+      }
+      if (sliceDist > 0.001 && opex) {
+        lines.push(line(opex._id, sliceDist, 0));
+      }
+      const dr = roundPKR(lines.reduce((s, l) => s + (l.debit || 0), 0));
+      if (dr + 0.001 < amount && clearing) {
+        lines.push(
+          line(clearing._id, roundPKR(amount - dr), 0, {
+            partyEntityType: 'DISTRIBUTOR_CLEARING',
+            partyEntityId: ctx.distributorId
+          })
+        );
+      }
+      lines.push(line(ar._id, 0, amount, { partyEntityType: 'PHARMACY', partyEntityId: ctx.pharmacyId }));
+    } else {
+      moneyAcc = ctx.moneyAccountId
+        ? await moneyAccountService.assertMoneyAccount(companyId, ctx.moneyAccountId, session)
+        : await glPosting.getAccountByCode(
+            companyId,
+            paymentMethodToCashOrBank(ctx.paymentMethod),
+            session
+          );
+      if (!moneyAcc) return null;
+      lines.push(line(moneyAcc._id, amount, 0));
+      lines.push(line(ar._id, 0, amount, { partyEntityType: 'PHARMACY', partyEntityId: ctx.pharmacyId }));
+      const commissionSlices =
+        ctx.clearingSlices && ctx.clearingSlices.length
+          ? ctx.clearingSlices
+          : [{ distributorId: ctx.distributorId, sliceDist, sliceCompany }];
+      for (const s of commissionSlices) {
+        const distShare = roundPKR(s.sliceDist || 0);
+        if (distShare > 0.001 && clearing && opex) {
+          lines.push(line(opex._id, distShare, 0));
+          lines.push(
+            line(clearing._id, 0, distShare, {
+              partyEntityType: 'DISTRIBUTOR_CLEARING',
+              partyEntityId: s.distributorId
+            })
+          );
+        }
+      }
+    }
+
     const voucher = await glPosting.postVoucher(
       companyId,
       {
         voucherType: VOUCHER_TYPE.RV,
         date: ctx.date,
         narration: ctx.narration || 'Pharmacy collection',
-        lines: [
-          line(cash._id, amount, 0),
-          line(ar._id, 0, amount, { partyEntityType: 'PHARMACY', partyEntityId: ctx.pharmacyId })
-        ],
+        lines,
         sourceModule: GL_SOURCE_MODULE.COLLECTION,
         sourceRefId: ctx.collectionId,
         paymentMethod: ctx.paymentMethod,
-        moneyAccountId: cash._id,
-        moneyAccountNature: cash.moneyAccountNature || (cash.isBank ? 'BANK' : 'CASH')
+        moneyAccountId: moneyAcc ? moneyAcc._id : null,
+        moneyAccountNature: moneyAcc
+          ? moneyAcc.moneyAccountNature || (moneyAcc.isBank ? 'BANK' : 'CASH')
+          : null
       },
       reqUser,
       session
     );
 
     if (ctx.ledgerEntryIds?.length) {
+      const arLineIdx = lines.findIndex((l) => String(l.accountId) === String(ar._id) && (l.credit || 0) > 0);
+      const idx = arLineIdx >= 0 ? arLineIdx : Math.max(0, lines.length - 1);
       for (let i = 0; i < ctx.ledgerEntryIds.length; i++) {
-        await linkSubLedger(companyId, SUB_LEDGER_SOURCE.LEDGER, ctx.ledgerEntryIds[i], voucher, 1, session);
+        await linkSubLedger(companyId, SUB_LEDGER_SOURCE.LEDGER, ctx.ledgerEntryIds[i], voucher, idx, session);
       }
     }
     return voucher;
   } catch (err) {
     logger.warn({ msg: 'glBridge.postCollectionGl.failed', companyId, err: err.message });
-    return null;
+    throw err;
+  }
+};
+
+/**
+ * Settlement GL:
+ * - DISTRIBUTOR_TO_COMPANY: Dr money account / Cr 2120 (cash received = remittance).
+ * - COMPANY_TO_DISTRIBUTOR: Dr 2120 / Cr money account (commission paid).
+ */
+const postSettlementGl = async (session, companyId, ctx, reqUser) => {
+  const { SETTLEMENT_DIRECTION } = require('../constants/enums');
+  try {
+    await ensureCoa(companyId, session);
+    const moneyAcc = await moneyAccountService.assertMoneyAccount(companyId, ctx.moneyAccountId, session);
+    const clearing = await glPosting.getAccountByCode(companyId, ACCOUNT_CODES.DISTRIBUTOR_CLEARING, session);
+    if (!moneyAcc || !clearing) {
+      throw new Error('Cannot post settlement GL: money account or distributor clearing (2120) is missing');
+    }
+
+    const amount = roundPKR(ctx.amount);
+    const d2c = ctx.direction === SETTLEMENT_DIRECTION.DISTRIBUTOR_TO_COMPANY;
+    const clearingExtra = {
+      partyEntityType: 'DISTRIBUTOR_CLEARING',
+      partyEntityId: ctx.distributorId
+    };
+    const lines = d2c
+      ? [line(moneyAcc._id, amount, 0), line(clearing._id, 0, amount, clearingExtra)]
+      : [line(clearing._id, amount, 0, clearingExtra), line(moneyAcc._id, 0, amount)];
+
+    return glPosting.postVoucher(
+      companyId,
+      {
+        voucherType: d2c ? VOUCHER_TYPE.RV : VOUCHER_TYPE.PV,
+        date: ctx.date,
+        narration: ctx.narration || (d2c ? 'Distributor remittance' : 'Settlement: company → distributor'),
+        lines,
+        sourceModule: GL_SOURCE_MODULE.SETTLEMENT,
+        sourceRefId: ctx.settlementId,
+        paymentMethod: ctx.paymentMethod,
+        moneyAccountId: moneyAcc._id,
+        moneyAccountNature: moneyAcc.moneyAccountNature || (moneyAcc.isBank ? 'BANK' : 'CASH')
+      },
+      reqUser,
+      session
+    );
+  } catch (err) {
+    logger.warn({ msg: 'glBridge.postSettlementGl.failed', companyId, err: err.message });
+    throw err;
   }
 };
 
@@ -471,6 +579,7 @@ const reconcileControlAccount = async (companyId, controlAccountCode) => {
 module.exports = {
   postDeliveryGl,
   postCollectionGl,
+  postSettlementGl,
   postPurchaseGl,
   postSupplierPaymentGl,
   postDoctorActivityGl,

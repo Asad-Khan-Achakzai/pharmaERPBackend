@@ -718,10 +718,19 @@ const createCollection = async (companyId, data, reqUser, session) => {
     moneyAccountId,
     referenceNumber,
     date,
-    notes
+    notes,
+    remittanceId
   } = data;
 
-  const moneyAcc = await moneyAccountService.assertMoneyAccount(companyId, moneyAccountId, session);
+  let moneyAcc = null;
+  if (collectorType === COLLECTOR_TYPE.COMPANY) {
+    if (!moneyAccountId) {
+      throw new ApiError(400, 'moneyAccountId is required when the company collects');
+    }
+    moneyAcc = await moneyAccountService.assertMoneyAccount(companyId, moneyAccountId, session);
+  } else if (moneyAccountId) {
+    moneyAcc = await moneyAccountService.assertMoneyAccount(companyId, moneyAccountId, session);
+  }
 
   let state = await computePharmacyReceivableState(companyId, pharmacyId, session);
 
@@ -775,12 +784,15 @@ const createCollection = async (companyId, data, reqUser, session) => {
         collectorType,
         amount: roundPKR(amount),
         paymentMethod,
-        moneyAccountId: moneyAcc._id,
-        moneyAccountNature: moneyAcc.moneyAccountNature || (moneyAcc.isBank ? 'BANK' : 'CASH'),
+        moneyAccountId: moneyAcc ? moneyAcc._id : undefined,
+        moneyAccountNature: moneyAcc
+          ? moneyAcc.moneyAccountNature || (moneyAcc.isBank ? 'BANK' : 'CASH')
+          : undefined,
         referenceNumber,
         collectedBy: reqUser.userId,
         date: date || new Date(),
         notes,
+        remittanceId: remittanceId ? oid(remittanceId) : undefined,
         allocations: allocations.map((a) => ({
           deliveryId: a.deliveryId,
           orderId: a.orderId,
@@ -830,15 +842,33 @@ const createCollection = async (companyId, data, reqUser, session) => {
     .session(session)
     .select('_id');
 
+  const sliceCompanyTotal = roundPKR(allocations.reduce((s, a) => s + (a.sliceCompany || 0), 0));
+  const sliceDistTotal = roundPKR(allocations.reduce((s, a) => s + (a.sliceDist || 0), 0));
+  const clearingByDist = {};
+  for (const a of allocations) {
+    const key = String(a.distributorId);
+    if (!clearingByDist[key]) {
+      clearingByDist[key] = { distributorId: a.distributorId, sliceCompany: 0, sliceDist: 0 };
+    }
+    clearingByDist[key].sliceCompany = roundPKR(clearingByDist[key].sliceCompany + (a.sliceCompany || 0));
+    clearingByDist[key].sliceDist = roundPKR(clearingByDist[key].sliceDist + (a.sliceDist || 0));
+  }
+
   await glBridge.postCollectionGl(
     session,
     companyId,
     {
       collectionId: collection._id,
       pharmacyId,
+      distributorId:
+        collectorType === COLLECTOR_TYPE.DISTRIBUTOR ? collectingDistributorId : allocations[0]?.distributorId,
+      collectorType,
       amount: roundPKR(amount),
+      sliceCompany: sliceCompanyTotal,
+      sliceDist: sliceDistTotal,
+      clearingSlices: Object.values(clearingByDist),
       paymentMethod,
-      moneyAccountId: moneyAcc._id,
+      moneyAccountId: moneyAcc ? moneyAcc._id : undefined,
       date: d,
       narration: notes || 'Pharmacy collection',
       ledgerEntryIds: createdLedgerRows.map((r) => r._id)
@@ -952,6 +982,12 @@ const reverseCollection = async (companyId, id, body, reqUser, session) => {
   if (!collection) throw new ApiError(404, 'Collection not found');
 
   await assertNoSettlementAgainstCollection(companyId, id, session);
+  if (collection.remittanceId) {
+    throw new ApiError(
+      409,
+      'Cannot reverse: this collection is part of a remittance. Reverse the remittance first.'
+    );
+  }
 
   const voucher = await findCollectionGlVoucher(companyId, collection._id, session);
   if (voucher) {
@@ -1036,6 +1072,7 @@ const fifoSettlementDistributorToCompany = async (companyId, distributorId, amou
     if (open > 0.001) {
       relevant.push({
         ledgerEntryId: line._id,
+        collectionId: line.referenceId,
         deliveryId: line.meta?.deliveryId,
         deliveredAt: line.date,
         open
@@ -1051,7 +1088,12 @@ const fifoSettlementDistributorToCompany = async (companyId, distributorId, amou
     if (remaining <= 0) break;
     const take = roundPKR(Math.min(r.open, remaining));
     if (take <= 0) continue;
-    slices.push({ ledgerEntryId: r.ledgerEntryId, deliveryId: r.deliveryId, amount: take });
+    slices.push({
+      ledgerEntryId: r.ledgerEntryId,
+      collectionId: r.collectionId,
+      deliveryId: r.deliveryId,
+      amount: take
+    });
     remaining = roundPKR(remaining - take);
   }
 
@@ -1120,6 +1162,92 @@ const fifoSettlementCompanyToDistributor = async (companyId, distributorId, amou
   return slices;
 };
 
+/**
+ * Open remittance-due lines for specific collections (oldest first). Used by remittance targeted allocation.
+ */
+const listOpenRemittanceDueLinesForCollections = async (companyId, distributorId, collectionIds, session) => {
+  const ids = (collectionIds || []).map((id) => oid(id)).filter(Boolean);
+  if (!ids.length) return [];
+
+  const lines = await Ledger.find({
+    companyId: oid(companyId),
+    entityType: LEDGER_ENTITY_TYPE.DISTRIBUTOR_CLEARING,
+    entityId: oid(distributorId),
+    referenceType: LEDGER_REFERENCE_TYPE.COLLECTION,
+    referenceId: { $in: ids },
+    type: LEDGER_TYPE.DEBIT,
+    'meta.portion': LEDGER_COLLECTION_PORTION.REMITTANCE_DUE_TO_COMPANY,
+    isDeleted: { $ne: true }
+  })
+    .session(session || null)
+    .sort({ date: 1, createdAt: 1 });
+
+  const out = [];
+  for (const line of lines) {
+    const allocated = await sumAllocatedForLine(
+      companyId,
+      distributorId,
+      line._id,
+      SETTLEMENT_DIRECTION.DISTRIBUTOR_TO_COMPANY,
+      session
+    );
+    const open = roundPKR(line.amount - allocated);
+    if (open > OPEN_EPS) {
+      out.push({
+        ledgerEntryId: line._id,
+        collectionId: line.referenceId,
+        deliveryId: line.meta?.deliveryId,
+        date: line.date,
+        open
+      });
+    }
+  }
+  out.sort((a, b) => new Date(a.date) - new Date(b.date));
+  return out;
+};
+
+const previewDistributorCollection = async (companyId, { pharmacyId, distributorId, amount }, session = null) => {
+  let state = await computePharmacyReceivableState(companyId, pharmacyId, session);
+  const did = oid(distributorId);
+  const rows = state.rows.filter((r) => r.distributorId && r.distributorId.toString() === did.toString());
+  const totalOpen = roundPKR(rows.reduce((s, r) => s + Math.max(0, r.open), 0));
+  if (totalOpen < OPEN_EPS) {
+    throw new ApiError(400, 'No outstanding receivable from this pharmacy for the selected distributor');
+  }
+  if (totalOpen + OPEN_EPS < roundPKR(amount)) {
+    throw new ApiError(400, 'Collection amount exceeds outstanding balance for this pharmacy with the selected distributor');
+  }
+  const rawAlloc = fifoAllocateCollection(amount, rows);
+  const allocations = rawAlloc.map((a) => {
+    const { sliceCompany, sliceDist } = sliceByRatios(
+      a.amount,
+      a.pharmacyNetPayable,
+      a.companyShareTotal,
+      a.distributorShareTotal
+    );
+    return {
+      deliveryId: a.deliveryId,
+      amount: a.amount,
+      sliceCompany,
+      sliceDist
+    };
+  });
+  const estimatedCompanyShareIfFullyCollected = roundPKR(
+    rows.reduce((s, r) => {
+      const { sliceCompany } = sliceByRatios(r.open, r.pharmacyNetPayable, r.companyShareTotal, r.distributorShareTotal);
+      return s + sliceCompany;
+    }, 0)
+  );
+  return {
+    outstanding: totalOpen,
+    amount: roundPKR(amount),
+    sliceCompany: roundPKR(allocations.reduce((s, a) => s + a.sliceCompany, 0)),
+    sliceDist: roundPKR(allocations.reduce((s, a) => s + a.sliceDist, 0)),
+    estimatedCompanyShareIfFullyCollected,
+    allocations
+  };
+};
+
 const createSettlement = async (companyId, data, reqUser, session) => {
   const {
     distributorId,
@@ -1132,15 +1260,19 @@ const createSettlement = async (companyId, data, reqUser, session) => {
     notes,
     isNetSettlement,
     grossDistributorToCompany,
-    grossCompanyToDistributor
+    grossCompanyToDistributor,
+    remittanceId,
+    allocationSlices
   } = data;
 
   const moneyAcc = await moneyAccountService.assertMoneyAccount(companyId, moneyAccountId, session);
 
   const slices =
-    direction === SETTLEMENT_DIRECTION.DISTRIBUTOR_TO_COMPANY
-      ? await fifoSettlementDistributorToCompany(companyId, distributorId, amount, session)
-      : await fifoSettlementCompanyToDistributor(companyId, distributorId, amount, session);
+    allocationSlices && allocationSlices.length
+      ? allocationSlices
+      : direction === SETTLEMENT_DIRECTION.DISTRIBUTOR_TO_COMPANY
+        ? await fifoSettlementDistributorToCompany(companyId, distributorId, amount, session)
+        : await fifoSettlementCompanyToDistributor(companyId, distributorId, amount, session);
 
   const [settlement] = await Settlement.create(
     [
@@ -1156,6 +1288,7 @@ const createSettlement = async (companyId, data, reqUser, session) => {
         settledBy: reqUser.userId,
         date: date || new Date(),
         notes,
+        remittanceId: remittanceId ? oid(remittanceId) : undefined,
         isNetSettlement: !!isNetSettlement,
         grossDistributorToCompany,
         grossCompanyToDistributor
@@ -1195,9 +1328,26 @@ const createSettlement = async (companyId, data, reqUser, session) => {
     settlementId: settlement._id,
     distributorId,
     ledgerEntryId: s.ledgerEntryId,
+    collectionId: s.collectionId || undefined,
     amount: s.amount
   }));
   if (allocDocs.length) await SettlementAllocation.create(allocDocs, { session, ordered: true });
+
+  await glBridge.postSettlementGl(
+    session,
+    companyId,
+    {
+      settlementId: settlement._id,
+      distributorId,
+      direction,
+      amount: roundPKR(amount),
+      paymentMethod,
+      moneyAccountId: moneyAcc._id,
+      date: d,
+      narration: notes || desc
+    },
+    reqUser
+  );
 
   return settlement;
 };
@@ -1260,9 +1410,30 @@ const updateSettlement = async (companyId, id, body, reqUser, session) => {
 /**
  * Undo FIFO allocation links and distributor-clearing ledger for a settlement.
  */
-const reverseSettlement = async (companyId, id, body, reqUser, session) => {
+const findSettlementGlVoucher = async (companyId, settlementId, session) =>
+  Voucher.findOne({
+    companyId: oid(companyId),
+    sourceModule: GL_SOURCE_MODULE.SETTLEMENT,
+    sourceRefId: oid(settlementId),
+    status: VOUCHER_STATUS.POSTED,
+    reversedVoucherId: null,
+    ...nd
+  }).session(session || null);
+
+const reverseSettlement = async (companyId, id, body, reqUser, session, opts = {}) => {
   const settlement = await Settlement.findOne({ _id: oid(id), companyId: oid(companyId) }).session(session);
   if (!settlement) throw new ApiError(404, 'Settlement not found');
+  if (settlement.remittanceId && !opts.allowRemittanceOwned) {
+    throw new ApiError(
+      409,
+      'Cannot reverse: this settlement belongs to a remittance. Reverse the remittance first.'
+    );
+  }
+
+  const voucher = await findSettlementGlVoucher(companyId, settlement._id, session);
+  if (voucher) {
+    await glPosting.reverseVoucher(companyId, voucher._id, reqUser, session);
+  }
 
   const allocations = await SettlementAllocation.find({
     companyId: oid(companyId),
@@ -1468,6 +1639,8 @@ module.exports = {
   createSettlement,
   updateSettlement,
   reverseSettlement,
+  listOpenRemittanceDueLinesForCollections,
+  previewDistributorCollection,
   postReturnClearingAdjustment,
   getDistributorClearingBalance,
   getDistributorObligations,

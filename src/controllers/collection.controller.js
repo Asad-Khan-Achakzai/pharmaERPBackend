@@ -33,7 +33,7 @@ const create = asyncHandler(async (req, res) => {
     action: 'collection.create',
     entityType: 'Collection',
     entityId: doc._id,
-    changes: { after: doc.toObject() }
+    changes: { after: doc.toObject ? doc.toObject() : doc }
   });
   ApiResponse.created(res, doc, 'Collection recorded');
 });
@@ -59,7 +59,7 @@ const update = asyncHandler(async (req, res) => {
     action: 'collection.update',
     entityType: 'Collection',
     entityId: doc._id,
-    changes: { before: before.toObject(), after: doc.toObject() }
+    changes: { before: before.toObject ? before.toObject() : before, after: doc.toObject ? doc.toObject() : doc }
   });
   ApiResponse.success(res, doc, 'Collection updated');
 });
@@ -75,7 +75,7 @@ const reverse = asyncHandler(async (req, res) => {
     entityType: 'Collection',
     entityId: before._id,
     changes: {
-      before: before.toObject(),
+      before: before.toObject ? before.toObject() : before,
       meta: { reversalReason: req.body?.reversalReason || null, softDeleted: true }
     }
   });

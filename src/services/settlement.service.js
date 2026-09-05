@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const Settlement = require('../models/Settlement');
+const SettlementAllocation = require('../models/SettlementAllocation');
 const ApiError = require('../utils/ApiError');
 const { parsePagination } = require('../utils/pagination');
 const financialService = require('./financial.service');
@@ -54,9 +55,12 @@ const create = async (companyId, data, reqUser) => {
 };
 
 const getById = async (companyId, id) => {
-  return Settlement.findOne({ _id: id, companyId })
+  const doc = await Settlement.findOne({ _id: id, companyId })
     .populate('distributorId', 'name city')
     .populate('settledBy', 'name');
+  if (!doc) return doc;
+  const allocations = await SettlementAllocation.find({ companyId, settlementId: doc._id }).lean();
+  return { ...doc.toObject(), allocations };
 };
 
 const runInTransaction = async (fn) => {

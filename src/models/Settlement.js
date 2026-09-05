@@ -15,6 +15,7 @@ const settlementSchema = new mongoose.Schema(
     settledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     date: { type: Date, default: Date.now },
     notes: { type: String },
+    remittanceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Remittance', default: null },
     /** True when this settlement is the net of two gross legs */
     isNetSettlement: { type: Boolean, default: false },
     grossDistributorToCompany: { type: Number },

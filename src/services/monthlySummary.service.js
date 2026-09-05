@@ -1,7 +1,9 @@
 /**
  * Fiscal-year monthly summary (Aug → Jul) for Reports & Insights.
- * P/L = Net Sales − Distribution − Discount − Casting (sold products) − Expenses (payroll + other).
- * Marketing (doctor investment) is informational only.
+ * P/L = Net Sales − Distribution − Casting (sold products) − Expenses (payroll + other).
+ * Discount is informational only: Net Sales is already pharmacy payable (TP after pharmacy
+ * discount). Subtracting Discount again would double-count clinic % (and also charge bonus TP
+ * against revenue that never included those packs). Marketing is informational only.
  */
 const mongoose = require('mongoose');
 const { DateTime } = require('luxon');
@@ -67,13 +69,7 @@ const mapByMonth = (rows, valueKey) => {
 };
 
 const computePl = (row) =>
-  roundPKR(
-    row.netSales -
-      row.distribution -
-      row.discount -
-      row.castingCost -
-      row.expenses
-  );
+  roundPKR(row.netSales - row.distribution - row.castingCost - row.expenses);
 
 /** Treat sub-paisa residuals from return rounding as zero in management reports. */
 const zeroDust = (v) => {
@@ -655,7 +651,7 @@ const monthlySummary = async (companyId, query = {}, timeZone) => {
     totals,
     meta: {
       plFormula:
-        'Net Sales − Distribution − Discount − Casting (products sold) − Expenses (payroll + operating)',
+        'Net Sales − Distribution − Casting (products sold) − Expenses (payroll + operating). Discount is shown for reference only — it is already in Net Sales.',
       salesMovementIdentity:
         'Net TP Sales = Gross Deliveries (TP) − Returns − Amendments (current/prior period). Same calculation as Company Dashboard Gross TP Sales (event-date D−R−A, excluding fully credited orders).',
       dateBasis: {
@@ -672,6 +668,7 @@ const monthlySummary = async (companyId, query = {}, timeZone) => {
       },
       notes: [
         'Marketing (doctor investment) is not included in P/L.',
+        'Discount (clinic % on paid packs + TP of bonus packs) is not deducted in P/L. Net Sales is already pharmacy payable.',
         'Casting reflects company purchase price on products sold in each month, not supplier GRN receipts.',
         'Supplier purchases and payments are tracked separately in procurement and payables.',
         'Net TP Sales (Trade Price) is not the same as Net Sales (pharmacy payable).'

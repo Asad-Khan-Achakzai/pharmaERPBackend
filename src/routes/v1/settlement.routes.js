@@ -4,6 +4,7 @@ const c = require('../../controllers/settlement.controller');
 const { authenticate } = require('../../middleware/auth');
 const { companyScope } = require('../../middleware/companyScope');
 const { checkPermission } = require('../../middleware/checkPermission');
+const { clientUuid } = require('../../middleware/clientUuid');
 const { validate } = require('../../middleware/validate');
 const {
   createSettlementSchema,
@@ -11,7 +12,7 @@ const {
   reverseSettlementSchema
 } = require('../../validators/settlement.validator');
 
-router.use(authenticate, companyScope);
+router.use(authenticate, companyScope, clientUuid());
 router.get('/', checkPermission('payments.view'), c.list);
 router.post('/', checkPermission('payments.create'), validate(createSettlementSchema), c.create);
 router.patch('/:id', checkPermission('payments.create'), validate(updateSettlementSchema), c.update);
