@@ -18,6 +18,7 @@ const {
   PAYMENT_METHOD
 } = require('../constants/enums');
 const financialService = require('./financial.service');
+const logger = require('../utils/logger');
 const {
   fifoApplyReceivedToOpenLines,
   classifyReceivedVsExpected,
@@ -26,19 +27,58 @@ const {
 
 const oid = (id) => new mongoose.Types.ObjectId(id);
 
-const runInTransaction = async (fn) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
+const abortQuietly = async (session) => {
   try {
-    const result = await fn(session);
-    await session.commitTransaction();
-    return result;
-  } catch (e) {
     await session.abortTransaction();
-    throw e;
-  } finally {
-    session.endSession();
+  } catch {
+    /* already aborted by the server — do not mask the original error */
   }
+};
+
+const isTransientTxnError = (err) =>
+  Boolean(
+    err?.errorLabels?.includes('TransientTransactionError') ||
+      err?.code === 112 ||
+      /WriteConflict/i.test(err?.message || '')
+  );
+
+/**
+ * Mongo forbids creating a collection (first insert into a new namespace) inside
+ * a multi-document transaction. Remittance is a new model; prod may not have
+ * `remittances` yet. Create it before starting the txn.
+ */
+const ensureRemittanceCollection = async () => {
+  try {
+    await Remittance.createCollection();
+  } catch (err) {
+    if (err?.code === 48 || err?.codeName === 'NamespaceExists') return;
+    throw err;
+  }
+};
+
+const runInTransaction = async (fn) => {
+  let lastErr;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    try {
+      const result = await fn(session);
+      await session.commitTransaction();
+      session.endSession();
+      return result;
+    } catch (e) {
+      await abortQuietly(session);
+      session.endSession();
+      lastErr = e;
+      if (!isTransientTxnError(e) || attempt === 2) break;
+      logger.warn({
+        msg: 'remittance.transaction.retry',
+        attempt: attempt + 1,
+        err: e.message
+      });
+    }
+  }
+  throw lastErr;
 };
 
 const preview = async (companyId, body) => {
@@ -115,6 +155,7 @@ const preview = async (companyId, body) => {
 };
 
 const create = async (companyId, body, reqUser) => {
+  await ensureRemittanceCollection();
   return runInTransaction(async (session) => {
     const distributorId = body.distributorId;
     const dist = await Distributor.findOne({
