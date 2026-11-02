@@ -17,7 +17,6 @@ const list = asyncHandler(async (req, res) => {
 });
 
 const create = asyncHandler(async (req, res) => {
-  await new Promise((resolve) => setTimeout(resolve, 60_000));
   const order = await orderService.create(req.companyId, req.body, req.user, req.context.timeZone);
   ApiResponse.created(res, order);
 });
